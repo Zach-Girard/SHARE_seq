@@ -10,9 +10,6 @@ nextflow.enable.dsl=2
 params.raw_fastq           = params.raw_fastq           ?: 'RAW_FASTQ'
 params.genomes_dir         = params.genomes_dir         ?: 'Genomes'
 params.gtf_dir             = params.gtf_dir             ?: 'GTF'
-params.skip_demux          = params.skip_demux          ?: false
-params.skip_trim           = params.skip_trim           ?: false
-params.skip_polyt          = params.skip_polyt          ?: false
 params.umi_len             = params.umi_len             ?: 10
 params.bc_coords           = params.bc_coords           ?: '15-23,53-61,91-99'
 params.species_model       = params.species_model       ?: 'human'  // 'human', 'mouse', or 'hybrid'
@@ -47,9 +44,6 @@ log.info "Using Genomes directory      : ${params.genomes_dir}"
 log.info "Using GTF directory          : ${params.gtf_dir}"
 log.info "Species model                : ${params.species_model}"
 log.info "STARsolo alignment mode      : ${params.star_alignment_mode}"
-log.info "Skip demultiplexing          : ${params.skip_demux}"
-log.info "Skip adapter trimming        : ${params.skip_trim}"
-log.info "Skip Poly-T filtering        : ${params.skip_polyt}"
 log.info "UMI length (R3)              : ${params.umi_len}"
 log.info "Barcode coords (R2)          : ${params.bc_coords}"
 log.info "User 8bp barcode file        : ${params.barcodes_8bp_file}"
@@ -59,6 +53,10 @@ log.info "Effective 8bp whitelist file : ${effectiveCbWhitelistPath}"
 /*
  * Channel definitions
  */
+
+// Resolve raw_fastq to an absolute directory to avoid any cwd ambiguity
+def rawFastqDir = file(params.raw_fastq).toAbsolutePath()
+log.info "Resolved RAW_FASTQ absolute path : ${rawFastqDir}"
 
 Channel
     .fromPath("${params.raw_fastq}/*.fastq.gz", checkIfExists: true)
@@ -73,6 +71,8 @@ Channel
 // Later, replace this with a real SHARE-seq demux script.
 process DEMULTIPLEX_PLACEHOLDER {
     tag { file(raw_fastq).name }
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
     path raw_fastq
@@ -89,6 +89,8 @@ process DEMULTIPLEX_PLACEHOLDER {
 process FASTQC_RAW {
     tag { file(fastq).name }
 
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
     input:
     path fastq
 
@@ -104,35 +106,53 @@ process FASTQC_RAW {
 process TRIM_FASTQ {
     tag { file(fastq).name }
 
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
     input:
     path fastq
 
     output:
-    path "trimmed/${fastq.simpleName}.trimmed.fastq.gz", emit: trimmed_fastq
-    path "trimmed/${fastq.simpleName}.fastp.json"
-    path "trimmed/${fastq.simpleName}.fastp.html"
+    // Preserve read identity and place "trimmed" before read designator, e.g.
+    // sampleA.matched.R3.fastq.gz -> sampleA.matched.trimmed.R3.fastq.gz
+    path "trimmed/*.trimmed.R*.fastq.gz", emit: trimmed_fastq
+    path "trimmed/*.trimmed.R*.fastp.json"
+    path "trimmed/*.trimmed.R*.fastp.html"
 
+    script:
+    def stem = fastq.baseName.replaceFirst(/\.fastq$/, '')
+    def outStem = stem
+        .replaceFirst(/\.R([123])$/, '.trimmed.R$1')
+        .replaceFirst(/_R([123])$/, '_trimmed.R$1')
     """
     mkdir -p trimmed
     fastp \\
       -i ${fastq} \\
-      -o trimmed/${fastq.simpleName}.trimmed.fastq.gz \\
+      -o trimmed/${outStem}.fastq.gz \\
       -w ${task.cpus} \\
-      -j trimmed/${fastq.simpleName}.fastp.json \\
-      -h trimmed/${fastq.simpleName}.fastp.html
+      -j trimmed/${outStem}.fastp.json \\
+      -h trimmed/${outStem}.fastp.html
     """
 }
 
 process FASTQC_TRIMMED {
     tag { file(fastq).name }
 
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
     input:
     path fastq
 
     output:
-    path "fastqc_trimmed/${fastq.simpleName}_fastqc.*", emit: trimmed_reports
+    // Accept any FastQC-style output for trimmed reads
+    path "fastqc_trimmed/*_fastqc.*", emit: trimmed_reports
 
     """
+    # Skip empty trimmed FASTQs to avoid FastQC gzip errors
+    if [ ! -s "${fastq}" ]; then
+      echo "Skipping FastQC on empty FASTQ: ${fastq}" >&2
+      exit 0
+    fi
+
     mkdir -p fastqc_trimmed
     fastqc -o fastqc_trimmed -f fastq ${fastq}
     """
@@ -141,38 +161,51 @@ process FASTQC_TRIMMED {
 process POLYT_FILTER {
     tag { file(r3_fastq).name }
 
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
     input:
-    path r3_fastq
+    tuple path(r1_fastq), path(r2_fastq), path(r3_fastq)
 
     output:
-    path "polyt_filtered/*", emit: polyt_outputs
+    // Emit individual Poly-T–filtered FASTQs (matched + noPolyT) for downstream use
+    path "polyt_filtered/*.fastq.gz", emit: polyt_outputs
 
     """
     mkdir -p polyt_filtered
-    bash PolyT_cutadapt.sh ${r3_fastq}
+    bash "${projectDir}/PolyT_cutadapt.sh" \\
+      ${r1_fastq} \\
+      ${r2_fastq} \\
+      ${r3_fastq} \\
+      polyt_filtered
     """
 }
 
 process ADD_R2_BARCODES_TO_R3 {
     tag { file(r3_fastq).name }
 
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
     input:
     tuple path(r2_fastq), path(r3_fastq)
 
     output:
-    path "withBarcodes_*", emit: r3_with_barcodes
+    path "trimmed/withBarcodes_*", emit: r3_with_barcodes
 
     """
-    python Read3_Barcode_Addition.py \\
+    mkdir -p trimmed
+    python "${projectDir}/Read3_Barcode_Addition.py" \\
       -r3 ${r3_fastq} \\
       -r2 ${r2_fastq} \\
       -bc ${params.bc_coords} \\
       -umi 0-${params.umi_len}
+    mv withBarcodes_* trimmed/
     """
 }
 
 process DETERMINE_READ_LENGTH {
     tag { file(r1_fastq).name }
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
     path r1_fastq
@@ -181,18 +214,41 @@ process DETERMINE_READ_LENGTH {
     path "read_length.txt", emit: read_length
 
     """
-    # Determine read length from the second line of the FASTQ file
-    len=$(zcat ${r1_fastq} 2>/dev/null | sed -n '2p' | awk '{print length($0)}' || \\
-         sed -n '2p' ${r1_fastq} | awk '{print length($0)}')
-    echo ${len} > read_length.txt
+    # Determine read length from the second FASTQ line (gzip-safe, platform-independent)
+    python - "${r1_fastq}" > read_length.txt <<'PY'
+import gzip
+import sys
+
+path = sys.argv[1]
+
+def read_second_line(handle):
+    _header = handle.readline()
+    seq = handle.readline()
+    return seq.rstrip("\\n\\r")
+
+seq = ""
+if path.endswith(".gz"):
+    with gzip.open(path, "rt") as f:
+        seq = read_second_line(f)
+else:
+    with open(path, "rt") as f:
+        seq = read_second_line(f)
+
+if not seq:
+    raise SystemExit(f"Failed to determine read length from {path}")
+
+print(len(seq))
+PY
     """
 }
 
 process STAR_INDEX {
     tag { params.species_model }
 
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
     input:
-    path read_length_file
+    tuple path(read_length_file), path(barcoded_r3_dependency)
 
     output:
     path "STAR_index_*", emit: star_index
@@ -205,21 +261,21 @@ process STAR_INDEX {
         switch (params.species_model) {
             case 'mouse':
                 [
-                  "${params.genomes_dir}/GRCm39/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz",
-                  "${params.gtf_dir}/Mus_musculus/Mus_musculus.GRCm39.111.gtf.gz",
+                  "${projectDir}/${params.genomes_dir}/GRCm39/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz",
+                  "${projectDir}/${params.gtf_dir}/Mus_musculus/Mus_musculus.GRCm39.111.gtf.gz",
                   "STAR_index_mouse${readLen}bp"
                 ]
             case 'hybrid':
                 [
-                  "${params.genomes_dir}/hybrid/hybrid_human_mouse.fa.gz",
-                  "${params.gtf_dir}/hybrid/hybrid_human_mouse.gtf.gz",
+                  "${projectDir}/${params.genomes_dir}/hybrid/hybrid_human_mouse.fa.gz",
+                  "${projectDir}/${params.gtf_dir}/hybrid/hybrid_human_mouse.gtf.gz",
                   "STAR_index_hybrid${readLen}bp"
                 ]
             case 'human':
             default:
                 [
-                  "${params.genomes_dir}/GRCh38/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz",
-                  "${params.gtf_dir}/Homo_sapiens/Homo_sapiens.GRCh38.111.gtf.gz",
+                  "${projectDir}/${params.genomes_dir}/GRCh38/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz",
+                  "${projectDir}/${params.gtf_dir}/Homo_sapiens/Homo_sapiens.GRCh38.111.gtf.gz",
                   "STAR_index_human${readLen}bp"
                 ]
         }
@@ -227,17 +283,33 @@ process STAR_INDEX {
 
     """
     mkdir -p ${indexDir}
+
+    # STAR genomeGenerate expects an uncompressed FASTA (and works best with plain-text GTF).
+    if [[ "${genomeFasta}" == *.gz ]]; then
+      gzip -dc "${genomeFasta}" > genome.fa
+    else
+      ln -sf "${genomeFasta}" genome.fa
+    fi
+
+    if [[ "${gtfFile}" == *.gz ]]; then
+      gzip -dc "${gtfFile}" > annotations.gtf
+    else
+      ln -sf "${gtfFile}" annotations.gtf
+    fi
+
     STAR --runMode genomeGenerate \\
          --runThreadN ${task.cpus} \\
          --genomeDir ${indexDir} \\
-         --genomeFastaFiles ${genomeFasta} \\
-         --sjdbGTFfile ${gtfFile} \\
+         --genomeFastaFiles genome.fa \\
+         --sjdbGTFfile annotations.gtf \\
          --sjdbOverhang ${overhang}
     """
 }
 
 process STARSOLO_SINGLE {
     tag { sample_id }
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
     tuple val(sample_id), path(r1_fastq), path(r3_with_barcodes), path(star_index_dir)
@@ -268,6 +340,8 @@ process STARSOLO_SINGLE {
 process KNEE_PLOT {
     tag { sample_id }
 
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
     input:
     tuple val(sample_id), path(starsolo_dir)
 
@@ -276,23 +350,36 @@ process KNEE_PLOT {
 
     """
     GENEFULL_DIR="${starsolo_dir}/Solo.out/GeneFull"
-    SUMMARY_CSV="${GENEFULL_DIR}/Summary.csv"
+    SUMMARY_CSV="\${GENEFULL_DIR}/Summary.csv"
 
-    if [ ! -f "${SUMMARY_CSV}" ]; then
-      echo "Summary.csv not found for sample ${sample_id} at ${SUMMARY_CSV}" >&2
+    if [ ! -f "\${SUMMARY_CSV}" ]; then
+      echo "Summary.csv not found for sample ${sample_id} at \${SUMMARY_CSV}" >&2
       exit 1
     fi
 
-    EST=$(awk -F',' 'BEGIN{OFS=","} $1 ~ /^Estimated Number of Cells/ {gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' "${SUMMARY_CSV}")
+    # Extract "Estimated Number of Cells" (2nd CSV column) without awk regex literals (/.../)
+    EST=\$(python - "\${SUMMARY_CSV}" <<'PY'
+import csv, sys
+path = sys.argv[1]
+with open(path, newline="") as f:
+    for row in csv.reader(f):
+        if not row:
+            continue
+        if row[0].strip() == "Estimated Number of Cells":
+            print((row[1] if len(row) > 1 else "").strip())
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+    )
 
-    if [ -z "${EST}" ]; then
-      echo "Could not extract Estimated Number of Cells from ${SUMMARY_CSV}" >&2
+    if [ -z "\${EST}" ]; then
+      echo "Could not extract Estimated Number of Cells from \${SUMMARY_CSV}" >&2
       exit 1
     fi
 
     python "${projectDir}/Visualization_scripts/Knee_plot.py" \\
-      --genefull-dir "${GENEFULL_DIR}" \\
-      --estimated-cells "${EST}" \\
+      --genefull-dir "\${GENEFULL_DIR}" \\
+      --estimated-cells "\${EST}" \\
       --output "STARsolo/${sample_id}/${sample_id}_knee_plot.png"
     """
 }
@@ -459,133 +546,131 @@ process STARSOLO_PAIRED {
 workflow {
     main:
     def ch_input_fastq = ch_raw_fastq
-
-    if( !params.skip_demux ) {
-        DEMULTIPLEX_PLACEHOLDER(ch_input_fastq)
-        ch_input_fastq = DEMULTIPLEX_PLACEHOLDER.out.demuxed_fastq
-    } else {
-        log.info "Skipping demultiplexing step (using input FASTQs as already demultiplexed)."
-    }
+    DEMULTIPLEX_PLACEHOLDER(ch_input_fastq)
+    ch_input_fastq = DEMULTIPLEX_PLACEHOLDER.out.demuxed_fastq
 
     // FastQC on raw (or demuxed) FASTQs
     FASTQC_RAW(ch_input_fastq)
 
-    // Optional Poly-T filtering on R3 (UMI+PolyT+cDNA) FASTQs
-    if( !params.skip_polyt ) {
-        // Assumes that after demultiplexing you have three FASTQs per sample:
-        //  R1 = cDNA, R2 = barcodes+linkers, R3 = UMI + PolyT + cDNA
-        // and that R3 files are named with '_R3' in the filename.
-        Channel
-            .fromPath("demux/*_R3*.fastq.gz", checkIfExists: false)
-            .tap { ch ->
-                if( ch.empty ) log.warn "No R3 FASTQ files found in demux/ for Poly-T filtering."
-            }
-            .set { ch_r3_for_polyt }
+    // Mandatory Poly-T filtering on R3 (UMI+PolyT+cDNA) FASTQs and downstream
+    // trimming + barcode prepending.
 
-        POLYT_FILTER(ch_r3_for_polyt)
-    } else {
-        log.info "Skipping Poly-T filtering step on R3."
+    // Build R1/R2/R3 triplets directly from DEMULTIPLEX_PLACEHOLDER outputs.
+    // This avoids race/static-glob issues from Channel.fromPath when running in one workflow.
+    def ch_r1_demux = ch_input_fastq
+        .filter { f -> f.name.contains('_R1') }
+        .map { f -> tuple(f.baseName.replaceFirst('_R1',''), f) }
+
+    def ch_r2_demux = ch_input_fastq
+        .filter { f -> f.name.contains('_R2') }
+        .map { f -> tuple(f.baseName.replaceFirst('_R2',''), f) }
+
+    def ch_r3_demux = ch_input_fastq
+        .filter { f -> f.name.contains('_R3') }
+        .map { f -> tuple(f.baseName.replaceFirst('_R3',''), f) }
+
+    def ch_r1_r2_r3_for_polyt = ch_r1_demux
+        .join(ch_r2_demux)
+        .join(ch_r3_demux)
+        .map { sample_id, r1, r2, r3 -> tuple(r1, r2, r3) }
+        .ifEmpty {
+            log.warn "No R1/R2/R3 FASTQ triplets found in demux/ for Poly-T filtering."
+            Channel.empty()
+        }
+
+    // Run Poly-T filtering and capture its FASTQ outputs
+    def poly_ch = POLYT_FILTER(ch_r1_r2_r3_for_polyt)
+    // Expand wildcard output collections into one FASTQ path per emission.
+    def ch_polyt_fastq = poly_ch.polyt_outputs.flatten()
+
+    // Trim ONLY Poly-T–matched R1 and R3 (R2 stays untrimmed)
+    def ch_for_trim = ch_polyt_fastq.filter { f ->
+        def n = f.name
+        n.contains('matched.R1') || n.contains('matched.R3')
     }
 
-    // Decide which R2/R3 FASTQs to use for barcode prepending:
-    //  - If trimming ran: always use trimmed R2/R3 (these will be from Poly-T–filtered or demux, depending on skip_polyt).
-    //  - Else if Poly-T filtering ran: use Poly-T–filtered R2/R3.
-    //  - Else: fall back to demultiplexed R2/R3.
-    def ch_r2_source
-    def ch_r3_source
+    TRIM_FASTQ(ch_for_trim)
+    FASTQC_TRIMMED(TRIM_FASTQ.out.trimmed_fastq)
 
-    if( !params.skip_trim ) {
-        log.info "Using trimmed R2/R3 for barcode prepending."
-        ch_r2_source = Channel.fromPath("trimmed/*_R2*.trimmed.fastq.gz", checkIfExists: false)
-        ch_r3_source = Channel.fromPath("trimmed/*_R3*.trimmed.fastq.gz", checkIfExists: false)
-    } else if( !params.skip_polyt ) {
-        log.info "Using Poly-T–filtered R2/R3 for barcode prepending."
-        ch_r2_source = Channel.fromPath("polyt_filtered/*_R2*.fastq.gz", checkIfExists: false)
-        ch_r3_source = Channel.fromPath("polyt_filtered/*_R3*.fastq.gz", checkIfExists: false)
-    } else {
-        log.info "Using demultiplexed R2/R3 for barcode prepending."
-        ch_r2_source = Channel.fromPath("demux/*_R2*.fastq.gz", checkIfExists: false)
-        ch_r3_source = Channel.fromPath("demux/*_R3*.fastq.gz", checkIfExists: false)
-    }
+    // Build trimmed R1 channels for downstream consumers
+    def ch_trimmed_r1_for_index = TRIM_FASTQ.out.trimmed_fastq
+        .filter { it.name.contains('.trimmed.R1.') }
+        .take(1)
+
+    def ch_trimmed_r1_for_single_align = TRIM_FASTQ.out.trimmed_fastq
+        .filter { it.name.contains('.trimmed.R1.') }
+
+    def ch_trimmed_r1_for_paired_align = TRIM_FASTQ.out.trimmed_fastq
+        .filter { it.name.contains('.trimmed.R1.') }
+
+    // Use Poly-T–matched R2 and trimmed R3 for barcode prepending
+    def ch_r2_source = ch_polyt_fastq.filter { it.name.contains('matched.R2') }
+    def ch_r3_source = TRIM_FASTQ.out.trimmed_fastq.filter { it.name.contains('.trimmed.R3.') }
 
     ch_r2_source
-        .map { r2 -> tuple(r2.baseName.replaceFirst('_R2',''), r2) }
+        .map { r2 ->
+            // Normalize to a shared sample id across:
+            //  - sampleA.matched.R2.fastq.gz
+            //  - sampleA.matched.trimmed.R3.fastq.gz
+            def sid = r2.name
+                .replaceFirst(/\.matched\.R2\.fastq\.gz$/, '')
+                .replaceFirst(/_R2\.fastq\.gz$/, '')
+            tuple(sid, r2)
+        }
         .join(
-            ch_r3_source.map { r3 -> tuple(r3.baseName.replaceFirst('_R3',''), r3) }
+            ch_r3_source.map { r3 ->
+                def sid = r3.name
+                    .replaceFirst(/\.matched\.trimmed\.R3\.fastq\.gz$/, '')
+                    .replaceFirst(/\.matched\.R3\.fastq(?:\.trimmed\.fastq)?\.gz$/, '')
+                    .replaceFirst(/_trimmed\.R3\.fastq\.gz$/, '')
+                    .replaceFirst(/_R3(?:\.trimmed)?\.fastq\.gz$/, '')
+                tuple(sid, r3)
+            }
         )
         .map { sample_id, r2, r3 -> tuple(r2, r3) }
         .set { ch_r2_r3_pairs }
 
     ADD_R2_BARCODES_TO_R3(ch_r2_r3_pairs)
 
-    // Decide which FASTQs to trim:
-    //  - If Poly-T filtering ran: trim the Poly-T–filtered FASTQs (R1/R2/R3).
-    //  - Else: trim the demultiplexed FASTQs.
-    def ch_for_trim
-    if( !params.skip_polyt ) {
-        log.info "Trimming Poly-T–filtered FASTQs (R1/R2/R3)."
-        ch_for_trim = Channel.fromPath("polyt_filtered/*.fastq.gz", checkIfExists: false)
-    } else {
-        log.info "Trimming demultiplexed FASTQs (R1/R2/R3)."
-        ch_for_trim = Channel.fromPath("demux/*.fastq.gz", checkIfExists: false)
-    }
-
-    // Optional trimming, then FastQC on trimmed FASTQs
-    if( !params.skip_trim ) {
-        TRIM_FASTQ(ch_for_trim)
-        FASTQC_TRIMMED(TRIM_FASTQ.out.trimmed_fastq)
-    } else {
-        log.info "Skipping adapter/quality trimming."
-    }
-
-    // Determine read length from R1 to drive STAR index sjdbOverhang
-    def ch_r1_for_index
-    if( !params.skip_trim ) {
-        log.info "Using trimmed R1 to determine read length for STAR index."
-        ch_r1_for_index = Channel.fromPath("trimmed/*_R1*.trimmed.fastq.gz", checkIfExists: false)
-    } else if( !params.skip_polyt ) {
-        log.info "Using Poly-T–filtered R1 to determine read length for STAR index."
-        ch_r1_for_index = Channel.fromPath("polyt_filtered/*_R1*.fastq.gz", checkIfExists: false)
-    } else {
-        log.info "Using demultiplexed R1 to determine read length for STAR index."
-        ch_r1_for_index = Channel.fromPath("demux/*_R1*.fastq.gz", checkIfExists: false)
-    }
+    // Determine read length from trimmed R1 to drive STAR index sjdbOverhang
+    log.info "Using trimmed R1 to determine read length for STAR index."
+    def ch_r1_for_index = ch_trimmed_r1_for_index
 
     ch_r1_for_index
         .take(1)
         .set { ch_r1_single }
 
     DETERMINE_READ_LENGTH(ch_r1_single)
-    STAR_INDEX(DETERMINE_READ_LENGTH.out.read_length)
+    DETERMINE_READ_LENGTH.out.read_length
+        .combine(ADD_R2_BARCODES_TO_R3.out.r3_with_barcodes.take(1))
+        .set { ch_star_index_input }
+    STAR_INDEX(ch_star_index_input)
 
     // Single-end STARsolo alignment using (trimmed, Poly-T-matched) R1 and withBarcodes_R3 when available
     if( params.star_alignment_mode == 'single' ) {
         log.info "Running single-end STARsolo alignment."
 
-        // Choose R1 source for alignment:
-        //  - If trimming ran: use trimmed R1.
-        //  - Else if Poly-T filtering ran: use Poly-T–filtered R1.
-        //  - Else: use demultiplexed R1.
-        def ch_r1_source_for_align
-        if( !params.skip_trim ) {
-            log.info "Using trimmed R1 for alignment."
-            ch_r1_source_for_align = Channel.fromPath("trimmed/*_R1*.trimmed.fastq.gz", checkIfExists: false)
-        } else if( !params.skip_polyt ) {
-            log.info "Using Poly-T–filtered R1 for alignment."
-            ch_r1_source_for_align = Channel.fromPath("polyt_filtered/*_R1*.fastq.gz", checkIfExists: false)
-        } else {
-            log.info "Using demultiplexed R1 for alignment."
-            ch_r1_source_for_align = Channel.fromPath("demux/*_R1*.fastq.gz", checkIfExists: false)
-        }
+        // Always use trimmed R1 for alignment.
+        log.info "Using trimmed R1 for alignment."
+        def ch_r1_source_for_align = ch_trimmed_r1_for_single_align
 
         ch_r1_source_for_align
-            .map { r1 -> tuple(r1.baseName.replaceFirst('_R1',''), r1) }
+            .map { r1 ->
+                def sample = r1.name
+                    .replaceFirst(/\.matched\.trimmed\.R1\.fastq\.gz$/, '')
+                    .replaceFirst(/_trimmed\.R1\.fastq\.gz$/, '')
+                tuple(sample, r1)
+            }
             .set { ch_r1_for_align }
 
         ADD_R2_BARCODES_TO_R3.out.r3_with_barcodes
             .map { r3 -> 
                 def bn = r3.baseName.replaceFirst('withBarcodes_','')
-                def sample = bn.replaceFirst('_R3','')
+                def sample = bn
+                    .replaceFirst(/\.matched\.trimmed\.R3\.fastq$/, '')
+                    .replaceFirst(/_trimmed\.R3\.fastq$/, '')
+                    .replaceFirst(/\.matched\.R3\.fastq$/, '')
+                    .replaceFirst(/_R3\.fastq$/, '')
                 tuple(sample, r3)
             }
             .set { ch_r3_barcode }
@@ -593,7 +678,8 @@ workflow {
         ch_r1_for_align
             .join(ch_r3_barcode)
             .map { sample_id, r1, r3 -> tuple(sample_id, r1, r3) }
-            .combine(STAR_INDEX.out.star_index) { triple, idx ->
+            .combine(STAR_INDEX.out.star_index)
+            .map { triple, idx ->
                 def (sample_id, r1, r3) = triple
                 tuple(sample_id, r1, r3, idx)
             }
@@ -619,28 +705,28 @@ workflow {
     } else if( params.star_alignment_mode == 'paired' ) {
         log.info "Running paired-end barcode matching; STARsolo paired-end alignment is currently a placeholder."
 
-        // Choose R1 source for paired-end alignment (same logic as single-end)
-        def ch_r1_source_for_align_paired
-        if( !params.skip_trim ) {
-            log.info "Using trimmed R1 for paired alignment."
-            ch_r1_source_for_align_paired = Channel.fromPath("trimmed/*_R1*.trimmed.fastq.gz", checkIfExists: false)
-        } else if( !params.skip_polyt ) {
-            log.info "Using Poly-T–filtered R1 for paired alignment."
-            ch_r1_source_for_align_paired = Channel.fromPath("polyt_filtered/*_R1*.fastq.gz", checkIfExists: false)
-        } else {
-            log.info "Using demultiplexed R1 for paired alignment."
-            ch_r1_source_for_align_paired = Channel.fromPath("demux/*_R1*.fastq.gz", checkIfExists: false)
-        }
+        // Always use trimmed R1 for paired-end alignment (to match single-end path)
+        log.info "Using trimmed R1 for paired alignment."
+        def ch_r1_source_for_align_paired = ch_trimmed_r1_for_paired_align
 
         ch_r1_source_for_align_paired
-            .map { r1 -> tuple(r1.baseName.replaceFirst('_R1',''), r1) }
+            .map { r1 ->
+                def sample = r1.name
+                    .replaceFirst(/\.matched\.trimmed\.R1\.fastq\.gz$/, '')
+                    .replaceFirst(/_trimmed\.R1\.fastq\.gz$/, '')
+                tuple(sample, r1)
+            }
             .set { ch_r1_for_paired }
 
         // Use withBarcodes_R3 output as the R3 source for matching
         ADD_R2_BARCODES_TO_R3.out.r3_with_barcodes
             .map { r3 ->
                 def bn = r3.baseName.replaceFirst('withBarcodes_','')
-                def sample = bn.replaceFirst('_R3','')
+                def sample = bn
+                    .replaceFirst(/\.matched\.trimmed\.R3\.fastq$/, '')
+                    .replaceFirst(/_trimmed\.R3\.fastq$/, '')
+                    .replaceFirst(/\.matched\.R3\.fastq$/, '')
+                    .replaceFirst(/_R3\.fastq$/, '')
                 tuple(sample, r3)
             }
             .set { ch_r3_barcode_for_paired }
@@ -671,7 +757,8 @@ workflow {
         def ch_starsolo_paired = ch_r1_paired_by_sample
             .join(ch_r3_paired_by_sample)
             .map { sample_id, r1p, r3p -> tuple(sample_id, r1p, r3p) }
-            .combine(STAR_INDEX.out.star_index) { triple, idx ->
+            .combine(STAR_INDEX.out.star_index)
+            .map { triple, idx ->
                 def (sample_id, r1p, r3p) = triple
                 tuple(sample_id, r1p, r3p, idx)
             }
@@ -689,7 +776,8 @@ workflow {
             .set { ch_whitelist_broadcast }
 
         ch_starsolo_paired
-            .combine(ch_whitelist_broadcast) { triple, wl ->
+            .combine(ch_whitelist_broadcast)
+            .map { triple, wl ->
                 def (sample_id, r1p, r3p, idx) = triple
                 tuple(sample_id, r1p, r3p, idx, wl)
             }

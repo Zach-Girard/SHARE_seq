@@ -4,7 +4,19 @@
 import argparse
 import os
 import gzip
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    # Fallback when tqdm is unavailable in the active environment.
+    class tqdm:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+        def update(self, n=1):
+            pass
 
 
 # For parsing the input barcode positions

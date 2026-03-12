@@ -13,7 +13,7 @@ dependencies:
   - fastp
   - fastqc
   - star=2.7.11b
-  # add more bioinformatics tools here as your workflow grows, e.g.:
-  # - samtools
-  # - bwa
-  # - bedtools
+  - cutadapt
+  - tqdm
+  - samtools
+  - bedtools
