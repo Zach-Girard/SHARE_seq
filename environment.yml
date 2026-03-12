@@ -1,0 +1,19 @@
+name: nextflow-master
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - openjdk=17
+  - nextflow
+  - curl
+  - pigz
+  - fastp
+  - fastqc
+  - star=2.7.11b
+  # add more bioinformatics tools here as your workflow grows, e.g.:
+  # - samtools
+  # - bwa
+  # - bedtools
