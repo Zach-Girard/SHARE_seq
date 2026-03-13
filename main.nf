@@ -280,6 +280,10 @@ process STAR_INDEX {
                 ]
         }
     }()
+    def localStarArgs = (task.executor?.toString() == 'local')
+        ? "         --limitGenomeGenerateRAM 15000000000 \\\\\n" +
+          "         --genomeSAsparseD 2 \\\\\n"
+        : ""
 
     """
     set -euo pipefail
@@ -339,6 +343,7 @@ PY
          --genomeDir ${indexDir} \\
          --genomeFastaFiles genome.fa \\
          --sjdbGTFfile annotations.gtf \\
+${localStarArgs}
          --sjdbOverhang ${overhang}
 
     # Save fingerprint in generated index and mirror index to project root for reuse.
