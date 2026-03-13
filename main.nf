@@ -282,6 +282,43 @@ process STAR_INDEX {
     }()
 
     """
+    set -euo pipefail
+
+    # Build a fingerprint so we can safely reuse an existing index only when
+    # species/read length/genome fasta/GTF are unchanged.
+    python - "${genomeFasta}" "${gtfFile}" "${params.species_model}" "${readLen}" > current_index_fingerprint.json <<'PY'
+import json
+import os
+import sys
+
+genome, gtf, species, read_len = sys.argv[1:5]
+
+def file_meta(path):
+    st = os.stat(path)
+    return {
+        "path": os.path.realpath(path),
+        "size": st.st_size,
+        "mtime": int(st.st_mtime),
+    }
+
+fp = {
+    "species_model": species,
+    "read_length": int(read_len),
+    "genome_fasta": file_meta(genome),
+    "gtf": file_meta(gtf),
+}
+print(json.dumps(fp, sort_keys=True))
+PY
+
+    REUSE_DIR="${projectDir}/${indexDir}"
+    REUSE_FP="\${REUSE_DIR}/.index_fingerprint.json"
+
+    if [[ -d "\${REUSE_DIR}" && -f "\${REUSE_FP}" ]] && cmp -s current_index_fingerprint.json "\${REUSE_FP}"; then
+      echo "Reusing existing STAR index: \${REUSE_DIR}"
+      ln -s "\${REUSE_DIR}" "${indexDir}"
+      exit 0
+    fi
+
     mkdir -p ${indexDir}
 
     # STAR genomeGenerate expects an uncompressed FASTA (and works best with plain-text GTF).
@@ -303,6 +340,13 @@ process STAR_INDEX {
          --genomeFastaFiles genome.fa \\
          --sjdbGTFfile annotations.gtf \\
          --sjdbOverhang ${overhang}
+
+    # Save fingerprint in generated index and mirror index to project root for reuse.
+    cp current_index_fingerprint.json "${indexDir}/.index_fingerprint.json"
+    TMP_REUSE_DIR="\${REUSE_DIR}.tmp"
+    rm -rf "\${TMP_REUSE_DIR}" "\${REUSE_DIR}"
+    cp -R "${indexDir}" "\${TMP_REUSE_DIR}"
+    mv "\${TMP_REUSE_DIR}" "\${REUSE_DIR}"
     """
 }
 
