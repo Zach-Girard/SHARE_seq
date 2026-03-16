@@ -106,38 +106,58 @@ To use **your own 8bp barcode file**:
 
 
 
-### Running on an LSF-based HPC cluster
+### Running the pipeline
 
-This project is designed to run on LSF clusters using the `lsf` profile in `nextflow.config`.
+The pipeline supports two execution modes via profiles in `nextflow.config`:
 
-- **Recommended defaults** (tune to your site):
-  - **Queue**: `general`.
-  - **Resources per process**: `4` CPUs, `16 GB` RAM.
-  - **Work directory**: `LSF_SCRATCH` if defined, otherwise `/scratch/$USER/nextflow_work`.
+| Profile   | Executor | Use case                          | Resources (default) |
+|-----------|----------|------------------------------------|---------------------|
+| `standard`| LSF      | Default; for HPC clusters         | 8 CPUs, 50 GB       |
+| `local`   | local    | Workstation/laptop testing         | 4 CPUs, 16 GB       |
+| `lsf`     | LSF      | Explicit LSF with queue/workDir    | 8 CPUs, 50 GB       |
+
+**Run locally** (e.g. on a Mac or workstation without LSF):
+
+```bash
+nextflow run main.nf -profile local
+```
+
+**Run on an LSF-based HPC cluster** (default):
+
+```bash
+nextflow run main.nf
+# or explicitly:
+nextflow run main.nf -profile lsf
+```
+
+- **LSF defaults** (tune to your site in `nextflow.config`):
+  - **Queue**: `general`
+  - **Resources per process**: 8 CPUs, 50 GB RAM
+  - **Work directory**: `LSF_SCRATCH` if defined, otherwise `/scratch/$USER/nextflow_work`
 
 **One-time environment setup on the HPC:**
 
 1. Load Conda (or Mamba) and create the environment:
-```
-bash
-module load miniconda            # or your site's preferred module
-cd /path/to/NextFlow
-conda env create -f environment.yml
-```
 
-2. Make sure nextflow is available:
-Either via a site module (e.g. module load nextflow), or
-Installed in your Conda environment (already included in `environment.yml`).
-Submitting a run via LSF (bsub):
+   ```bash
+   module load miniconda            # or your site's preferred module
+   cd /path/to/NextFlow
+   conda env create -f environment.yml
+   ```
 
-Create a simple submission script, for example `run_shareseq.lsf`:
-```
+2. Ensure Nextflow is available (e.g. `module load nextflow` or via Conda in `environment.yml`).
+
+**Submitting a run via LSF (bsub):**
+
+Create a submission script, e.g. `run_shareseq.lsf`:
+
+```bash
 #!/bin/bash
 #BSUB -J shareseq
 #BSUB -q general
-#BSUB -n 4
-#BSUB -M 16000
-#BSUB -R "rusage[mem=16000]"
+#BSUB -n 8
+#BSUB -M 51200
+#BSUB -R "rusage[mem=51200]"
 #BSUB -oo shareseq_%J.out
 
 module load miniconda
@@ -147,17 +167,18 @@ cd $LS_SUBCWD
 
 nextflow run main.nf -profile lsf \
   --species_model human \
-  --star_alignment_mode single 
+  --star_alignment_mode single
 ```
 
 Submit with:
-```
+
+```bash
 bsub < run_shareseq.lsf
 ```
 
-Hybrid / paired-end examples:
+**Hybrid / paired-end examples:**
 
-```
+```bash
 nextflow run main.nf -profile lsf \
   --species_model hybrid \
   --star_alignment_mode paired \
@@ -165,11 +186,9 @@ nextflow run main.nf -profile lsf \
   --barcodes_rc true
 ```
 
-Checklist before running on the cluster:
+**Checklist before running:**
 
-`RAW_FASTQ/` contains your raw, undemultiplexed FASTQs.
-`Genomes/` and `GTF/` have been prepared using:
-`Genomes/prepare_genomes.sh` (or your customized version).
-`GTF/download_gtf.sh` (or your customized version).
-`barcodes_8bp_file` and `barcodes_rc` are set correctly for your barcode scheme.
+- `RAW_FASTQ/` (or `params.raw_fastq`) contains your raw, undemultiplexed FASTQs.
+- `Genomes/` and `GTF/` have been prepared using `Genomes/prepare_genomes.sh` and `GTF/download_gtf.sh`.
+- `barcodes_8bp_file` and `barcodes_rc` are set correctly for your barcode scheme.
 
