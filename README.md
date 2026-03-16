@@ -1,6 +1,23 @@
 ## NextFlow project
 
-This repository contains a Nextflow-based workflow and supporting resources.
+This repository contains a Nextflow-based SHARE-seq workflow and supporting resources.
+
+### Pipeline overview
+
+This workflow implements an end-to-end SHARE-seq processing pipeline:
+
+- **Input discovery**: finds raw FASTQs under `params.raw_fastq` (default `RAW_FASTQ/` or `demux/`).
+- **Demultiplexing** (`DEMULTIPLEX_PLACEHOLDER`): currently a pass-through copy into `demux/`, designed to be replaced by a real SHARE-seq demux script.
+- **Raw QC** (`FASTQC_RAW`): runs FastQC on each raw/demuxed FASTQ into `fastqc_raw/`.
+- **Poly-T filtering** (`POLYT_FILTER`): splits R1/R2/R3 into `matched` vs `noPolyT` buckets under `polyt_filtered/`.
+- **Trimming** (`TRIM_FASTQ`): trims Poly-T–matched R1/R3 only, producing `trimmed/` FASTQs with names like `sample.matched.trimmed.R1.fastq.gz` and `sample.matched.trimmed.R3.fastq.gz`, plus fastp reports.
+- **Trimmed QC** (`FASTQC_TRIMMED`): runs FastQC on all trimmed FASTQs into `fastqc_trimmed/`.
+- **Barcode prepending** (`ADD_R2_BARCODES_TO_R3`): extracts three barcodes from R2 (configured by `bc_coords`) and UMIs from R3 (`umi_len`), prepends them to R3, and writes `withBarcodes_*` into `trimmed/`.
+- **STAR genome index** (`STAR_INDEX`): builds or reuses a STAR genome index per `species_model` and read length, using fingerprinting (species, read length, genome FASTA, GTF) to avoid redundant rebuilds.
+- **STARsolo alignment** (`STARSOLO_SINGLE` / `STARSOLO_PAIRED`): runs STARsolo on trimmed R1 + withBarcodes_R3, producing per-sample `STARsolo/<sample>/` (and optionally `STARsolo_paired/<sample>/`) outputs.
+- **Downstream QC** (`KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES`): generates knee plots and, for `species_model = hybrid`, barnyard collision plots and species-purity split summaries from STARsolo GeneFull outputs.
+
+See `main.nf` for exact channel wiring and `nextflow.config` for tunable parameters.
 
 ### Environment
 
