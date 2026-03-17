@@ -31,7 +31,7 @@ def load_barcodes(path: Path, n: int = 12):
         barcodes = [line.strip() for line in f if line.strip()]
     if len(barcodes) < n:
         raise RuntimeError(f"Need at least {n} barcodes in {path}, found {len(barcodes)}")
-    return barcodes[:n]
+    return barcodes
 
 
 def mutate_base(b: str) -> str:
@@ -74,14 +74,18 @@ def make_r2_seq(bc1: str, bc2: str, bc3: str, mismatch: bool = False) -> str:
     fillerD = "A"
 
     if mismatch:
-        # Introduce 1 mismatch into each 8 bp block
+        # Introduce 1 mismatch into exactly one of the 3 barcode blocks
         def mutate_block(bc):
             pos = random.randrange(len(bc))
             return bc[:pos] + mutate_base(bc[pos]) + bc[pos + 1 :]
 
-        bc1 = mutate_block(bc1)
-        bc2 = mutate_block(bc2)
-        bc3 = mutate_block(bc3)
+        which = random.choice([1, 2, 3])
+        if which == 1:
+            bc1 = mutate_block(bc1)
+        elif which == 2:
+            bc2 = mutate_block(bc2)
+        else:
+            bc3 = mutate_block(bc3)
 
     seq = fillerA + bc1 + fillerB + bc2 + fillerC + bc3 + fillerD
     assert len(seq) == 99, f"R2 sequence length is {len(seq)}, expected 99"
@@ -94,7 +98,7 @@ def main():
     demux_dir.mkdir(exist_ok=True)
 
     barcodes_path = base_dir / "barcodes_RC.txt"
-    bc_list = load_barcodes(barcodes_path, n=12)  # use more than 3 barcodes
+    bc_list = load_barcodes(barcodes_path, n=12)  # cycle through barcodes from file
 
     r1_path = demux_dir / "sampleA_R1.fastq.gz"
     r2_path = demux_dir / "sampleA_R2.fastq.gz"
@@ -124,7 +128,7 @@ def main():
             idx3 = (i * 5) % len(bc_list)
             bc1, bc2, bc3 = bc_list[idx1], bc_list[idx2], bc_list[idx3]
 
-            # Every 10th read: introduce mismatches in each block
+            # Every 10th read: introduce 1 mismatch in 1 random barcode block
             mismatch = (i % 10 == 0)
             seq_r2 = make_r2_seq(bc1, bc2, bc3, mismatch=mismatch)
             qual_r2 = "I" * len(seq_r2)
