@@ -8,7 +8,10 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")"
+WORKING_DIR="${LSB_SUBCWD:-$(pwd)}"
+cd "$WORKING_DIR"
+
+echo "Current execution directory: $(pwd)"
 
 mkdir -p GRCh38 GRCm39 hybrid
 
