@@ -5,16 +5,16 @@ Generate synthetic demultiplexed FASTQ files for testing the pipeline.
 
 Creates gzipped FASTQs in demux/ for a single sample 'sampleA':
 
-  - sampleA_R1.fastq.gz : 1000 reads, 30 bp cDNA
-  - sampleA_R2.fastq.gz : 1000 reads, 99 bp, with three 8 bp barcodes
+  - sampleA_R1.fastq.gz : 5000 reads, 30 bp cDNA
+  - sampleA_R2.fastq.gz : 5000 reads, 99 bp, with three 8 bp barcodes
                           inserted at 1-based positions:
                             * 15–22  (bc1)
                             * 53–60  (bc2)
                             * 91–98  (bc3)
-  - sampleA_R3.fastq.gz : 1000 reads, 30 bp:
+  - sampleA_R3.fastq.gz : 5000 reads, 30 bp:
                             * 10 bp UMI (pseudo-random)
-                            * 10 bp poly-T
-                            * 10 bp cDNA
+                            * 15 bp poly-T
+                            * 5 bp cDNA
 
 Barcodes are taken from barcodes_RC.txt in the project root.
 We cycle through many barcodes (not just the first 3), and every 10th
@@ -51,8 +51,8 @@ def make_r3_seq(i: int) -> str:
     # 10 bp UMI: pseudo-random but deterministic per read index
     random.seed(i)
     umi = "".join(random.choice("ACGT") for _ in range(10))
-    poly_t = "T" * 10
-    cdna = ("GCTAAGCT" * 3)[:10]
+    poly_t = "T" * 15
+    cdna = ("GCTAAGCT" * 3)[:5]
     return umi + poly_t + cdna  # length 30
 
 
@@ -99,7 +99,7 @@ def main():
     r2_path = demux_dir / "sampleA_R2.fastq.gz"
     r3_path = demux_dir / "sampleA_R3.fastq.gz"
 
-    n_reads = 1000
+    n_reads = 5000
 
     with gzip.open(r1_path, "wt") as r1_out, gzip.open(
         r2_path, "wt"
@@ -112,7 +112,7 @@ def main():
             qual_r1 = "I" * len(seq_r1)
             r1_out.write(f"@{read_id}\n{seq_r1}\n+\n{qual_r1}\n")
 
-            # R3: 10 bp UMI + 10 bp poly-T + 10 bp cDNA
+            # R3: 10 bp UMI + 15 bp poly-T + 5 bp cDNA
             seq_r3 = make_r3_seq(i)
             qual_r3 = "I" * len(seq_r3)
             r3_out.write(f"@{read_id}\n{seq_r3}\n+\n{qual_r3}\n")
@@ -130,9 +130,9 @@ def main():
             r2_out.write(f"@{read_id}\n{seq_r2}\n+\n{qual_r2}\n")
 
     print("Generated test FASTQs in demux/:")
-    print(f"  {r1_path} (1000 reads, 30 bp)")
-    print(f"  {r2_path} (1000 reads, 99 bp with barcodes at default positions)")
-    print(f"  {r3_path} (1000 reads, 30 bp: 10 bp UMI + 10 bp poly-T + 10 bp cDNA)")
+    print(f"  {r1_path} (5000 reads, 30 bp)")
+    print(f"  {r2_path} (5000 reads, 99 bp with barcodes at default positions)")
+    print(f"  {r3_path} (5000 reads, 30 bp: 10 bp UMI + 15 bp poly-T + 5 bp cDNA)")
 
 
 if __name__ == "__main__":
