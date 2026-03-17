@@ -8,7 +8,8 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")"
+WORKING_DIR="${LSB_SUBCWD:-$(pwd)}"
+cd "$WORKING_DIR"
 
 mkdir -p Homo_sapiens Mus_musculus hybrid
 
