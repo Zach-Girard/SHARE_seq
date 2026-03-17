@@ -37,7 +37,7 @@ conda --version
 From the project root:
 
 ```bash
-cd /Users/zgirard/Desktop/NextFlow
+cd /path/to/SHARE_seq
 conda env create -f environment.yml
 ```
 
@@ -49,7 +49,6 @@ Each time you work on this project:
 
 ```bash
 conda activate nextflow-master
-cd /Users/zgirard/Desktop/NextFlow
 ```
 
 You now have access to the tools defined in `environment.yml` (e.g. `nextflow`, `curl`, `pigz`, etc.).
