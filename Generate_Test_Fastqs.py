@@ -5,7 +5,7 @@ Generate synthetic demultiplexed FASTQ files for testing the pipeline.
 
 Creates gzipped FASTQs in demux/ for a single sample 'sampleA':
 
-  - sampleA_R1.fastq.gz : 5000 reads, 30 bp cDNA
+  - sampleA_R1.fastq.gz : 5000 reads, 30 bp random cDNA
   - sampleA_R2.fastq.gz : 5000 reads, 99 bp, with three 8 bp barcodes
                           inserted at 1-based positions:
                             * 15–22  (bc1)
@@ -42,9 +42,10 @@ def mutate_base(b: str) -> str:
     return random.choice(bases)
 
 
-def make_r1_seq() -> str:
-    # Simple, reproducible 30 bp cDNA pattern
-    return ("ACGTGCTA" * 4)[:30]
+def make_r1_seq(i: int) -> str:
+    # 30 bp cDNA: pseudo-random but deterministic per read index
+    random.seed(100000 + i)
+    return "".join(random.choice("ACGT") for _ in range(30))
 
 
 def make_r3_seq(i: int) -> str:
@@ -107,8 +108,8 @@ def main():
         for i in range(1, n_reads + 1):
             read_id = f"sampleA_read{i}"
 
-            # R1: 30 bp cDNA
-            seq_r1 = make_r1_seq()
+            # R1: 30 bp random cDNA
+            seq_r1 = make_r1_seq(i)
             qual_r1 = "I" * len(seq_r1)
             r1_out.write(f"@{read_id}\n{seq_r1}\n+\n{qual_r1}\n")
 
@@ -130,7 +131,7 @@ def main():
             r2_out.write(f"@{read_id}\n{seq_r2}\n+\n{qual_r2}\n")
 
     print("Generated test FASTQs in demux/:")
-    print(f"  {r1_path} (5000 reads, 30 bp)")
+    print(f"  {r1_path} (5000 reads, 30 bp random cDNA)")
     print(f"  {r2_path} (5000 reads, 99 bp with barcodes at default positions)")
     print(f"  {r3_path} (5000 reads, 30 bp: 10 bp UMI + 15 bp poly-T + 5 bp cDNA)")
 
