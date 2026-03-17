@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# LSF BSUB directives (used when submitting: bsub < prepare_genomes.sh)
+#BSUB -J prepare_genomes
+#BSUB -n 8
+#BSUB -R "rusage[mem=32GB]"
+#BSUB -oo prepare_genomes_%J.out
+#BSUB -eo prepare_genomes_%J.err
+
 set -euo pipefail
 
 cd "$(dirname "$0")"

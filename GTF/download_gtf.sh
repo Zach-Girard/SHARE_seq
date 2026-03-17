@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# LSF BSUB directives (used when submitting: bsub < download_gtf.sh)
+#BSUB -J download_gtf
+#BSUB -n 8
+#BSUB -R "rusage[mem=16GB]"
+#BSUB -oo download_gtf_%J.out
+#BSUB -eo download_gtf_%J.err
+
 set -euo pipefail
 
 cd "$(dirname "$0")"
