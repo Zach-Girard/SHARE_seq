@@ -280,10 +280,6 @@ process STAR_INDEX {
                 ]
         }
     }()
-    def localStarArgs = (task.executor?.toString() == 'local')
-        ? "         --limitGenomeGenerateRAM 15000000000 \\\\\n" +
-          "         --genomeSAsparseD 2 \\\\\n"
-        : ""
 
     """
     set -euo pipefail
@@ -343,7 +339,6 @@ PY
          --genomeDir ${indexDir} \\
          --genomeFastaFiles genome.fa \\
          --sjdbGTFfile annotations.gtf \\
-${localStarArgs}
          --sjdbOverhang ${overhang}
 
     # Save fingerprint in generated index and mirror index to project root for reuse.
@@ -598,6 +593,27 @@ workflow {
     DEMULTIPLEX_PLACEHOLDER(ch_input_fastq)
     ch_input_fastq = DEMULTIPLEX_PLACEHOLDER.out.demuxed_fastq
 
+    /*
+     * Normalize sample identifiers across different FASTQ naming conventions.
+     * This is critical because downstream `.join()` operations require exact key matches.
+     */
+    def normalizeSampleId = { String filenameOrBase ->
+        def s = filenameOrBase
+        // drop common FASTQ extensions
+        s = s.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, '')
+        // drop STARsolo/barcode-prefix artifacts
+        s = s.replaceFirst(/^withBarcodes_/, '')
+        // drop pipeline-generated tags
+        s = s.replaceAll(/(\.matched|\.trimmed|_trimmed)$/, '')
+        s = s.replaceAll(/(\.matched|\.trimmed|_trimmed)/, '')
+        // drop read designators (common Illumina + simpler forms)
+        s = s.replaceFirst(/_R[123](_\d+)?$/, '')
+        s = s.replaceFirst(/\.R[123]$/, '')
+        // drop residual lane/read counters sometimes left behind
+        s = s.replaceFirst(/_\d+$/, '')
+        return s
+    }
+
     // FastQC on raw (or demuxed) FASTQs
     FASTQC_RAW(ch_input_fastq)
 
@@ -705,21 +721,14 @@ workflow {
 
         ch_r1_source_for_align
             .map { r1 ->
-                def sample = r1.name
-                    .replaceFirst(/\.matched\.trimmed\.R1\.fastq\.gz$/, '')
-                    .replaceFirst(/_trimmed\.R1\.fastq\.gz$/, '')
+                def sample = normalizeSampleId(r1.name)
                 tuple(sample, r1)
             }
             .set { ch_r1_for_align }
 
         ADD_R2_BARCODES_TO_R3.out.r3_with_barcodes
             .map { r3 -> 
-                def bn = r3.baseName.replaceFirst('withBarcodes_','')
-                def sample = bn
-                    .replaceFirst(/\.matched\.trimmed\.R3\.fastq$/, '')
-                    .replaceFirst(/_trimmed\.R3\.fastq$/, '')
-                    .replaceFirst(/\.matched\.R3\.fastq$/, '')
-                    .replaceFirst(/_R3\.fastq$/, '')
+                def sample = normalizeSampleId(r3.name)
                 tuple(sample, r3)
             }
             .set { ch_r3_barcode }
