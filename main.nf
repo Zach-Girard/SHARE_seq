@@ -38,6 +38,10 @@ if (params.barcodes_rc) {
     effectiveCbWhitelistPath = outFile.path
 }
 
+// Nextflow tasks run in per-task `work/` directories; make this absolute so STAR
+// can always read it via the filesystem regardless of cwd.
+effectiveCbWhitelistPath = file(effectiveCbWhitelistPath).toAbsolutePath().toString()
+
 // Log key configuration
 log.info "Using RAW_FASTQ directory    : ${params.raw_fastq}"
 log.info "Using Genomes directory      : ${params.genomes_dir}"

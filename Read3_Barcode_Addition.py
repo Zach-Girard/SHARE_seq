@@ -59,10 +59,10 @@ def main():
     
 
     # Creation of Output file name
-    # Logic to remove .gz from the output filename
+    # Preserve .gz extension when input is gz so downstream STAR (`zcat`) works
     base_name = os.path.basename(args.read3)
     if base_name.endswith('.gz'):
-        output_r3 = "withBarcodes_" + base_name[:-3] # Removes '.gz'
+        output_r3 = "withBarcodes_" + base_name
     else:
         output_r3 = "withBarcodes_" + base_name
 
@@ -87,8 +87,14 @@ def main():
     print(f"Writing: {output_r3}")
 
 
-    # Do Work 
-    with gzip.open(args.read3, 'rt') as f1, gzip.open(args.read2, 'rt') as f2, open(output_r3, 'w') as out:
+    # Do Work
+    def open_maybe_gzip_read(path):
+        return gzip.open(path, 'rt') if path.endswith('.gz') else open(path, 'rt')
+
+    def open_maybe_gzip_write(path):
+        return gzip.open(path, 'wt') if path.endswith('.gz') else open(path, 'w')
+
+    with open_maybe_gzip_read(args.read3) as f1, open_maybe_gzip_read(args.read2) as f2, open_maybe_gzip_write(output_r3) as out:
         with tqdm(unit=" reads", desc="Processing Sequences", dynamic_ncols=True) as pbar:
             for i, (r3_line, r2_line) in enumerate(zip(f1, f2)):
                 
