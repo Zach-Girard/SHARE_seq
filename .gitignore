@@ -1,0 +1,15 @@
+work/
+.nextflow*
+.nextflow.*
+*.log
+*.out
+
+RAW_FASTQ/
+demux/
+STAR_index_*/
+STARsolo*/
+# Ignore downloaded genome/GTF data but keep setup scripts
+Genomes/*
+!Genomes/prepare_genomes.sh
+GTF/*
+!GTF/download_gtf.sh
