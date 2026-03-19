@@ -254,39 +254,34 @@ process STAR_INDEX {
     path "STAR_index_*", emit: star_index
 
     script:
-    def readLen   = new File(read_length_file.toString()).text.trim().toInteger()
-    def overhang  = readLen - 1
-
-    def (genomeFasta, gtfFile, indexDir) = {
-        switch (params.species_model) {
-            case 'mouse':
-                [
-                  "${projectDir}/${params.genomes_dir}/GRCm39/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz",
-                  "${projectDir}/${params.gtf_dir}/Mus_musculus/Mus_musculus.GRCm39.111.gtf.gz",
-                  "STAR_index_mouse${readLen}bp"
-                ]
-            case 'hybrid':
-                [
-                  "${projectDir}/${params.genomes_dir}/hybrid/hybrid_human_mouse.fa.gz",
-                  "${projectDir}/${params.gtf_dir}/hybrid/hybrid_human_mouse.gtf.gz",
-                  "STAR_index_hybrid${readLen}bp"
-                ]
-            case 'human':
-            default:
-                [
-                  "${projectDir}/${params.genomes_dir}/GRCh38/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz",
-                  "${projectDir}/${params.gtf_dir}/Homo_sapiens/Homo_sapiens.GRCh38.111.gtf.gz",
-                  "STAR_index_human${readLen}bp"
-                ]
-        }
-    }()
+    def proj = projectDir
+    def genomes = params.genomes_dir
+    def gtf = params.gtf_dir
+    def species = params.species_model
+    def readLenFile = read_length_file.name
 
     """
     set -euo pipefail
 
+    # Read length from staged input (avoids Groovy file read before LSF staging)
+    readLen=\$(tr -d '[:space:]' < "${readLenFile}")
+    overhang=\$((readLen - 1))
+
+    case "${species}" in
+      mouse)  genomeFasta="${proj}/${genomes}/GRCm39/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz"
+              gtfFile="${proj}/${gtf}/Mus_musculus/Mus_musculus.GRCm39.111.gtf.gz"
+              indexDir="STAR_index_mouse\${readLen}bp" ;;
+      hybrid) genomeFasta="${proj}/${genomes}/hybrid/hybrid_human_mouse.fa.gz"
+              gtfFile="${proj}/${gtf}/hybrid/hybrid_human_mouse.gtf.gz"
+              indexDir="STAR_index_hybrid\${readLen}bp" ;;
+      *)      genomeFasta="${proj}/${genomes}/GRCh38/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
+              gtfFile="${proj}/${gtf}/Homo_sapiens/Homo_sapiens.GRCh38.111.gtf.gz"
+              indexDir="STAR_index_human\${readLen}bp" ;;
+    esac
+
     # Build a fingerprint so we can safely reuse an existing index only when
     # species/read length/genome fasta/GTF are unchanged.
-    python - "${genomeFasta}" "${gtfFile}" "${params.species_model}" "${readLen}" > current_index_fingerprint.json <<'PY'
+    python - "\${genomeFasta}" "\${gtfFile}" "${species}" "\${readLen}" > current_index_fingerprint.json <<'PY'
 import json
 import os
 import sys
@@ -310,42 +305,42 @@ fp = {
 print(json.dumps(fp, sort_keys=True))
 PY
 
-    REUSE_DIR="${projectDir}/${indexDir}"
+    REUSE_DIR="${proj}/\${indexDir}"
     REUSE_FP="\${REUSE_DIR}/.index_fingerprint.json"
 
     if [[ -d "\${REUSE_DIR}" && -f "\${REUSE_FP}" ]] && cmp -s current_index_fingerprint.json "\${REUSE_FP}"; then
       echo "Reusing existing STAR index: \${REUSE_DIR}"
-      ln -s "\${REUSE_DIR}" "${indexDir}"
+      ln -s "\${REUSE_DIR}" "\${indexDir}"
       exit 0
     fi
 
-    mkdir -p ${indexDir}
+    mkdir -p "\${indexDir}"
 
     # STAR genomeGenerate expects an uncompressed FASTA (and works best with plain-text GTF).
-    if [[ "${genomeFasta}" == *.gz ]]; then
-      gzip -dc "${genomeFasta}" > genome.fa
+    if [[ "\${genomeFasta}" == *.gz ]]; then
+      gzip -dc "\${genomeFasta}" > genome.fa
     else
-      ln -sf "${genomeFasta}" genome.fa
+      ln -sf "\${genomeFasta}" genome.fa
     fi
 
-    if [[ "${gtfFile}" == *.gz ]]; then
-      gzip -dc "${gtfFile}" > annotations.gtf
+    if [[ "\${gtfFile}" == *.gz ]]; then
+      gzip -dc "\${gtfFile}" > annotations.gtf
     else
-      ln -sf "${gtfFile}" annotations.gtf
+      ln -sf "\${gtfFile}" annotations.gtf
     fi
 
     STAR --runMode genomeGenerate \\
          --runThreadN ${task.cpus} \\
-         --genomeDir ${indexDir} \\
+         --genomeDir \${indexDir} \\
          --genomeFastaFiles genome.fa \\
          --sjdbGTFfile annotations.gtf \\
-         --sjdbOverhang ${overhang}
+         --sjdbOverhang \${overhang}
 
     # Save fingerprint in generated index and mirror index to project root for reuse.
-    cp current_index_fingerprint.json "${indexDir}/.index_fingerprint.json"
+    cp current_index_fingerprint.json "\${indexDir}/.index_fingerprint.json"
     TMP_REUSE_DIR="\${REUSE_DIR}.tmp"
     rm -rf "\${TMP_REUSE_DIR}" "\${REUSE_DIR}"
-    cp -R "${indexDir}" "\${TMP_REUSE_DIR}"
+    cp -R "\${indexDir}" "\${TMP_REUSE_DIR}"
     mv "\${TMP_REUSE_DIR}" "\${REUSE_DIR}"
     """
 }
