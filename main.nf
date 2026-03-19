@@ -732,10 +732,7 @@ workflow {
             .join(ch_r3_barcode)
             .map { sample_id, r1, r3 -> tuple(sample_id, r1, r3) }
             .combine(STAR_INDEX.out.star_index)
-            .map { triple, idx ->
-                def (sample_id, r1, r3) = triple
-                tuple(sample_id, r1, r3, idx)
-            }
+            .map { sample_id, r1, r3, idx -> tuple(sample_id, r1, r3, idx) }
             .set { ch_starsolo_single }
 
         STARSOLO_SINGLE(ch_starsolo_single)
@@ -811,10 +808,7 @@ workflow {
             .join(ch_r3_paired_by_sample)
             .map { sample_id, r1p, r3p -> tuple(sample_id, r1p, r3p) }
             .combine(STAR_INDEX.out.star_index)
-            .map { triple, idx ->
-                def (sample_id, r1p, r3p) = triple
-                tuple(sample_id, r1p, r3p, idx)
-            }
+            .map { sample_id, r1p, r3p, idx -> tuple(sample_id, r1p, r3p, idx) }
             .set { ch_starsolo_paired }
 
         // Build paired-end 24bp whitelist for STARsolo using effective 8bp barcodes
