@@ -9,4 +9,4 @@
 #BSUB -eo shareseq_%J.err
 
 cd "$LS_SUBCWD"
-nextflow run main.nf -profile lsf --raw_fastq demux
+nextflow run main.nf -profile lsf --raw_fastq demux -resume
