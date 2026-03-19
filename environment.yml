@@ -17,3 +17,7 @@ dependencies:
   - tqdm
   - samtools
   - bedtools
+  - matplotlib
+  - pandas
+  - numpy
+  - scipy

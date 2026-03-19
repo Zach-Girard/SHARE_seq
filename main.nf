@@ -248,8 +248,9 @@ PY
 
 process STAR_INDEX {
     tag { params.species_model }
-
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
+    // STAR index reuse/build is handled explicitly in the script by mirroring to
+    // `${projectDir}/${indexDir}`. A publishDir copy here can attempt to copy a
+    // reused symlinked index onto itself on shared filesystems and fail.
 
     input:
     tuple path(read_length_file), path(barcoded_r3_dependency)

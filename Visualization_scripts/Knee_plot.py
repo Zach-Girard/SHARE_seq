@@ -70,32 +70,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-#!/usr/bin/env python3
-
-import matplotlib.pyplot as plt
-import pandas as pd
-import numpy as np
-
-# Load the data
-# Adjust the path to your GeneFull/UMIperCellSorted.txt file 
-data = pd.read_csv('./RNA_C1200_Solo.out/GeneFull/UMIperCellSorted.txt', header=None, names=['umis'])
-
-# Calculate the rank
-data['rank'] = range(1, len(data) + 1)
-
-# Create the plot
-plt.figure(figsize=(8, 6))
-plt.loglog(data['rank'], data['umis'], label='Cells', color='blue', linewidth=2)
-
-# Add a vertical line for STAR's estimate
-plt.axvline(x=6129, color='red', linestyle='--', label='STAR Estimated Cells')
-
-plt.title('Knee Plot (GeneFull)')
-plt.xlabel('Cell Rank (Log Scale)')
-plt.ylabel('UMIs per Cell (Log Scale)')
-plt.grid(True, which="both", ls="-", alpha=0.5)
-plt.legend()
-
-plt.savefig('ChengLab_Run1_knee_plot.png', dpi=300)
-print("Plot saved as knee_plot.png")
