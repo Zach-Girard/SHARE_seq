@@ -13,6 +13,8 @@ params.gtf_dir             = params.gtf_dir             ?: 'GTF'
 params.umi_len             = params.umi_len             ?: 10
 params.bc_coords           = params.bc_coords           ?: '15-23,53-61,91-99'
 params.species_model       = params.species_model       ?: 'human'  // 'human', 'mouse', or 'hybrid'
+// 'single' = STARsolo CB_UMI_Complex on trimmed R1 + withBarcodes R3
+// 'paired'  = Paired_Barcode_Matcher then STARsolo CB_UMI_Simple (outputs under STARsolo_paired/)
 params.star_alignment_mode = params.star_alignment_mode ?: 'single' // 'single' or 'paired'
 params.barcodes_8bp_file   = params.barcodes_8bp_file   ?: 'barcodes_RC.txt'
 params.barcodes_rc         = (params.barcodes_rc in [true, 'true'])
@@ -387,10 +389,10 @@ process KNEE_PLOT {
     publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
-    tuple val(sample_id), path(starsolo_dir)
+    tuple val(sample_id), path(starsolo_dir), val(qc_base)
 
     output:
-    path "STARsolo/${sample_id}/${sample_id}_knee_plot.png", emit: knee_plot
+    path "${qc_base}/${sample_id}/${sample_id}_knee_plot.png", emit: knee_plot
 
     """
     GENEFULL_DIR="${starsolo_dir}/Solo.out/GeneFull"
@@ -424,7 +426,7 @@ PY
     python "${projectDir}/Visualization_scripts/Knee_plot.py" \\
       --genefull-dir "\${GENEFULL_DIR}" \\
       --estimated-cells "\${EST}" \\
-      --output "STARsolo/${sample_id}/${sample_id}_knee_plot.png"
+      --output "${qc_base}/${sample_id}/${sample_id}_knee_plot.png"
     """
 }
 
@@ -434,11 +436,11 @@ process BARNYARD_PLOT {
     publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
-    tuple val(sample_id), path(starsolo_dir)
+    tuple val(sample_id), path(starsolo_dir), val(qc_base)
 
     output:
-    path "STARsolo/${sample_id}/80%_collision_plot.png", emit: barnyard80
-    path "STARsolo/${sample_id}/90%_collision_plot.png", emit: barnyard90
+    path "${qc_base}/${sample_id}/80%_collision_plot.png", emit: barnyard80
+    path "${qc_base}/${sample_id}/90%_collision_plot.png", emit: barnyard90
 
     """
     FILTERED_DIR="${starsolo_dir}/Solo.out/GeneFull/filtered"
@@ -456,7 +458,7 @@ process BARNYARD_PLOT {
       --collision-low 0.2 \\
       --collision-high 0.8 \\
       --title "Human-Mouse Collision (80% Purity)" \\
-      --output "STARsolo/${sample_id}/80%_collision_plot.png"
+      --output "${qc_base}/${sample_id}/80%_collision_plot.png"
 
     # 90% purity barnyard plot
     python "${projectDir}/Visualization_scripts/BarnyardPlot.py" \\
@@ -466,7 +468,7 @@ process BARNYARD_PLOT {
       --collision-low 0.1 \\
       --collision-high 0.9 \\
       --title "Human-Mouse Collision (90% Purity)" \\
-      --output "STARsolo/${sample_id}/90%_collision_plot.png"
+      --output "${qc_base}/${sample_id}/90%_collision_plot.png"
     """
 }
 
@@ -476,12 +478,12 @@ process HYBRID_SPLIT_SPECIES {
     publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
-    tuple val(sample_id), path(starsolo_dir)
+    tuple val(sample_id), path(starsolo_dir), val(qc_base)
 
     output:
-    path "STARsolo/${sample_id}/species_split_purity_0.9", emit: split_09
-    path "STARsolo/${sample_id}/species_split_purity_0.85", emit: split_085
-    path "STARsolo/${sample_id}/species_split_purity_0.8", emit: split_08
+    path "${qc_base}/${sample_id}/species_split_purity_0.9", emit: split_09
+    path "${qc_base}/${sample_id}/species_split_purity_0.85", emit: split_085
+    path "${qc_base}/${sample_id}/species_split_purity_0.8", emit: split_08
 
     """
     FILTERED_DIR="${starsolo_dir}/Solo.out/GeneFull/filtered"
@@ -494,19 +496,19 @@ process HYBRID_SPLIT_SPECIES {
     # Purity 0.9
     python "${projectDir}/Split_Species_By_Purity.py" \\
       --input "\${FILTERED_DIR}" \\
-      --output "STARsolo/${sample_id}/species_split_purity_0.9" \\
+      --output "${qc_base}/${sample_id}/species_split_purity_0.9" \\
       --purity 0.9
 
     # Purity 0.85
     python "${projectDir}/Split_Species_By_Purity.py" \\
       --input "\${FILTERED_DIR}" \\
-      --output "STARsolo/${sample_id}/species_split_purity_0.85" \\
+      --output "${qc_base}/${sample_id}/species_split_purity_0.85" \\
       --purity 0.85
 
     # Purity 0.8
     python "${projectDir}/Split_Species_By_Purity.py" \\
       --input "\${FILTERED_DIR}" \\
-      --output "STARsolo/${sample_id}/species_split_purity_0.8" \\
+      --output "${qc_base}/${sample_id}/species_split_purity_0.8" \\
       --purity 0.8
     """
 }
@@ -525,8 +527,8 @@ process PAIRED_BARCODE_MATCH {
     """
     mkdir -p paired
     python "${projectDir}/Paired_Barcode_Matcher.py" \\
-      --r1 ${r1_fastq} \\
-      --r3 ${r3_with_barcodes} \\
+      --r1 "${r1_fastq}" \\
+      --r3 "${r3_with_barcodes}" \\
       --whitelist "${effectiveCbWhitelistPath}" \\
       --out-r1 "paired/${sample_id}_R1.paired.fastq.gz" \\
       --out-r3 "paired/${sample_id}_R3.paired.fastq.gz" \\
@@ -545,13 +547,15 @@ process BUILD_PAIRED_WHITELIST {
 
     """
     python "${projectDir}/Build_Paired_Whitelist.py" \\
-      --barcodes ${effectiveCbWhitelistPath} \\
+      --barcodes "${effectiveCbWhitelistPath}" \\
       --output whitelist_paired.txt
     """
 }
 
 process STARSOLO_PAIRED {
     tag { sample_id }
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
     tuple val(sample_id), path(r1_paired), path(r3_paired), path(star_index_dir), path(paired_whitelist)
@@ -583,7 +587,7 @@ process STARSOLO_PAIRED {
       --soloFeatures Gene GeneFull \\
       --soloStrand Unstranded \\
       --outSAMtype BAM SortedByCoordinate \\
-      --outFileNamePrefix STARsolo_paired/${sample_id}/${sample_id}_paired_
+      --outFileNamePrefix STARsolo_paired/${sample_id}/
     """
 }
 
@@ -750,7 +754,7 @@ workflow {
         STARSOLO_SINGLE.out.starsolo_out
             .map { dir ->
                 def sample = dir.baseName  // STARsolo/<sample>/
-                tuple(sample, dir)
+                tuple(sample, dir, 'STARsolo')
             }
             .set { ch_starsolo_for_hybrid_qc }
 
@@ -762,32 +766,19 @@ workflow {
             HYBRID_SPLIT_SPECIES(ch_starsolo_for_hybrid_qc)
         }
     } else if( params.star_alignment_mode == 'paired' ) {
-        log.info "Running paired-end barcode matching; STARsolo paired-end alignment is currently a placeholder."
+        log.info "Running paired-end path: barcode matching (3×8bp, 1MM) then STARsolo CB_UMI_Simple."
 
         // Always use trimmed R1 for paired-end alignment (to match single-end path)
         log.info "Using trimmed R1 for paired alignment."
         def ch_r1_source_for_align_paired = ch_trimmed_r1_for_paired_align
 
         ch_r1_source_for_align_paired
-            .map { r1 ->
-                def sample = r1.name
-                    .replaceFirst(/\.matched\.trimmed\.R1\.fastq\.gz$/, '')
-                    .replaceFirst(/_trimmed\.R1\.fastq\.gz$/, '')
-                tuple(sample, r1)
-            }
+            .map { r1 -> tuple(normalizeSampleId(r1.name), r1) }
             .set { ch_r1_for_paired }
 
-        // Use withBarcodes_R3 output as the R3 source for matching
+        // Use withBarcodes_R3 output as the R3 source for matching (same sample keys as single-end)
         ADD_R2_BARCODES_TO_R3.out.r3_with_barcodes
-            .map { r3 ->
-                def bn = r3.baseName.replaceFirst('withBarcodes_','')
-                def sample = bn
-                    .replaceFirst(/\.matched\.trimmed\.R3\.fastq$/, '')
-                    .replaceFirst(/_trimmed\.R3\.fastq$/, '')
-                    .replaceFirst(/\.matched\.R3\.fastq$/, '')
-                    .replaceFirst(/_R3\.fastq$/, '')
-                tuple(sample, r3)
-            }
+            .map { r3 -> tuple(normalizeSampleId(r3.name), r3) }
             .set { ch_r3_barcode_for_paired }
 
         ch_r1_for_paired
@@ -801,14 +792,15 @@ workflow {
         // Combine matched pairs with STAR index for paired STARsolo
         PAIRED_BARCODE_MATCH.out.r1_paired
             .map { r1p ->
-                def sample = r1p.baseName.replaceFirst('_R1\\.paired','')
+                // Use .name so sample id is correct even when baseName still contains ".fastq"
+                def sample = r1p.name.replaceFirst(/_R1\\.paired\\.fastq\\.gz$/, '')
                 tuple(sample, r1p)
             }
             .set { ch_r1_paired_by_sample }
 
         PAIRED_BARCODE_MATCH.out.r3_paired
             .map { r3p ->
-                def sample = r3p.baseName.replaceFirst('_R3\\.paired','')
+                def sample = r3p.name.replaceFirst(/_R3\\.paired\\.fastq\\.gz$/, '')
                 tuple(sample, r3p)
             }
             .set { ch_r3_paired_by_sample }
@@ -820,7 +812,7 @@ workflow {
             .map { sample_id, r1p, r3p, idx -> tuple(sample_id, r1p, r3p, idx) }
             .set { ch_starsolo_paired }
 
-        // Build paired-end 24bp whitelist for STARsolo using effective 8bp barcodes
+        // Build paired-end 24bp whitelist (all 8bp³ combos) for STARsolo Exact CB matching
         Channel
             .of(1)
             .set { ch_build_whitelist }
@@ -840,6 +832,21 @@ workflow {
             .set { ch_starsolo_paired_with_wl }
 
         STARSOLO_PAIRED(ch_starsolo_paired_with_wl)
+
+        // QC outputs mirror single-end (Solo.out lives under STARsolo_paired/<sample>/)
+        STARSOLO_PAIRED.out.starsolo_paired_out
+            .map { dir ->
+                def sample = dir.baseName
+                tuple(sample, dir, 'STARsolo_paired')
+            }
+            .set { ch_starsolo_paired_for_qc }
+
+        KNEE_PLOT(ch_starsolo_paired_for_qc)
+
+        if( params.species_model == 'hybrid' ) {
+            BARNYARD_PLOT(ch_starsolo_paired_for_qc)
+            HYBRID_SPLIT_SPECIES(ch_starsolo_paired_for_qc)
+        }
     } else {
         log.info "Unknown star_alignment_mode = ${params.star_alignment_mode}; skipping STARsolo alignment."
     }
