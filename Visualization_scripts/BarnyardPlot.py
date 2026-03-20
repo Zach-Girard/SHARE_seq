@@ -81,9 +81,13 @@ def main():
         features_path, sep="\t", header=None, names=["id", "name", "type"]
     )
 
-    # 2. Species masks
-    human_mask = features["id"].astype(str).str.startswith(args.human_prefix)
-    mouse_mask = features["id"].astype(str).str.startswith(args.mouse_prefix)
+    # 2. Species masks (must be NumPy bool arrays — scipy sparse indexing rejects pandas Series)
+    human_mask = (
+        features["id"].astype(str).str.startswith(args.human_prefix).to_numpy(dtype=bool)
+    )
+    mouse_mask = (
+        features["id"].astype(str).str.startswith(args.mouse_prefix).to_numpy(dtype=bool)
+    )
 
     # 3. Sum UMIs
     human_counts = matrix[human_mask, :].sum(axis=0).A1
