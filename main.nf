@@ -441,14 +441,14 @@ process BARNYARD_PLOT {
     """
     FILTERED_DIR="${starsolo_dir}/Solo.out/GeneFull/filtered"
 
-    if [ ! -d "${FILTERED_DIR}" ]; then
-      echo "Filtered GeneFull directory not found for sample ${sample_id} at ${FILTERED_DIR}" >&2
+    if [ ! -d "\${FILTERED_DIR}" ]; then
+      echo "Filtered GeneFull directory not found for sample ${sample_id} at \${FILTERED_DIR}" >&2
       exit 1
     fi
 
     # 80% purity barnyard plot
     python "${projectDir}/Visualization_scripts/BarnyardPlot.py" \\
-      --filtered-dir "${FILTERED_DIR}" \\
+      --filtered-dir "\${FILTERED_DIR}" \\
       --human-threshold 0.8 \\
       --mouse-threshold 0.2 \\
       --collision-low 0.2 \\
@@ -458,7 +458,7 @@ process BARNYARD_PLOT {
 
     # 90% purity barnyard plot
     python "${projectDir}/Visualization_scripts/BarnyardPlot.py" \\
-      --filtered-dir "${FILTERED_DIR}" \\
+      --filtered-dir "\${FILTERED_DIR}" \\
       --human-threshold 0.9 \\
       --mouse-threshold 0.1 \\
       --collision-low 0.1 \\
@@ -482,26 +482,26 @@ process HYBRID_SPLIT_SPECIES {
     """
     FILTERED_DIR="${starsolo_dir}/Solo.out/GeneFull/filtered"
 
-    if [ ! -d "${FILTERED_DIR}" ]; then
-      echo "Filtered GeneFull directory not found for sample ${sample_id} at ${FILTERED_DIR}" >&2
+    if [ ! -d "\${FILTERED_DIR}" ]; then
+      echo "Filtered GeneFull directory not found for sample ${sample_id} at \${FILTERED_DIR}" >&2
       exit 1
     fi
 
     # Purity 0.9
     python "${projectDir}/Split_Species_By_Purity.py" \\
-      --input "${FILTERED_DIR}" \\
+      --input "\${FILTERED_DIR}" \\
       --output "STARsolo/${sample_id}/species_split_purity_0.9" \\
       --purity 0.9
 
     # Purity 0.85
     python "${projectDir}/Split_Species_By_Purity.py" \\
-      --input "${FILTERED_DIR}" \\
+      --input "\${FILTERED_DIR}" \\
       --output "STARsolo/${sample_id}/species_split_purity_0.85" \\
       --purity 0.85
 
     # Purity 0.8
     python "${projectDir}/Split_Species_By_Purity.py" \\
-      --input "${FILTERED_DIR}" \\
+      --input "\${FILTERED_DIR}" \\
       --output "STARsolo/${sample_id}/species_split_purity_0.8" \\
       --purity 0.8
     """
