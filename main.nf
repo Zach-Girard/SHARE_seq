@@ -63,6 +63,23 @@ log.info "Effective 8bp whitelist file : ${effectiveCbWhitelistPath}"
 // Resolve raw_fastq to an absolute directory to avoid any cwd ambiguity
 def rawFastqDir = file(params.raw_fastq).toAbsolutePath()
 log.info "Resolved RAW_FASTQ absolute path : ${rawFastqDir}"
+log.info "launchDir                       : ${launchDir}"
+log.info "projectDir                      : ${projectDir}"
+log.info "JVM working directory           : ${System.getProperty('user.dir')}"
+
+// Diagnostic only: keep discovery behavior unchanged, but print what JVM sees.
+def rawDirFs = new File(params.raw_fastq)
+log.info "RAW_FASTQ exists?               : ${rawDirFs.exists()}"
+log.info "RAW_FASTQ is directory?         : ${rawDirFs.isDirectory()}"
+if (rawDirFs.isDirectory()) {
+    def topEntries = (rawDirFs.list()?.toList()?.sort()) ?: []
+    def fastqGzTop = topEntries.findAll { it.endsWith('.fastq.gz') }
+    log.info "RAW_FASTQ top-level entries     : ${topEntries.size()}"
+    log.info "RAW_FASTQ top-level *.fastq.gz  : ${fastqGzTop.size()}"
+    if (fastqGzTop) {
+        log.info "RAW_FASTQ first *.fastq.gz      : ${fastqGzTop.take(6).join(', ')}${fastqGzTop.size() > 6 ? ', ...' : ''}"
+    }
+}
 
 Channel
     .fromPath("${params.raw_fastq}/*.fastq.gz", checkIfExists: true)
