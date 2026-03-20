@@ -132,8 +132,10 @@ def main():
     plt.legend()
     plt.grid(True, linestyle="--", alpha=0.3)
 
-    plt.savefig(args.output, dpi=300, bbox_inches="tight")
-    print(f"Barnyard plot saved as {args.output}")
+    out_path = pathlib.Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    print(f"Barnyard plot saved as {out_path}")
 
 
 if __name__ == "__main__":

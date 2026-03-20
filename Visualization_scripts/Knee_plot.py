@@ -64,8 +64,10 @@ def main():
     plt.grid(True, which="both", ls="-", alpha=0.5)
     plt.legend()
 
-    plt.savefig(args.output, dpi=300, bbox_inches="tight")
-    print(f"Plot saved as {args.output}")
+    out_path = pathlib.Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    print(f"Plot saved as {out_path}")
 
 
 if __name__ == "__main__":
