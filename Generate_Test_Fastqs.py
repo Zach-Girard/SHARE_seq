@@ -6,11 +6,14 @@ Generate synthetic demultiplexed FASTQ files for testing the pipeline.
 Creates gzipped FASTQs in demux/ for a single sample 'sampleA':
 
   - sampleA_R1.fastq.gz : 5000 reads, 30 bp random cDNA
-  - sampleA_R2.fastq.gz : 5000 reads, 99 bp, with three 8 bp barcodes
-                          inserted at 1-based positions:
-                            * 15–22  (bc1)
-                            * 53–60  (bc2)
-                            * 91–98  (bc3)
+  - sampleA_R2.fastq.gz : 5000 reads, 99 bp layout (matches bc_coords
+                          15-23,53-61,91-99 as Python half-open slices on R2):
+                            * 15 bp constant linker (indices 0–14)
+                            * 8 bp barcode 1  ([15:23])
+                            * 30 bp linker    ([23:53])
+                            * 8 bp barcode 2  ([53:61])
+                            * 30 bp linker    ([61:91])
+                            * 8 bp barcode 3  ([91:99])
   - sampleA_R3.fastq.gz : 5000 reads, 30 bp:
                             * 10 bp UMI (pseudo-random)
                             * 15 bp poly-T
@@ -59,19 +62,17 @@ def make_r3_seq(i: int) -> str:
 
 def make_r2_seq(bc1: str, bc2: str, bc3: str, mismatch: bool = False) -> str:
     """
-    Build 99 bp read with bc1, bc2, bc3 at fixed positions:
-      1–14  : fillerA
-      15–22 : bc1 (8 bp)
-      23–52 : fillerB (30 bp)
-      53–60 : bc2 (8 bp)
-      61–90 : fillerC (30 bp)
-      91–98 : bc3 (8 bp)
-      99    : fillerD (1 bp)
+    Build 99 bp R2 with constant linkers and three 8 bp barcodes (total 99 bp):
+      0–14  : constant linker (15 bp)
+      15–22 : bc1 (8 bp)   — same span as slice [15:23] in Read3_Barcode_Addition.py
+      23–52 : linker (30 bp)
+      53–60 : bc2 (8 bp)   — slice [53:61]
+      61–90 : linker (30 bp)
+      91–98 : bc3 (8 bp)   — slice [91:99]
     """
-    fillerA = ("ACGTACGTACGTAC")[:14]
+    fillerA = ("ACGTACGTACGTACG")[:15]
     fillerB = ("GGGGCCCCAAAATTTT" * 2)[:30]
     fillerC = ("TTTTGGGGCCCCAAAA" * 2)[:30]
-    fillerD = "A"
 
     if mismatch:
         # Introduce 1 mismatch into exactly one of the 3 barcode blocks
@@ -87,7 +88,7 @@ def make_r2_seq(bc1: str, bc2: str, bc3: str, mismatch: bool = False) -> str:
         else:
             bc3 = mutate_block(bc3)
 
-    seq = fillerA + bc1 + fillerB + bc2 + fillerC + bc3 + fillerD
+    seq = fillerA + bc1 + fillerB + bc2 + fillerC + bc3
     assert len(seq) == 99, f"R2 sequence length is {len(seq)}, expected 99"
     return seq
 
