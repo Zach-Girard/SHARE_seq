@@ -431,6 +431,8 @@ PY
 process BARNYARD_PLOT {
     tag { sample_id }
 
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
     input:
     tuple val(sample_id), path(starsolo_dir)
 
@@ -470,6 +472,8 @@ process BARNYARD_PLOT {
 
 process HYBRID_SPLIT_SPECIES {
     tag { sample_id }
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
     tuple val(sample_id), path(starsolo_dir)
