@@ -835,14 +835,10 @@ workflow {
         BUILD_PAIRED_WHITELIST(ch_build_whitelist)
 
         // Broadcast whitelist to all samples and run paired-end STARsolo.
-        // `combine` emits [triple, whitelist], so flatten to the exact 5-tuple
-        // expected by STARSOLO_PAIRED input.
+        // Here `combine` already emits the flat 5-tuple expected by STARSOLO_PAIRED:
+        // (sample_id, r1_paired, r3_paired, star_index_dir, paired_whitelist)
         ch_starsolo_paired
             .combine(BUILD_PAIRED_WHITELIST.out.paired_whitelist_file)
-            .map { triple, wl ->
-                def (sample_id, r1p, r3p, idx) = triple
-                tuple(sample_id, r1p, r3p, idx, wl)
-            }
             .set { ch_starsolo_paired_with_wl }
 
         STARSOLO_PAIRED(ch_starsolo_paired_with_wl)
