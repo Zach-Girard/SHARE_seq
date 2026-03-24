@@ -816,7 +816,10 @@ workflow {
 
         // Combine matched pairs with STAR index for paired STARsolo
         PAIRED_BARCODE_MATCH.out.paired_reads
-            .map { sample_id, r1p, r3p, _summary -> tuple(sample_id, r1p, r3p) }
+            .map { row ->
+                def (sample_id, r1p, r3p, _summary) = row
+                tuple(sample_id, r1p, r3p)
+            }
             .combine(STAR_INDEX.out.star_index)
             .map { sample_id, r1p, r3p, idx -> tuple(sample_id, r1p, r3p, idx) }
             .ifEmpty {
