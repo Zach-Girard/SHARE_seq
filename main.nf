@@ -82,8 +82,15 @@ if (rawDirFs.isDirectory()) {
 }
 
 Channel
-    .fromPath("${params.raw_fastq}/*.fastq.gz", checkIfExists: true)
+    .fromList(
+        ((rawDirFs.isDirectory()
+            ? ((rawDirFs.listFiles() ?: []).findAll { it.isFile() && it.name.endsWith('.fastq.gz') })
+            : []) as List)
+            .collect { it.toString() }
+            .sort()
+    )
     .ifEmpty { error "No FASTQ files found in: ${params.raw_fastq}" }
+    .map { p -> file(p) }
     .set { ch_raw_fastq }
 
 /*
