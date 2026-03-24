@@ -842,17 +842,11 @@ workflow {
             .set { ch_build_whitelist }
         BUILD_PAIRED_WHITELIST(ch_build_whitelist)
 
-        // Broadcast whitelist to all samples and run paired-end STARsolo
-        BUILD_PAIRED_WHITELIST.out.paired_whitelist_file
-            .map { wl -> tuple(wl) }
-            .set { ch_whitelist_broadcast }
-
+        // Broadcast whitelist to all samples and run paired-end STARsolo.
+        // `combine` flattens tuple items; avoid extra tuple wrapping to keep a clean 5-tuple:
+        // (sample_id, r1_paired, r3_paired, star_index_dir, paired_whitelist)
         ch_starsolo_paired
-            .combine(ch_whitelist_broadcast)
-            .map { triple, wl ->
-                def (sample_id, r1p, r3p, idx) = triple
-                tuple(sample_id, r1p, r3p, idx, wl)
-            }
+            .combine(BUILD_PAIRED_WHITELIST.out.paired_whitelist_file)
             .set { ch_starsolo_paired_with_wl }
 
         STARSOLO_PAIRED(ch_starsolo_paired_with_wl)
