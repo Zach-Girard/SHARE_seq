@@ -544,6 +544,7 @@ process PAIRED_BARCODE_MATCH {
     tuple val(sample_id), path(r1_fastq), path(r3_with_barcodes)
 
     output:
+    tuple val(sample_id), path("paired/${sample_id}_R1.paired.fastq.gz"), path("paired/${sample_id}_R3.paired.fastq.gz"), path("paired/${sample_id}_barcode_match_summary.txt"), emit: paired_reads
     path "paired/${sample_id}_R1.paired.fastq.gz", emit: r1_paired
     path "paired/${sample_id}_R3.paired.fastq.gz", emit: r3_paired
     path "paired/${sample_id}_barcode_match_summary.txt", emit: summary
@@ -814,26 +815,14 @@ workflow {
         PAIRED_BARCODE_MATCH(ch_pairs_for_matching)
 
         // Combine matched pairs with STAR index for paired STARsolo
-        PAIRED_BARCODE_MATCH.out.r1_paired
-            .map { r1p ->
-                // Use .name so sample id is correct even when baseName still contains ".fastq"
-                def sample = r1p.name.replaceFirst(/_R1\\.paired\\.fastq\\.gz$/, '')
-                tuple(sample, r1p)
-            }
-            .set { ch_r1_paired_by_sample }
-
-        PAIRED_BARCODE_MATCH.out.r3_paired
-            .map { r3p ->
-                def sample = r3p.name.replaceFirst(/_R3\\.paired\\.fastq\\.gz$/, '')
-                tuple(sample, r3p)
-            }
-            .set { ch_r3_paired_by_sample }
-
-        ch_r1_paired_by_sample
-            .join(ch_r3_paired_by_sample)
-            .map { sample_id, r1p, r3p -> tuple(sample_id, r1p, r3p) }
+        PAIRED_BARCODE_MATCH.out.paired_reads
+            .map { sample_id, r1p, r3p, _summary -> tuple(sample_id, r1p, r3p) }
             .combine(STAR_INDEX.out.star_index)
             .map { sample_id, r1p, r3p, idx -> tuple(sample_id, r1p, r3p, idx) }
+            .ifEmpty {
+                log.warn "No paired reads available for STARSOLO_PAIRED (barcode matching channel is empty)."
+                Channel.empty()
+            }
             .set { ch_starsolo_paired }
 
         // Build paired-end 24bp whitelist (all 8bp³ combos) for STARsolo Exact CB matching
