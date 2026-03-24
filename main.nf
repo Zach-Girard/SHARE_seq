@@ -829,7 +829,7 @@ workflow {
             }
             .set { ch_r3_paired_by_sample }
 
-        def ch_starsolo_paired = ch_r1_paired_by_sample
+        ch_r1_paired_by_sample
             .join(ch_r3_paired_by_sample)
             .map { sample_id, r1p, r3p -> tuple(sample_id, r1p, r3p) }
             .combine(STAR_INDEX.out.star_index)
