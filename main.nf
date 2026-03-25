@@ -164,16 +164,16 @@ process ADD_R2_BARCODES_TO_R3 {
     tuple path(r2_fastq), path(r3_fastq)
 
     output:
-    path "trimmed/withBarcodes_*", emit: r3_with_barcodes
+    path "polyt_filtered/withBarcodes_*", emit: r3_with_barcodes
 
     """
-    mkdir -p trimmed
+    mkdir -p polyt_filtered
     python "${projectDir}/Read3_Barcode_Addition.py" \\
       -r3 ${r3_fastq} \\
       -r2 ${r2_fastq} \\
       -bc ${params.bc_coords} \\
       -umi 0-${params.umi_len}
-    mv withBarcodes_* trimmed/
+    mv withBarcodes_* polyt_filtered/
     """
 }
 
@@ -596,7 +596,7 @@ workflow {
     FASTQC_RAW(ch_input_fastq)
 
     // Mandatory Poly-T filtering on R3 (UMI+PolyT+cDNA) FASTQs and downstream
-    // trimming + barcode prepending.
+    // barcode prepending (no trimming in current workflow).
 
     // Build R1/R2/R3 triplets directly from DEMULTIPLEX_PLACEHOLDER outputs.
     // This avoids race/static-glob issues from Channel.fromPath when running in one workflow.

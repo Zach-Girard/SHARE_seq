@@ -6,15 +6,15 @@ This repository contains a Nextflow-based SHARE-seq workflow and supporting reso
 
 This workflow implements an end-to-end SHARE-seq processing pipeline:
 
-- **Input discovery**: finds raw FASTQs under `params.raw_fastq` (default `RAW_FASTQ/` or `demux/`).
+- **Input discovery**: finds raw FASTQs under `params.raw_fastq` (configured in `nextflow.config` or passed via CLI).
 - **Demultiplexing** (`DEMULTIPLEX_PLACEHOLDER`): currently a pass-through copy into `demux/`, designed to be replaced by a real SHARE-seq demux script.
 - **Raw QC** (`FASTQC_RAW`): runs FastQC on each raw/demuxed FASTQ into `fastqc_raw/`.
 - **Poly-T filtering** (`POLYT_FILTER`): splits R1/R2/R3 into `matched` vs `noPolyT` buckets under `polyt_filtered/`.
-- **Trimming** (`TRIM_FASTQ`): trims Poly-T–matched R1/R3 only, producing `trimmed/` FASTQs with names like `sample.matched.trimmed.R1.fastq.gz` and `sample.matched.trimmed.R3.fastq.gz`, plus fastp reports.
-- **Trimmed QC** (`FASTQC_TRIMMED`): runs FastQC on all trimmed FASTQs into `fastqc_trimmed/`.
-- **Barcode prepending** (`ADD_R2_BARCODES_TO_R3`): extracts three barcodes from R2 (configured by `bc_coords`) and UMIs from R3 (`umi_len`), prepends them to R3, and writes `withBarcodes_*` into `trimmed/`.
+- **Barcode prepending** (`ADD_R2_BARCODES_TO_R3`): extracts three barcodes from Poly-T–matched R2 (configured by `bc_coords`) and prepends them to Poly-T–matched R3, writing `withBarcodes_*` outputs under `polyt_filtered/`.
 - **STAR genome index** (`STAR_INDEX`): builds or reuses a STAR genome index per `species_model` and read length, using fingerprinting (species, read length, genome FASTA, GTF) to avoid redundant rebuilds.
-- **STARsolo alignment** (`STARSOLO_SINGLE` / `STARSOLO_PAIRED`): runs STARsolo on trimmed R1 + withBarcodes_R3, producing per-sample `STARsolo/<sample>/` (and optionally `STARsolo_paired/<sample>/`) outputs.
+- **STARsolo alignment**:
+  - **Single-end** (`STARSOLO_SINGLE`): uses Poly-T–matched R1 + `withBarcodes_R3`.
+  - **Paired-end** (`PAIRED_BARCODE_MATCH` + `STARSOLO_PAIRED`): barcode-matches read pairs, then runs STARsolo paired mode.
 - **Downstream QC** (`KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES`): generates knee plots and, for `species_model = hybrid`, barnyard collision plots and species-purity split summaries from STARsolo GeneFull outputs.
 
 See `main.nf` for exact channel wiring and `nextflow.config` for tunable parameters.
@@ -75,8 +75,10 @@ This will place the human and mouse GTFs under `GTF/Homo_sapiens/` and `GTF/Mus_
 
 ### Raw FASTQ input
 
-- Place all raw, undemultiplexed FASTQ files into the `RAW_FASTQ/` directory before running any demultiplexing or downstream workflows.
-- This folder is not managed by any script; it is simply the **expected input location** for your sequencing data.
+- Put input FASTQs in the directory specified by `params.raw_fastq`.
+- By default this is set in `nextflow.config` (for example `demux/` in many test runs).
+- You can override per run with `--raw_fastq /path/to/fastqs`.
+- Expected files are `*.fastq.gz` with R1/R2/R3 mate naming (e.g. `sampleA_R1.fastq.gz`, `sampleA_R2.fastq.gz`, `sampleA_R3.fastq.gz`).
 
 ### Barcode configuration
 
@@ -112,9 +114,9 @@ The pipeline supports two execution modes via profiles in `nextflow.config`:
 
 | Profile   | Executor | Use case                          | Resources (default) |
 |-----------|----------|------------------------------------|---------------------|
-| `standard`| LSF      | Default; for HPC clusters         | 8 CPUs, 50 GB       |
-| `local`   | local    | Workstation/laptop testing         | 4 CPUs, 16 GB       |
-| `lsf`     | LSF      | Explicit LSF with queue/workDir    | 8 CPUs, 50 GB       |
+| `standard`| LSF      | Default; for HPC clusters         | 8 CPUs, 40 GB       |
+| `local`   | local    | Workstation/laptop testing        | 4 CPUs, 16 GB       |
+| `lsf`     | LSF      | Explicit LSF profile              | 8 CPUs, 40 GB       |
 
 **Run locally** (e.g. on a Mac or workstation without LSF):
 
@@ -131,9 +133,8 @@ nextflow run main.nf -profile lsf
 ```
 
 - **LSF defaults** (tune to your site in `nextflow.config`):
-  - **Queue**: `general`
-  - **Resources per process**: 8 CPUs, 50 GB RAM
-  - **Work directory**: `LSF_SCRATCH` if defined, otherwise `/scratch/$USER/nextflow_work`
+  - **Queue**: `standard`
+  - **Resources per process**: 8 CPUs, 40 GB RAM
 
 **One-time environment setup on the HPC:**
 
@@ -154,7 +155,7 @@ Create a submission script, e.g. `run_shareseq.lsf`:
 ```bash
 #!/bin/bash
 #BSUB -J shareseq
-#BSUB -q general
+#BSUB -q standard
 #BSUB -n 8
 #BSUB -M 51200
 #BSUB -R "rusage[mem=51200]"
@@ -188,7 +189,7 @@ nextflow run main.nf -profile lsf \
 
 **Checklist before running:**
 
-- `RAW_FASTQ/` (or `params.raw_fastq`) contains your raw, undemultiplexed FASTQs.
+- `params.raw_fastq` points to a directory containing your R1/R2/R3 FASTQs.
 - `Genomes/` and `GTF/` have been prepared using `Genomes/prepare_genomes.sh` and `GTF/download_gtf.sh`.
 - `barcodes_8bp_file` and `barcodes_rc` are set correctly for your barcode scheme.
 
