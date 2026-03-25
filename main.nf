@@ -13,7 +13,7 @@ params.gtf_dir             = params.gtf_dir             ?: 'GTF'
 params.umi_len             = params.umi_len             ?: 10
 params.bc_coords           = params.bc_coords           ?: '15-23,53-61,91-99'
 params.species_model       = params.species_model       ?: 'human'  // 'human', 'mouse', or 'hybrid'
-// 'single' = STARsolo CB_UMI_Complex on trimmed R1 + withBarcodes R3
+// 'single' = STARsolo CB_UMI_Complex on Poly-T–matched R1 + withBarcodes R3
 // 'paired'  = Paired_Barcode_Matcher then STARsolo CB_UMI_Simple (outputs under STARsolo_paired/)
 params.star_alignment_mode = params.star_alignment_mode ?: 'single' // 'single' or 'paired'
 params.barcodes_8bp_file   = params.barcodes_8bp_file   ?: 'barcodes_RC.txt'
@@ -130,61 +130,6 @@ process FASTQC_RAW {
     """
     mkdir -p fastqc_raw
     fastqc -o fastqc_raw -f fastq ${fastq}
-    """
-}
-
-process TRIM_FASTQ {
-    tag { file(fastq).name }
-
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
-
-    input:
-    path fastq
-
-    output:
-    // Preserve read identity and place "trimmed" before read designator, e.g.
-    // sampleA.matched.R3.fastq.gz -> sampleA.matched.trimmed.R3.fastq.gz
-    path "trimmed/*.trimmed.R*.fastq.gz", emit: trimmed_fastq
-    path "trimmed/*.trimmed.R*.fastp.json"
-    path "trimmed/*.trimmed.R*.fastp.html"
-
-    script:
-    def stem = fastq.baseName.replaceFirst(/\.fastq$/, '')
-    def outStem = stem
-        .replaceFirst(/\.R([123])$/, '.trimmed.R$1')
-        .replaceFirst(/_R([123])$/, '_trimmed.R$1')
-    """
-    mkdir -p trimmed
-    fastp \\
-      -i ${fastq} \\
-      -o trimmed/${outStem}.fastq.gz \\
-      -w ${task.cpus} \\
-      -j trimmed/${outStem}.fastp.json \\
-      -h trimmed/${outStem}.fastp.html
-    """
-}
-
-process FASTQC_TRIMMED {
-    tag { file(fastq).name }
-
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
-
-    input:
-    path fastq
-
-    output:
-    // Accept any FastQC-style output for trimmed reads
-    path "fastqc_trimmed/*_fastqc.*", emit: trimmed_reports
-
-    """
-    # Skip empty trimmed FASTQs to avoid FastQC gzip errors
-    if [ ! -s "${fastq}" ]; then
-      echo "Skipping FastQC on empty FASTQ: ${fastq}" >&2
-      exit 0
-    fi
-
-    mkdir -p fastqc_trimmed
-    fastqc -o fastqc_trimmed -f fastq ${fastq}
     """
 }
 
@@ -681,76 +626,43 @@ workflow {
     // Expand wildcard output collections into one FASTQ path per emission.
     def ch_polyt_fastq = poly_ch.polyt_outputs.flatten()
 
-    // Trim ONLY Poly-T–matched R1 and R3 (R2 stays untrimmed)
-    def ch_for_trim = ch_polyt_fastq.filter { f ->
-        def n = f.name
-        n.contains('matched.R1') || n.contains('matched.R3')
-    }
+    // Do NOT trim reads: use Poly-T–matched reads directly downstream.
+    // - ADD_R2_BARCODES_TO_R3 uses Poly-T–matched R2 + R3
+    // - STARsolo uses Poly-T–matched R1 + withBarcodes_R3
+    def ch_polyt_r1_for_align = ch_polyt_fastq.filter { it.name.contains('matched.R1') }
+    def ch_polyt_r2 = ch_polyt_fastq.filter { it.name.contains('matched.R2') }
+    def ch_polyt_r3 = ch_polyt_fastq.filter { it.name.contains('matched.R3') }
 
-    TRIM_FASTQ(ch_for_trim)
-    FASTQC_TRIMMED(TRIM_FASTQ.out.trimmed_fastq)
+    // Determine read length from Poly-T–matched R1 to drive STAR index sjdbOverhang
+    log.info "Using Poly-T–matched R1 to determine read length for STAR index."
+    def ch_r1_for_index = ch_polyt_r1_for_align.take(1)
+    DETERMINE_READ_LENGTH(ch_r1_for_index)
 
-    // Build trimmed R1 channels for downstream consumers
-    def ch_trimmed_r1_for_index = TRIM_FASTQ.out.trimmed_fastq
-        .filter { it.name.contains('.trimmed.R1.') }
-        .take(1)
-
-    def ch_trimmed_r1_for_single_align = TRIM_FASTQ.out.trimmed_fastq
-        .filter { it.name.contains('.trimmed.R1.') }
-
-    def ch_trimmed_r1_for_paired_align = TRIM_FASTQ.out.trimmed_fastq
-        .filter { it.name.contains('.trimmed.R1.') }
-
-    // Use Poly-T–matched R2 and trimmed R3 for barcode prepending
-    def ch_r2_source = ch_polyt_fastq.filter { it.name.contains('matched.R2') }
-    def ch_r3_source = TRIM_FASTQ.out.trimmed_fastq.filter { it.name.contains('.trimmed.R3.') }
+    // Use Poly-T–matched R2 and R3 for barcode prepending
+    def ch_r2_source = ch_polyt_r2
+    def ch_r3_source = ch_polyt_r3
 
     ch_r2_source
-        .map { r2 ->
-            // Normalize to a shared sample id across:
-            //  - sampleA.matched.R2.fastq.gz
-            //  - sampleA.matched.trimmed.R3.fastq.gz
-            def sid = r2.name
-                .replaceFirst(/\.matched\.R2\.fastq\.gz$/, '')
-                .replaceFirst(/_R2\.fastq\.gz$/, '')
-            tuple(sid, r2)
-        }
+        .map { r2 -> tuple(normalizeSampleId(r2.name), r2) }
         .join(
-            ch_r3_source.map { r3 ->
-                def sid = r3.name
-                    .replaceFirst(/\.matched\.trimmed\.R3\.fastq\.gz$/, '')
-                    .replaceFirst(/\.matched\.R3\.fastq(?:\.trimmed\.fastq)?\.gz$/, '')
-                    .replaceFirst(/_trimmed\.R3\.fastq\.gz$/, '')
-                    .replaceFirst(/_R3(?:\.trimmed)?\.fastq\.gz$/, '')
-                tuple(sid, r3)
-            }
+            ch_r3_source.map { r3 -> tuple(normalizeSampleId(r3.name), r3) }
         )
         .map { sample_id, r2, r3 -> tuple(r2, r3) }
         .set { ch_r2_r3_pairs }
 
     ADD_R2_BARCODES_TO_R3(ch_r2_r3_pairs)
 
-    // Determine read length from trimmed R1 to drive STAR index sjdbOverhang
-    log.info "Using trimmed R1 to determine read length for STAR index."
-    def ch_r1_for_index = ch_trimmed_r1_for_index
-
-    ch_r1_for_index
-        .take(1)
-        .set { ch_r1_single }
-
-    DETERMINE_READ_LENGTH(ch_r1_single)
     DETERMINE_READ_LENGTH.out.read_length
         .combine(ADD_R2_BARCODES_TO_R3.out.r3_with_barcodes.take(1))
         .set { ch_star_index_input }
     STAR_INDEX(ch_star_index_input)
 
-    // Single-end STARsolo alignment using (trimmed, Poly-T-matched) R1 and withBarcodes_R3 when available
+    // Single-end STARsolo alignment using Poly-T–matched R1 and withBarcodes_R3
     if( params.star_alignment_mode == 'single' ) {
         log.info "Running single-end STARsolo alignment."
 
-        // Always use trimmed R1 for alignment.
-        log.info "Using trimmed R1 for alignment."
-        def ch_r1_source_for_align = ch_trimmed_r1_for_single_align
+        log.info "Using Poly-T–matched R1 for alignment."
+        def ch_r1_source_for_align = ch_polyt_r1_for_align
 
         ch_r1_source_for_align
             .map { r1 ->
@@ -793,9 +705,8 @@ workflow {
     } else if( params.star_alignment_mode == 'paired' ) {
         log.info "Running paired-end path: barcode matching (3×8bp, 1MM) then STARsolo CB_UMI_Simple."
 
-        // Always use trimmed R1 for paired-end alignment (to match single-end path)
-        log.info "Using trimmed R1 for paired alignment."
-        def ch_r1_source_for_align_paired = ch_trimmed_r1_for_paired_align
+        log.info "Using Poly-T–matched R1 for paired alignment."
+        def ch_r1_source_for_align_paired = ch_polyt_r1_for_align
 
         ch_r1_source_for_align_paired
             .map { r1 -> tuple(normalizeSampleId(r1.name), r1) }
