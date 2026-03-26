@@ -18,6 +18,9 @@ params.species_model       = params.species_model       ?: 'human'  // 'human', 
 params.star_alignment_mode = params.star_alignment_mode ?: 'single' // 'single' or 'paired'
 params.barcodes_8bp_file   = params.barcodes_8bp_file   ?: 'barcodes_RC.txt'
 params.barcodes_rc         = (params.barcodes_rc in [true, 'true'])
+// Optional adapter/quality trimming with fastp (default off).
+// R1 is trimmed normally; R3 protects the first `umi_len` bases (UMI) from any trimming.
+params.trim_reads          = (params.trim_reads in [true, 'true'])
 
 // Derive a single "effective" 8bp whitelist file used everywhere:
 //  - Single-end STARsolo
@@ -55,6 +58,7 @@ log.info "Barcode coords (R2)          : ${params.bc_coords}"
 log.info "User 8bp barcode file        : ${params.barcodes_8bp_file}"
 log.info "Reverse-complement barcodes? : ${params.barcodes_rc}"
 log.info "Effective 8bp whitelist file : ${effectiveCbWhitelistPath}"
+log.info "Trim reads (fastp)           : ${params.trim_reads}"
 
 /*
  * Channel definitions
@@ -152,6 +156,152 @@ process POLYT_FILTER {
       ${r2_fastq} \\
       ${r3_fastq} \\
       polyt_filtered
+    """
+}
+
+process TRIM_R1 {
+    tag { file(fastq).name }
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    path fastq
+
+    output:
+    path "trimmed/${fastq.baseName}.trimmed.fastq.gz", emit: trimmed_r1
+    path "trimmed/${fastq.baseName}.fastp.json"
+    path "trimmed/${fastq.baseName}.fastp.html"
+
+    """
+    mkdir -p trimmed
+    fastp \\
+      -i ${fastq} \\
+      -o trimmed/${fastq.baseName}.trimmed.fastq.gz \\
+      -w ${task.cpus} \\
+      --disable_quality_filtering \\
+      --disable_length_filtering \\
+      -j trimmed/${fastq.baseName}.fastp.json \\
+      -h trimmed/${fastq.baseName}.fastp.html
+    """
+}
+
+process TRIM_R3_PROTECTED {
+    tag { file(fastq).name }
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    tuple path(fastq), val(protect_len)
+
+    output:
+    path "trimmed/${fastq.baseName}.trimmed.fastq.gz", emit: trimmed_r3
+    path "trimmed/${fastq.baseName}.fastp.json"
+    path "trimmed/${fastq.baseName}.fastp.html"
+
+    shell:
+    '''
+    mkdir -p trimmed
+
+    # Split each R3 read into a protected prefix (first !{protect_len} bp, kept verbatim)
+    # and a suffix that fastp trims. Reassemble afterward so UMI bases are never altered.
+
+    python3 - "!{fastq}" "!{protect_len}" <<'PY'
+import gzip, sys, os
+
+inpath = sys.argv[1]
+protect = int(sys.argv[2])
+
+opener = gzip.open if inpath.endswith('.gz') else open
+
+with opener(inpath, 'rt') as fq, \
+     open('_protected.fastq', 'w') as pf, \
+     open('_suffix.fastq', 'w') as sf:
+    while True:
+        header = fq.readline()
+        if not header:
+            break
+        seq  = fq.readline().rstrip('\\n')
+        plus = fq.readline()
+        qual = fq.readline().rstrip('\\n')
+
+        pf.write(header)
+        pf.write(seq[:protect] + '\\n')
+        pf.write(plus)
+        pf.write(qual[:protect] + '\\n')
+
+        sf.write(header)
+        sf.write(seq[protect:] + '\\n')
+        sf.write(plus)
+        sf.write(qual[protect:] + '\\n')
+PY
+
+    # Trim only the suffix portion.
+    # Disable read-level filters so fastp never drops reads, keeping lockstep with
+    # the protected-prefix file (adapter/quality base trimming still runs).
+    fastp \
+      -i _suffix.fastq \
+      -o _suffix_trimmed.fastq.gz \
+      -w !{task.cpus} \
+      --disable_quality_filtering \
+      --disable_length_filtering \
+      -j trimmed/!{fastq.baseName}.fastp.json \
+      -h trimmed/!{fastq.baseName}.fastp.html
+
+    # Reassemble: protected prefix + trimmed suffix
+    python3 - "_protected.fastq" "_suffix_trimmed.fastq.gz" "trimmed/!{fastq.baseName}.trimmed.fastq.gz" <<'PY'
+import gzip, sys
+
+prot_path = sys.argv[1]
+trim_path = sys.argv[2]
+out_path  = sys.argv[3]
+
+with open(prot_path, 'r') as pf, \
+     gzip.open(trim_path, 'rt') as tf, \
+     gzip.open(out_path, 'wt') as out:
+    while True:
+        p_header = pf.readline()
+        if not p_header:
+            break
+        p_seq  = pf.readline().rstrip('\\n')
+        _      = pf.readline()
+        p_qual = pf.readline().rstrip('\\n')
+
+        t_header = tf.readline()
+        if not t_header:
+            # fastp dropped the read entirely; write protected portion only
+            out.write(p_header)
+            out.write(p_seq + '\\n')
+            out.write('+\\n')
+            out.write(p_qual + '\\n')
+            continue
+        t_seq  = tf.readline().rstrip('\\n')
+        _      = tf.readline()
+        t_qual = tf.readline().rstrip('\\n')
+
+        out.write(p_header)
+        out.write(p_seq + t_seq + '\\n')
+        out.write('+\\n')
+        out.write(p_qual + t_qual + '\\n')
+PY
+
+    rm -f _protected.fastq _suffix.fastq
+    '''
+}
+
+process FASTQC_TRIMMED {
+    tag { file(fastq).name }
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    path fastq
+
+    output:
+    path "fastqc_trimmed/${fastq.simpleName}_fastqc.*", emit: trimmed_reports
+
+    """
+    mkdir -p fastqc_trimmed
+    fastqc -o fastqc_trimmed -f fastq ${fastq}
     """
 }
 
@@ -595,8 +745,7 @@ workflow {
     // FastQC on raw (or demuxed) FASTQs
     FASTQC_RAW(ch_input_fastq)
 
-    // Mandatory Poly-T filtering on R3 (UMI+PolyT+cDNA) FASTQs and downstream
-    // barcode prepending (no trimming in current workflow).
+    // Mandatory Poly-T filtering, optional fastp trimming, then barcode prepending.
 
     // Build R1/R2/R3 triplets directly from DEMULTIPLEX_PLACEHOLDER outputs.
     // This avoids race/static-glob issues from Channel.fromPath when running in one workflow.
@@ -626,21 +775,46 @@ workflow {
     // Expand wildcard output collections into one FASTQ path per emission.
     def ch_polyt_fastq = poly_ch.polyt_outputs.flatten()
 
-    // Do NOT trim reads: use Poly-T–matched reads directly downstream.
-    // - ADD_R2_BARCODES_TO_R3 uses Poly-T–matched R2 + R3
-    // - STARsolo uses Poly-T–matched R1 + withBarcodes_R3
-    def ch_polyt_r1_for_align = ch_polyt_fastq.filter { it.name.contains('matched.R1') }
+    // Poly-T–matched reads, split by mate
+    def ch_polyt_r1 = ch_polyt_fastq.filter { it.name.contains('matched.R1') }
     def ch_polyt_r2 = ch_polyt_fastq.filter { it.name.contains('matched.R2') }
     def ch_polyt_r3 = ch_polyt_fastq.filter { it.name.contains('matched.R3') }
 
-    // Determine read length from Poly-T–matched R1 to drive STAR index sjdbOverhang
-    log.info "Using Poly-T–matched R1 to determine read length for STAR index."
-    def ch_r1_for_index = ch_polyt_r1_for_align.take(1)
+    // Optional fastp trimming (params.trim_reads).
+    // R1: standard fastp trim.
+    // R3: first umi_len bases (UMI) are protected; only the remainder is trimmed.
+    // Trimming runs BEFORE barcode prepend so R3 UMI is intact for ADD_R2_BARCODES_TO_R3.
+    def ch_r1_for_downstream
+    def ch_r3_for_barcode_prepend
+
+    if (params.trim_reads) {
+        log.info "Trimming enabled: R1 via fastp; R3 with first ${params.umi_len}bp protected."
+
+        TRIM_R1(ch_polyt_r1)
+        ch_r1_for_downstream = TRIM_R1.out.trimmed_r1
+
+        ch_polyt_r3
+            .map { r3 -> tuple(r3, params.umi_len) }
+            .set { ch_r3_for_trim }
+        TRIM_R3_PROTECTED(ch_r3_for_trim)
+        ch_r3_for_barcode_prepend = TRIM_R3_PROTECTED.out.trimmed_r3
+
+        FASTQC_TRIMMED(TRIM_R1.out.trimmed_r1.mix(TRIM_R3_PROTECTED.out.trimmed_r3))
+    } else {
+        log.info "Trimming disabled: using Poly-T–matched reads directly."
+        ch_r1_for_downstream = ch_polyt_r1
+        ch_r3_for_barcode_prepend = ch_polyt_r3
+    }
+
+    // R2 is never trimmed
+    def ch_r2_source = ch_polyt_r2
+
+    // Determine read length from R1 (trimmed or untrimmed) to drive STAR index sjdbOverhang
+    def ch_r1_for_index = ch_r1_for_downstream.take(1)
     DETERMINE_READ_LENGTH(ch_r1_for_index)
 
-    // Use Poly-T–matched R2 and R3 for barcode prepending
-    def ch_r2_source = ch_polyt_r2
-    def ch_r3_source = ch_polyt_r3
+    // Use R2 and R3 (trimmed or untrimmed) for barcode prepending
+    def ch_r3_source = ch_r3_for_barcode_prepend
 
     ch_r2_source
         .map { r2 -> tuple(normalizeSampleId(r2.name), r2) }
@@ -661,8 +835,7 @@ workflow {
     if( params.star_alignment_mode == 'single' ) {
         log.info "Running single-end STARsolo alignment."
 
-        log.info "Using Poly-T–matched R1 for alignment."
-        def ch_r1_source_for_align = ch_polyt_r1_for_align
+        def ch_r1_source_for_align = ch_r1_for_downstream
 
         ch_r1_source_for_align
             .map { r1 ->
@@ -705,8 +878,7 @@ workflow {
     } else if( params.star_alignment_mode == 'paired' ) {
         log.info "Running paired-end path: barcode matching (3×8bp, 1MM) then STARsolo CB_UMI_Simple."
 
-        log.info "Using Poly-T–matched R1 for paired alignment."
-        def ch_r1_source_for_align_paired = ch_polyt_r1_for_align
+        def ch_r1_source_for_align_paired = ch_r1_for_downstream
 
         ch_r1_source_for_align_paired
             .map { r1 -> tuple(normalizeSampleId(r1.name), r1) }
