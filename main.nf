@@ -168,22 +168,23 @@ process TRIM_R1 {
     path fastq
 
     output:
-    path "trimmed/*.trimmed.fastq.gz", emit: trimmed_r1
+    path "trimmed/*.fastq.gz", emit: trimmed_r1
     path "trimmed/*.fastp.json"
     path "trimmed/*.fastp.html"
 
     script:
     def stem = fastq.name.replaceFirst(/\.(fastq|fq)(\.gz)?$/, '')
+    def outBase = stem.replaceFirst(/\.(R[123])$/, '.trimmed.$1')
     """
     mkdir -p trimmed
     fastp \\
       -i ${fastq} \\
-      -o trimmed/${stem}.trimmed.fastq.gz \\
+      -o trimmed/${outBase}.fastq.gz \\
       -w ${task.cpus} \\
       --disable_quality_filtering \\
       --disable_length_filtering \\
-      -j trimmed/${stem}.fastp.json \\
-      -h trimmed/${stem}.fastp.html
+      -j trimmed/${outBase}.fastp.json \\
+      -h trimmed/${outBase}.fastp.html
     """
 }
 
@@ -196,13 +197,14 @@ process TRIM_R3_PROTECTED {
     tuple path(fastq), val(protect_len)
 
     output:
-    path "trimmed/*.trimmed.fastq.gz", emit: trimmed_r3
+    path "trimmed/*.fastq.gz", emit: trimmed_r3
     path "trimmed/*.fastp.json"
     path "trimmed/*.fastp.html"
 
     shell:
     '''
     STEM="!{fastq.name.replaceFirst(/\\.(fastq|fq)(\\.gz)?$/, '')}"
+    OUT_BASE=$(echo "${STEM}" | sed 's/\.\(R[123]\)$/.trimmed.\1/')
     mkdir -p trimmed
 
     # Split each R3 read into a protected prefix (first !{protect_len} bp, kept verbatim)
@@ -247,11 +249,11 @@ PY
       -w !{task.cpus} \
       --disable_quality_filtering \
       --disable_length_filtering \
-      -j "trimmed/${STEM}.fastp.json" \
-      -h "trimmed/${STEM}.fastp.html"
+      -j "trimmed/${OUT_BASE}.fastp.json" \
+      -h "trimmed/${OUT_BASE}.fastp.html"
 
     # Reassemble: protected prefix + trimmed suffix
-    python3 - "_protected.fastq" "_suffix_trimmed.fastq.gz" "trimmed/${STEM}.trimmed.fastq.gz" <<'PY'
+    python3 - "_protected.fastq" "_suffix_trimmed.fastq.gz" "trimmed/${OUT_BASE}.fastq.gz" <<'PY'
 import gzip, sys
 
 prot_path = sys.argv[1]
