@@ -168,20 +168,22 @@ process TRIM_R1 {
     path fastq
 
     output:
-    path "trimmed/${fastq.baseName}.trimmed.fastq.gz", emit: trimmed_r1
-    path "trimmed/${fastq.baseName}.fastp.json"
-    path "trimmed/${fastq.baseName}.fastp.html"
+    path "trimmed/*.trimmed.fastq.gz", emit: trimmed_r1
+    path "trimmed/*.fastp.json"
+    path "trimmed/*.fastp.html"
 
+    script:
+    def stem = fastq.name.replaceFirst(/\.(fastq|fq)(\.gz)?$/, '')
     """
     mkdir -p trimmed
     fastp \\
       -i ${fastq} \\
-      -o trimmed/${fastq.baseName}.trimmed.fastq.gz \\
+      -o trimmed/${stem}.trimmed.fastq.gz \\
       -w ${task.cpus} \\
       --disable_quality_filtering \\
       --disable_length_filtering \\
-      -j trimmed/${fastq.baseName}.fastp.json \\
-      -h trimmed/${fastq.baseName}.fastp.html
+      -j trimmed/${stem}.fastp.json \\
+      -h trimmed/${stem}.fastp.html
     """
 }
 
@@ -194,12 +196,13 @@ process TRIM_R3_PROTECTED {
     tuple path(fastq), val(protect_len)
 
     output:
-    path "trimmed/${fastq.baseName}.trimmed.fastq.gz", emit: trimmed_r3
-    path "trimmed/${fastq.baseName}.fastp.json"
-    path "trimmed/${fastq.baseName}.fastp.html"
+    path "trimmed/*.trimmed.fastq.gz", emit: trimmed_r3
+    path "trimmed/*.fastp.json"
+    path "trimmed/*.fastp.html"
 
     shell:
     '''
+    STEM="!{fastq.name.replaceFirst(/\\.(fastq|fq)(\\.gz)?$/, '')}"
     mkdir -p trimmed
 
     # Split each R3 read into a protected prefix (first !{protect_len} bp, kept verbatim)
@@ -244,11 +247,11 @@ PY
       -w !{task.cpus} \
       --disable_quality_filtering \
       --disable_length_filtering \
-      -j trimmed/!{fastq.baseName}.fastp.json \
-      -h trimmed/!{fastq.baseName}.fastp.html
+      -j "trimmed/${STEM}.fastp.json" \
+      -h "trimmed/${STEM}.fastp.html"
 
     # Reassemble: protected prefix + trimmed suffix
-    python3 - "_protected.fastq" "_suffix_trimmed.fastq.gz" "trimmed/!{fastq.baseName}.trimmed.fastq.gz" <<'PY'
+    python3 - "_protected.fastq" "_suffix_trimmed.fastq.gz" "trimmed/${STEM}.trimmed.fastq.gz" <<'PY'
 import gzip, sys
 
 prot_path = sys.argv[1]
@@ -268,7 +271,6 @@ with open(prot_path, 'r') as pf, \
 
         t_header = tf.readline()
         if not t_header:
-            # fastp dropped the read entirely; write protected portion only
             out.write(p_header)
             out.write(p_seq + '\\n')
             out.write('+\\n')
