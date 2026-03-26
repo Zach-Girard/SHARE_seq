@@ -10,10 +10,11 @@ This workflow implements an end-to-end SHARE-seq processing pipeline:
 - **Demultiplexing** (`DEMULTIPLEX_PLACEHOLDER`): currently a pass-through copy into `demux/`, designed to be replaced by a real SHARE-seq demux script.
 - **Raw QC** (`FASTQC_RAW`): runs FastQC on each raw/demuxed FASTQ into `fastqc_raw/`.
 - **Poly-T filtering** (`POLYT_FILTER`): splits R1/R2/R3 into `matched` vs `noPolyT` buckets under `polyt_filtered/`.
-- **Barcode prepending** (`ADD_R2_BARCODES_TO_R3`): extracts three barcodes from Poly-T–matched R2 (configured by `bc_coords`) and prepends them to Poly-T–matched R3, writing `withBarcodes_*` outputs under `polyt_filtered/`.
+- **Optional fastp trimming** (`TRIM_R1`, `TRIM_R3_PROTECTED`, `FASTQC_TRIMMED`): when `params.trim_reads = true`, trims Poly-T–matched R1 with standard fastp and trims R3 while protecting the first `umi_len` bases (UMI). FastQC reports are generated for trimmed reads under `fastqc_trimmed/`. Disabled by default.
+- **Barcode prepending** (`ADD_R2_BARCODES_TO_R3`): extracts three barcodes from Poly-T–matched R2 (configured by `bc_coords`) and prepends them to R3 (trimmed or untrimmed), writing `withBarcodes_*` outputs under `polyt_filtered/`.
 - **STAR genome index** (`STAR_INDEX`): builds or reuses a STAR genome index per `species_model` and read length, using fingerprinting (species, read length, genome FASTA, GTF) to avoid redundant rebuilds.
 - **STARsolo alignment**:
-  - **Single-end** (`STARSOLO_SINGLE`): uses Poly-T–matched R1 + `withBarcodes_R3`.
+  - **Single-end** (`STARSOLO_SINGLE`): uses R1 + `withBarcodes_R3` (trimmed or untrimmed, depending on `trim_reads`).
   - **Paired-end** (`PAIRED_BARCODE_MATCH` + `STARSOLO_PAIRED`): barcode-matches read pairs, then runs STARsolo paired mode.
 - **Downstream QC** (`KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES`): generates knee plots and, for `species_model = hybrid`, barnyard collision plots and species-purity split summaries from STARsolo GeneFull outputs.
 
@@ -192,4 +193,5 @@ nextflow run main.nf -profile lsf \
 - `params.raw_fastq` points to a directory containing your R1/R2/R3 FASTQs.
 - `Genomes/` and `GTF/` have been prepared using `Genomes/prepare_genomes.sh` and `GTF/download_gtf.sh`.
 - `barcodes_8bp_file` and `barcodes_rc` are set correctly for your barcode scheme.
+- Set `trim_reads = true` in `nextflow.config` (or `--trim_reads true` on CLI) to enable fastp trimming. The first `umi_len` bases of R3 are always protected.
 
