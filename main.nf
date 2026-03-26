@@ -201,16 +201,13 @@ process TRIM_R3_PROTECTED {
     path "trimmed/*.fastp.json"
     path "trimmed/*.fastp.html"
 
-    shell:
-    '''
-    STEM="!{fastq.name.replaceFirst(/\\.(fastq|fq)(\\.gz)?$/, '')}"
-    OUT_BASE=$(echo "${STEM}" | sed 's/\.\(R[123]\)$/.trimmed.\1/')
+    script:
+    def stem = fastq.name.replaceFirst(/\.(fastq|fq)(\.gz)?$/, '')
+    def outBase = stem.replaceFirst(/\.(R[123])$/, '.trimmed.$1')
+    """
     mkdir -p trimmed
 
-    # Split each R3 read into a protected prefix (first !{protect_len} bp, kept verbatim)
-    # and a suffix that fastp trims. Reassemble afterward so UMI bases are never altered.
-
-    python3 - "!{fastq}" "!{protect_len}" <<'PY'
+    python3 - "${fastq}" "${protect_len}" <<'PY'
 import gzip, sys, os
 
 inpath = sys.argv[1]
@@ -218,8 +215,8 @@ protect = int(sys.argv[2])
 
 opener = gzip.open if inpath.endswith('.gz') else open
 
-with opener(inpath, 'rt') as fq, \
-     open('_protected.fastq', 'w') as pf, \
+with opener(inpath, 'rt') as fq, \\
+     open('_protected.fastq', 'w') as pf, \\
      open('_suffix.fastq', 'w') as sf:
     while True:
         header = fq.readline()
@@ -240,28 +237,24 @@ with opener(inpath, 'rt') as fq, \
         sf.write(qual[protect:] + '\\n')
 PY
 
-    # Trim only the suffix portion.
-    # Disable read-level filters so fastp never drops reads, keeping lockstep with
-    # the protected-prefix file (adapter/quality base trimming still runs).
-    fastp \
-      -i _suffix.fastq \
-      -o _suffix_trimmed.fastq.gz \
-      -w !{task.cpus} \
-      --disable_quality_filtering \
-      --disable_length_filtering \
-      -j "trimmed/${OUT_BASE}.fastp.json" \
-      -h "trimmed/${OUT_BASE}.fastp.html"
+    fastp \\
+      -i _suffix.fastq \\
+      -o _suffix_trimmed.fastq.gz \\
+      -w ${task.cpus} \\
+      --disable_quality_filtering \\
+      --disable_length_filtering \\
+      -j trimmed/${outBase}.fastp.json \\
+      -h trimmed/${outBase}.fastp.html
 
-    # Reassemble: protected prefix + trimmed suffix
-    python3 - "_protected.fastq" "_suffix_trimmed.fastq.gz" "trimmed/${OUT_BASE}.fastq.gz" <<'PY'
+    python3 - "_protected.fastq" "_suffix_trimmed.fastq.gz" "trimmed/${outBase}.fastq.gz" <<'PY'
 import gzip, sys
 
 prot_path = sys.argv[1]
 trim_path = sys.argv[2]
 out_path  = sys.argv[3]
 
-with open(prot_path, 'r') as pf, \
-     gzip.open(trim_path, 'rt') as tf, \
+with open(prot_path, 'r') as pf, \\
+     gzip.open(trim_path, 'rt') as tf, \\
      gzip.open(out_path, 'wt') as out:
     while True:
         p_header = pf.readline()
@@ -289,7 +282,7 @@ with open(prot_path, 'r') as pf, \
 PY
 
     rm -f _protected.fastq _suffix.fastq
-    '''
+    """
 }
 
 process FASTQC_TRIMMED {
