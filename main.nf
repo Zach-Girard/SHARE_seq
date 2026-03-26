@@ -313,19 +313,19 @@ process ADD_R2_BARCODES_TO_R3 {
     publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
-    tuple path(r2_fastq), path(r3_fastq)
+    tuple path(r2_fastq), path(r3_fastq), val(out_dir)
 
     output:
-    path "polyt_filtered/withBarcodes_*", emit: r3_with_barcodes
+    path "${out_dir}/withBarcodes_*", emit: r3_with_barcodes
 
     """
-    mkdir -p polyt_filtered
+    mkdir -p ${out_dir}
     python "${projectDir}/Read3_Barcode_Addition.py" \\
       -r3 ${r3_fastq} \\
       -r2 ${r2_fastq} \\
       -bc ${params.bc_coords} \\
       -umi 0-${params.umi_len}
-    mv withBarcodes_* polyt_filtered/
+    mv withBarcodes_* ${out_dir}/
     """
 }
 
@@ -788,9 +788,11 @@ workflow {
     // Trimming runs BEFORE barcode prepend so R3 UMI is intact for ADD_R2_BARCODES_TO_R3.
     def ch_r1_for_downstream
     def ch_r3_for_barcode_prepend
+    def barcode_out_dir
 
     if (params.trim_reads) {
         log.info "Trimming enabled: R1 via fastp; R3 with first ${params.umi_len}bp protected."
+        barcode_out_dir = 'trimmed'
 
         TRIM_R1(ch_polyt_r1)
         ch_r1_for_downstream = TRIM_R1.out.trimmed_r1
@@ -804,6 +806,7 @@ workflow {
         FASTQC_TRIMMED(TRIM_R1.out.trimmed_r1.mix(TRIM_R3_PROTECTED.out.trimmed_r3))
     } else {
         log.info "Trimming disabled: using Poly-T–matched reads directly."
+        barcode_out_dir = 'polyt_filtered'
         ch_r1_for_downstream = ch_polyt_r1
         ch_r3_for_barcode_prepend = ch_polyt_r3
     }
@@ -815,7 +818,8 @@ workflow {
     def ch_r1_for_index = ch_r1_for_downstream.take(1)
     DETERMINE_READ_LENGTH(ch_r1_for_index)
 
-    // Use R2 and R3 (trimmed or untrimmed) for barcode prepending
+    // Use R2 and R3 (trimmed or untrimmed) for barcode prepending.
+    // withBarcodes output lands in trimmed/ or polyt_filtered/ matching the R3 source.
     def ch_r3_source = ch_r3_for_barcode_prepend
 
     ch_r2_source
@@ -823,7 +827,7 @@ workflow {
         .join(
             ch_r3_source.map { r3 -> tuple(normalizeSampleId(r3.name), r3) }
         )
-        .map { sample_id, r2, r3 -> tuple(r2, r3) }
+        .map { sample_id, r2, r3 -> tuple(r2, r3, barcode_out_dir) }
         .set { ch_r2_r3_pairs }
 
     ADD_R2_BARCODES_TO_R3(ch_r2_r3_pairs)
