@@ -297,7 +297,7 @@ process FASTQC_TRIMMED {
     path fastq
 
     output:
-    path "fastqc_trimmed/${fastq.simpleName}_fastqc.*", emit: trimmed_reports
+    path "fastqc_trimmed/*_fastqc.*", emit: trimmed_reports
 
     """
     mkdir -p fastqc_trimmed
