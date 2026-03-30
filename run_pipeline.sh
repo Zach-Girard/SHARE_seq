@@ -6,7 +6,10 @@
 #BSUB -M 2000
 #BSUB -R "rusage[mem=2000MB]"
 #BSUB -oo shareseq_%J.out
-#BSUB -eo shareseq_%J.err
 
 cd "$LS_SUBCWD"
-nextflow run main.nf
+nextflow run main.nf \
+  --undetermined_r1 Undetermined_S0_R1_001.fastq.gz \
+  --undetermined_r2 Undetermined_S0_R2_001.fastq.gz \
+  --sample_barcode_file input.tsv \
+  -resume
