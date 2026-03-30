@@ -487,7 +487,7 @@ process STARSOLO_SINGLE {
       --soloCBwhitelist ${effectiveCbWhitelistPath} ${effectiveCbWhitelistPath} ${effectiveCbWhitelistPath} \\
       --soloCBmatchWLtype 1MM \\
       --soloCBposition 0_0_0_7 0_8_0_15 0_16_0_23 \\
-      --soloUMIposition 0_24_0_33 \\
+      --soloUMIposition 0_24_0_${24 + params.umi_len - 1} \\
       --soloBarcodeReadLength 0 \\
       --soloFeatures Gene GeneFull \\
       --soloStrand Unstranded \\
@@ -690,10 +690,10 @@ process STARSOLO_PAIRED {
       --soloCBstart 1 \\
       --soloCBlen 24 \\
       --soloUMIstart 25 \\
-      --soloUMIlen 10 \\
+      --soloUMIlen ${params.umi_len} \\
       --soloBarcodeReadLength 0 \\
       --soloBarcodeMate 2 \\
-      --clip5pNbases 0 49 \\
+      --clip5pNbases 0 ${24 + params.umi_len + 15} \\
       --outFilterMatchNmin 20 \\
       --outFilterMatchNminOverLread 0 \\
       --outFilterScoreMinOverLread 0 \\
