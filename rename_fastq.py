@@ -1,20 +1,9 @@
 #!/usr/bin/env python
 
-import sys
-import os
 import argparse
 import gzip
 import logging
-import Colorer
-import itertools
-import subprocess
-import sys
-import gzip
-import os
-import argparse
 import pandas as pd
-import subprocess
-import glob
 from utils import *
 
 

@@ -1,14 +1,7 @@
 #!/usr/bin/env python
-import sys
-import os
 import argparse
 import gzip
-from Bio.Seq import Seq
-from Bio import SeqIO
 import logging
-import Colorer
-import itertools
-import string
 import pandas as pd
 from utils import *
 
