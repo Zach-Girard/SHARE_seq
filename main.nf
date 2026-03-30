@@ -324,51 +324,33 @@ process ADD_R2_BARCODES_TO_R3 {
 process DETERMINE_READ_LENGTH {
     tag { file(r1_fastq).name }
 
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
-
     input:
     path r1_fastq
 
     output:
-    path "read_length.txt", emit: read_length
+    stdout emit: read_length
 
     """
-    # Determine read length from the second FASTQ line (gzip-safe, platform-independent)
-    python - "${r1_fastq}" > read_length.txt <<'PY'
-import gzip
-import sys
+    python - "${r1_fastq}" <<'PY'
+import gzip, sys
 
 path = sys.argv[1]
-
-def read_second_line(handle):
-    _header = handle.readline()
-    seq = handle.readline()
-    return seq.rstrip("\\n\\r")
-
-seq = ""
-if path.endswith(".gz"):
-    with gzip.open(path, "rt") as f:
-        seq = read_second_line(f)
-else:
-    with open(path, "rt") as f:
-        seq = read_second_line(f)
-
+opener = gzip.open if path.endswith(".gz") else open
+with opener(path, "rt") as f:
+    f.readline()
+    seq = f.readline().rstrip("\\n\\r")
 if not seq:
     raise SystemExit(f"Failed to determine read length from {path}")
-
-print(len(seq))
+print(len(seq), end="")
 PY
     """
 }
 
 process STAR_INDEX {
     tag { params.species_model }
-    // STAR index reuse/build is handled explicitly in the script by mirroring to
-    // `${projectDir}/${indexDir}`. A publishDir copy here can attempt to copy a
-    // reused symlinked index onto itself on shared filesystems and fail.
 
     input:
-    tuple path(read_length_file), path(barcoded_r3_dependency)
+    tuple val(read_length), path(barcoded_r3_dependency)
 
     output:
     path "STAR_index_*", emit: star_index
@@ -378,13 +360,11 @@ process STAR_INDEX {
     def genomes = params.genomes_dir
     def gtf = params.gtf_dir
     def species = params.species_model
-    def readLenFile = read_length_file.name
 
     """
     set -euo pipefail
 
-    # Read length from staged input (avoids Groovy file read before LSF staging)
-    readLen=\$(tr -d '[:space:]' < "${readLenFile}")
+    readLen=${read_length}
     overhang=\$((readLen - 1))
 
     case "${species}" in
@@ -800,6 +780,7 @@ workflow {
     // Read length from R1 drives STAR index sjdbOverhang
     def ch_r1_for_index = ch_r1_for_downstream.take(1)
     DETERMINE_READ_LENGTH(ch_r1_for_index)
+    def ch_read_length = DETERMINE_READ_LENGTH.out.read_length.map { it.trim() }
 
     // Barcode prepend: R2 barcodes → R3. Output dir matches the R3 source folder.
     def ch_r3_source = ch_r3_for_barcode_prepend
@@ -814,7 +795,7 @@ workflow {
 
     ADD_R2_BARCODES_TO_R3(ch_r2_r3_pairs)
 
-    DETERMINE_READ_LENGTH.out.read_length
+    ch_read_length
         .combine(ADD_R2_BARCODES_TO_R3.out.r3_with_barcodes.take(1))
         .set { ch_star_index_input }
     STAR_INDEX(ch_star_index_input)
