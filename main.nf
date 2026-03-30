@@ -106,7 +106,6 @@ Channel
 
 // Step 1: Split undetermined R1/R2 by sample index barcode in the read header.
 // Produces per-sample <name>.R1.fastq.gz / <name>.R2.fastq.gz.
-// TODO: requires utils.py and Colorer.py in the project directory.
 process DEMULTIPLEX {
     tag "demux"
 
