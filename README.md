@@ -1,24 +1,31 @@
-## NextFlow project
-
-This repository contains a Nextflow-based SHARE-seq workflow and supporting resources.
+## SHARE-seq Nextflow Pipeline
 
 ### Pipeline overview
 
-This workflow implements an end-to-end SHARE-seq processing pipeline:
+End-to-end SHARE-seq processing from raw FASTQs to STARsolo quantification and QC.
 
-- **Input discovery**: finds raw FASTQs under `params.raw_fastq` (configured in `nextflow.config` or passed via CLI).
-- **Demultiplexing** (`DEMULTIPLEX_PLACEHOLDER`): currently a pass-through copy into `demux/`, designed to be replaced by a real SHARE-seq demux script.
-- **Raw QC** (`FASTQC_RAW`): runs FastQC on each raw/demuxed FASTQ into `fastqc_raw/`.
-- **Poly-T filtering** (`POLYT_FILTER`): splits R1/R2/R3 into `matched` vs `noPolyT` buckets under `polyt_filtered/`.
-- **Optional fastp trimming** (`TRIM_R1`, `TRIM_R3_PROTECTED`, `FASTQC_TRIMMED`): when `params.trim_reads = true`, trims Poly-T–matched R1 with standard fastp and trims R3 while protecting the first `umi_len` bases (UMI). FastQC reports are generated for trimmed reads under `fastqc_trimmed/`. Disabled by default.
-- **Barcode prepending** (`ADD_R2_BARCODES_TO_R3`): extracts three barcodes from Poly-T–matched R2 (configured by `bc_coords`) and prepends them to R3 (trimmed or untrimmed), writing `withBarcodes_*` outputs under `polyt_filtered/`.
-- **STAR genome index** (`STAR_INDEX`): builds or reuses a STAR genome index per `species_model` and read length, using fingerprinting (species, read length, genome FASTA, GTF) to avoid redundant rebuilds.
-- **STARsolo alignment**:
-  - **Single-end** (`STARSOLO_SINGLE`): uses R1 + `withBarcodes_R3` (trimmed or untrimmed, depending on `trim_reads`).
-  - **Paired-end** (`PAIRED_BARCODE_MATCH` + `STARSOLO_PAIRED`): barcode-matches read pairs, then runs STARsolo paired mode.
-- **Downstream QC** (`KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES`): generates knee plots and, for `species_model = hybrid`, barnyard collision plots and species-purity split summaries from STARsolo GeneFull outputs.
+| Step | Process(es) | Output folder |
+|------|-------------|---------------|
+| 1. Demultiplex (placeholder) | `DEMULTIPLEX_PLACEHOLDER` | `demux/` |
+| 2. Raw QC | `FASTQC_RAW` | `fastqc_raw/` |
+| 3. Poly-T filtering | `POLYT_FILTER` | `polyt_filtered/` |
+| 4. Trimming (optional) | `TRIM_R1`, `TRIM_R3_PROTECTED`, `FASTQC_TRIMMED` | `trimmed/`, `fastqc_trimmed/` |
+| 5. Barcode prepend | `ADD_R2_BARCODES_TO_R3` | `trimmed/` or `polyt_filtered/` |
+| 6. STAR genome index | `STAR_INDEX` | `STAR_index_<species><len>bp/` |
+| 7a. Single-end alignment | `STARSOLO_SINGLE` | `STARsolo/<sample>/` |
+| 7b. Paired-end alignment | `PAIRED_BARCODE_MATCH`, `BUILD_PAIRED_WHITELIST`, `STARSOLO_PAIRED` | `STARsolo_paired/<sample>/` |
+| 8. Downstream QC | `KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES` | inside alignment output folder |
 
-See `main.nf` for exact channel wiring and `nextflow.config` for tunable parameters.
+**Key behaviour:**
+
+- **Poly-T filtering** is always run. Reads are split into `matched` (Poly-T present) and `noPolyT` buckets.
+- **Trimming** (`trim_reads = true`) runs fastp on Poly-T–matched R1 (standard) and R3 (first `umi_len` bases protected). Read-dropping filters are disabled to keep R1/R3 in sync. When trimming is off (default), Poly-T–matched reads flow directly to barcode prepend.
+- **Barcode prepend** extracts three 8bp barcodes from Poly-T–matched R2 and prepends them to R3 (trimmed or untrimmed). The `withBarcodes_*` output is written to `trimmed/` when trimming is enabled, or `polyt_filtered/` when disabled.
+- **STARsolo alignment** uses R1 + `withBarcodes_R3`. Single-end mode uses `CB_UMI_Complex`; paired-end mode first barcode-matches read pairs, then uses `CB_UMI_Simple` with a combinatorial 24bp whitelist.
+- **STAR genome index** is reused across runs when species, read length, genome FASTA, and GTF all match (fingerprint-based).
+- **Barnyard plots and species splits** are generated only when `species_model = hybrid`.
+
+See `main.nf` for channel wiring and `nextflow.config` for all tunable parameters.
 
 ### Environment
 
@@ -76,10 +83,10 @@ This will place the human and mouse GTFs under `GTF/Homo_sapiens/` and `GTF/Mus_
 
 ### Raw FASTQ input
 
-- Put input FASTQs in the directory specified by `params.raw_fastq`.
-- By default this is set in `nextflow.config` (for example `demux/` in many test runs).
-- You can override per run with `--raw_fastq /path/to/fastqs`.
-- Expected files are `*.fastq.gz` with R1/R2/R3 mate naming (e.g. `sampleA_R1.fastq.gz`, `sampleA_R2.fastq.gz`, `sampleA_R3.fastq.gz`).
+- Place input FASTQs in the directory specified by `params.raw_fastq` (default: `demux` in `nextflow.config`).
+- Override per run with `--raw_fastq /path/to/fastqs` (relative to project root or absolute).
+- Expected naming: `*.fastq.gz` with `_R1`, `_R2`, `_R3` mate designators (e.g. `sampleA_R1.fastq.gz`, `sampleA_R2.fastq.gz`, `sampleA_R3.fastq.gz`).
+- R1 = cDNA, R2 = barcodes (3x 8bp), R3 = UMI + Poly-T + cDNA.
 
 ### Barcode configuration
 
@@ -106,8 +113,6 @@ To use **your own 8bp barcode file**:
     - As the whitelist for paired-end barcode matching.
     - As the input to build the 24bp paired-end STARsolo whitelist (all 3-barcode combinations).
 - If `barcodes_rc = false`, the pipeline will use `barcodes_8bp_file` **as-is** in all of the above places.
-
-
 
 ### Running the pipeline
 
@@ -190,8 +195,10 @@ nextflow run main.nf -profile lsf \
 
 **Checklist before running:**
 
-- `params.raw_fastq` points to a directory containing your R1/R2/R3 FASTQs.
+- `params.raw_fastq` points to a directory containing your R1/R2/R3 `*.fastq.gz` files.
 - `Genomes/` and `GTF/` have been prepared using `Genomes/prepare_genomes.sh` and `GTF/download_gtf.sh`.
+- `species_model` matches your genome/GTF setup (`human`, `mouse`, or `hybrid`).
 - `barcodes_8bp_file` and `barcodes_rc` are set correctly for your barcode scheme.
-- Set `trim_reads = true` in `nextflow.config` (or `--trim_reads true` on CLI) to enable fastp trimming. The first `umi_len` bases of R3 are always protected.
+- `star_alignment_mode` is `single` or `paired` as needed.
+- Set `trim_reads = true` to enable fastp trimming. R3's first `umi_len` bases (UMI) are always protected.
 

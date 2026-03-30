@@ -1,10 +1,21 @@
 nextflow.enable.dsl=2
 
 /*
- * Minimal starter pipeline.
- * Assumes:
- *  - RAW_FASTQ/ contains raw FASTQ files
- *  - Genomes/ and GTF/ have been prepared using the helper scripts
+ * SHARE-seq processing pipeline.
+ *
+ * Steps:
+ *   1. Demultiplex (placeholder pass-through)
+ *   2. FastQC on raw reads
+ *   3. Poly-T filtering (R1/R2/R3)
+ *   4. Optional fastp trimming (R1 full; R3 with UMI protection)
+ *   5. Barcode prepending (R2 barcodes → R3)
+ *   6. STAR genome index (built or reused via fingerprint)
+ *   7. STARsolo alignment (single-end CB_UMI_Complex or paired-end CB_UMI_Simple)
+ *   8. QC: knee plots, barnyard plots (hybrid), species-purity splits (hybrid)
+ *
+ * Requires:
+ *   - params.raw_fastq directory with R1/R2/R3 *.fastq.gz files
+ *   - Genomes/ and GTF/ prepared via helper scripts
  */
 
 params.raw_fastq           = params.raw_fastq           ?: 'RAW_FASTQ'
@@ -13,8 +24,9 @@ params.gtf_dir             = params.gtf_dir             ?: 'GTF'
 params.umi_len             = params.umi_len             ?: 10
 params.bc_coords           = params.bc_coords           ?: '15-23,53-61,91-99'
 params.species_model       = params.species_model       ?: 'human'  // 'human', 'mouse', or 'hybrid'
-// 'single' = STARsolo CB_UMI_Complex on Poly-T–matched R1 + withBarcodes R3
-// 'paired'  = Paired_Barcode_Matcher then STARsolo CB_UMI_Simple (outputs under STARsolo_paired/)
+// 'single' = STARsolo CB_UMI_Complex on R1 + withBarcodes_R3 (outputs under STARsolo/)
+// 'paired' = Paired_Barcode_Matcher then STARsolo CB_UMI_Simple (outputs under STARsolo_paired/)
+// Both modes use trimmed or untrimmed reads depending on params.trim_reads.
 params.star_alignment_mode = params.star_alignment_mode ?: 'single' // 'single' or 'paired'
 params.barcodes_8bp_file   = params.barcodes_8bp_file   ?: 'barcodes_RC.txt'
 params.barcodes_rc         = (params.barcodes_rc in [true, 'true'])
@@ -64,25 +76,11 @@ log.info "Trim reads (fastp)           : ${params.trim_reads}"
  * Channel definitions
  */
 
-// Resolve raw_fastq to an absolute directory to avoid any cwd ambiguity
-def rawFastqDir = file(params.raw_fastq).toAbsolutePath()
-log.info "Resolved RAW_FASTQ absolute path : ${rawFastqDir}"
-log.info "launchDir                       : ${launchDir}"
-log.info "projectDir                      : ${projectDir}"
-log.info "JVM working directory           : ${System.getProperty('user.dir')}"
-
-// Diagnostic only: keep discovery behavior unchanged, but print what JVM sees.
+// Resolve raw_fastq directory and scan for *.fastq.gz files
 def rawDirFs = new File(params.raw_fastq)
-log.info "RAW_FASTQ exists?               : ${rawDirFs.exists()}"
-log.info "RAW_FASTQ is directory?         : ${rawDirFs.isDirectory()}"
-if (rawDirFs.isDirectory()) {
-    def topEntries = (rawDirFs.list()?.toList()?.sort()) ?: []
-    def fastqGzTop = topEntries.findAll { it.endsWith('.fastq.gz') }
-    log.info "RAW_FASTQ top-level entries     : ${topEntries.size()}"
-    log.info "RAW_FASTQ top-level *.fastq.gz  : ${fastqGzTop.size()}"
-    if (fastqGzTop) {
-        log.info "RAW_FASTQ first *.fastq.gz      : ${fastqGzTop.take(6).join(', ')}${fastqGzTop.size() > 6 ? ', ...' : ''}"
-    }
+log.info "Resolved RAW_FASTQ path          : ${rawDirFs.absolutePath}"
+if (!rawDirFs.isDirectory()) {
+    log.warn "RAW_FASTQ is not a directory: ${rawDirFs.absolutePath}"
 }
 
 Channel
@@ -101,8 +99,7 @@ Channel
  * Processes
  */
 
-// Placeholder demultiplexing step: currently just passes FASTQs through.
-// Later, replace this with a real SHARE-seq demux script.
+// Placeholder: copies raw FASTQs into demux/. Replace with real demux logic.
 process DEMULTIPLEX_PLACEHOLDER {
     tag { file(raw_fastq).name }
 
@@ -739,13 +736,9 @@ workflow {
         return s
     }
 
-    // FastQC on raw (or demuxed) FASTQs
     FASTQC_RAW(ch_input_fastq)
 
-    // Mandatory Poly-T filtering, optional fastp trimming, then barcode prepending.
-
-    // Build R1/R2/R3 triplets directly from DEMULTIPLEX_PLACEHOLDER outputs.
-    // This avoids race/static-glob issues from Channel.fromPath when running in one workflow.
+    // Build R1/R2/R3 triplets from demuxed FASTQs for Poly-T filtering
     def ch_r1_demux = ch_input_fastq
         .filter { f -> f.name.contains('_R1') }
         .map { f -> tuple(f.baseName.replaceFirst('_R1',''), f) }
@@ -767,20 +760,15 @@ workflow {
             Channel.empty()
         }
 
-    // Run Poly-T filtering and capture its FASTQ outputs
     def poly_ch = POLYT_FILTER(ch_r1_r2_r3_for_polyt)
-    // Expand wildcard output collections into one FASTQ path per emission.
     def ch_polyt_fastq = poly_ch.polyt_outputs.flatten()
-
-    // Poly-T–matched reads, split by mate
     def ch_polyt_r1 = ch_polyt_fastq.filter { it.name.contains('matched.R1') }
     def ch_polyt_r2 = ch_polyt_fastq.filter { it.name.contains('matched.R2') }
     def ch_polyt_r3 = ch_polyt_fastq.filter { it.name.contains('matched.R3') }
 
-    // Optional fastp trimming (params.trim_reads).
-    // R1: standard fastp trim.
-    // R3: first umi_len bases (UMI) are protected; only the remainder is trimmed.
-    // Trimming runs BEFORE barcode prepend so R3 UMI is intact for ADD_R2_BARCODES_TO_R3.
+    // Optional fastp trimming (runs before barcode prepend).
+    // When enabled: R1 gets standard fastp; R3 protects the first umi_len bp (UMI).
+    // Read-dropping filters are disabled in both to keep R1/R3 in sync.
     def ch_r1_for_downstream
     def ch_r3_for_barcode_prepend
     def barcode_out_dir
@@ -806,15 +794,14 @@ workflow {
         ch_r3_for_barcode_prepend = ch_polyt_r3
     }
 
-    // R2 is never trimmed
+    // R2 is never trimmed — used only for barcode extraction
     def ch_r2_source = ch_polyt_r2
 
-    // Determine read length from R1 (trimmed or untrimmed) to drive STAR index sjdbOverhang
+    // Read length from R1 drives STAR index sjdbOverhang
     def ch_r1_for_index = ch_r1_for_downstream.take(1)
     DETERMINE_READ_LENGTH(ch_r1_for_index)
 
-    // Use R2 and R3 (trimmed or untrimmed) for barcode prepending.
-    // withBarcodes output lands in trimmed/ or polyt_filtered/ matching the R3 source.
+    // Barcode prepend: R2 barcodes → R3. Output dir matches the R3 source folder.
     def ch_r3_source = ch_r3_for_barcode_prepend
 
     ch_r2_source
@@ -832,7 +819,7 @@ workflow {
         .set { ch_star_index_input }
     STAR_INDEX(ch_star_index_input)
 
-    // Single-end STARsolo alignment using Poly-T–matched R1 and withBarcodes_R3
+    // Single-end STARsolo (CB_UMI_Complex): R1 + withBarcodes_R3
     if( params.star_alignment_mode == 'single' ) {
         log.info "Running single-end STARsolo alignment."
 
@@ -861,7 +848,6 @@ workflow {
 
         STARSOLO_SINGLE(ch_starsolo_single)
 
-        // Generate per-sample GeneFull knee plots from STARsolo outputs
         STARSOLO_SINGLE.out.starsolo_out
             .map { dir ->
                 def sample = dir.baseName  // STARsolo/<sample>/
@@ -871,13 +857,14 @@ workflow {
 
         KNEE_PLOT(ch_starsolo_for_hybrid_qc)
 
-        // For hybrid mixed-species model, also generate barnyard plots and split species by purity
         if( params.species_model == 'hybrid' ) {
             BARNYARD_PLOT(ch_starsolo_for_hybrid_qc)
             HYBRID_SPLIT_SPECIES(ch_starsolo_for_hybrid_qc)
         }
+    // Paired-end STARsolo (CB_UMI_Simple): barcode-match R1+withBarcodes_R3,
+    // then align matched pairs with a 24bp combinatorial whitelist.
     } else if( params.star_alignment_mode == 'paired' ) {
-        log.info "Running paired-end path: barcode matching (3×8bp, 1MM) then STARsolo CB_UMI_Simple."
+        log.info "Running paired-end path: barcode matching (3x8bp, 1MM) then STARsolo CB_UMI_Simple."
 
         def ch_r1_source_for_align_paired = ch_r1_for_downstream
 
@@ -885,7 +872,6 @@ workflow {
             .map { r1 -> tuple(normalizeSampleId(r1.name), r1) }
             .set { ch_r1_for_paired }
 
-        // Use withBarcodes_R3 output as the R3 source for matching (same sample keys as single-end)
         ADD_R2_BARCODES_TO_R3.out.r3_with_barcodes
             .map { r3 -> tuple(normalizeSampleId(r3.name), r3) }
             .set { ch_r3_barcode_for_paired }
@@ -895,10 +881,8 @@ workflow {
             .map { sample_id, r1, r3 -> tuple(sample_id, r1, r3) }
             .set { ch_pairs_for_matching }
 
-        // Run barcode matching to filter read pairs
         PAIRED_BARCODE_MATCH(ch_pairs_for_matching)
 
-        // Combine matched pairs with STAR index for paired STARsolo
         PAIRED_BARCODE_MATCH.out.paired_reads
             .map { row ->
                 def (sample_id, r1p, r3p, _summary) = row
@@ -912,22 +896,18 @@ workflow {
             }
             .set { ch_starsolo_paired }
 
-        // Build paired-end 24bp whitelist (all 8bp³ combos) for STARsolo Exact CB matching
+        // 24bp whitelist: all 8bp^3 barcode combinations for Exact CB matching
         Channel
             .of(1)
             .set { ch_build_whitelist }
         BUILD_PAIRED_WHITELIST(ch_build_whitelist)
 
-        // Broadcast whitelist to all samples and run paired-end STARsolo.
-        // Here `combine` already emits the flat 5-tuple expected by STARSOLO_PAIRED:
-        // (sample_id, r1_paired, r3_paired, star_index_dir, paired_whitelist)
         ch_starsolo_paired
             .combine(BUILD_PAIRED_WHITELIST.out.paired_whitelist_file)
             .set { ch_starsolo_paired_with_wl }
 
         STARSOLO_PAIRED(ch_starsolo_paired_with_wl)
 
-        // QC outputs mirror single-end (Solo.out lives under STARsolo_paired/<sample>/)
         STARSOLO_PAIRED.out.starsolo_paired_out
             .map { dir ->
                 def sample = dir.baseName
