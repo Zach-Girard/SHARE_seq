@@ -88,7 +88,7 @@ This will place the human and mouse GTFs under `GTF/Homo_sapiens/` and `GTF/Mus_
 - Specify filenames (not full paths) via `--undetermined_r1`, `--undetermined_r2`, and `--sample_barcode_file`; they are resolved relative to `raw_fastq/`.
 - `DEMULTIPLEX` splits undetermined reads by sample index barcode (from the read header). Output goes to `demux/`.
 - `RENAME_FASTQ` validates the three SHARE-seq round barcodes embedded in R1's sequence, rewrites headers with error-corrected barcodes, and outputs per-sample `<sample>.matched.R1.fastq.gz` / `.R2.fastq.gz` to `demux/`.
-- **Dependencies**: Both scripts require `utils.py` and `Colorer.py` in the project directory.
+- **Dependencies**: Script dependencies come from `environment.yml` (no local `utils.py` required).
 
 ### Barcode configuration
 

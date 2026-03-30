@@ -3,8 +3,8 @@
 import argparse
 import gzip
 import logging
+import itertools
 import pandas as pd
-from utils import *
 
 
 current_file_base_name = __file__.split("/")[-1].split(".")[0]
@@ -26,6 +26,72 @@ def my_args():
 	##------- add parameters above ---------------------
 	args = mainParser.parse_args()	
 	return args
+
+
+def revcomp(seq):
+	tab = str.maketrans("ACGTacgtNn", "TGCAtgcaNn")
+	return seq.translate(tab)[::-1]
+
+
+def hamming_distance(a, b):
+	if len(a) != len(b):
+		return 10**9
+	return sum(ch1 != ch2 for ch1, ch2 in zip(a, b))
+
+
+def _mismatch_neighbors(seq, max_mismatch):
+	seq = seq.upper()
+	alphabet = ("A", "C", "G", "T")
+	out = {seq}
+	if max_mismatch <= 0:
+		return out
+	positions = range(len(seq))
+	for d in range(1, max_mismatch + 1):
+		for idxs in itertools.combinations(positions, d):
+			for repl in itertools.product(alphabet, repeat=d):
+				s = list(seq)
+				ok = False
+				for i, base in zip(idxs, repl):
+					if s[i] != base:
+						s[i] = base
+						ok = True
+				if ok:
+					out.add("".join(s))
+	return out
+
+
+def k_mer_distance(barcode_length, error, barcode_list):
+	lookup = {}
+	for bc in barcode_list:
+		bc = bc.upper()
+		if len(bc) != barcode_length:
+			continue
+		for variant in _mismatch_neighbors(bc, error):
+			lookup.setdefault(variant, set()).add(bc)
+	return lookup
+
+
+def find_dist(kmer_lookup, query, barcode_list):
+	query = query.upper()
+	candidates = list(kmer_lookup.get(query, []))
+	if not candidates:
+		return (False, None)
+	best = sorted(candidates, key=lambda bc: (hamming_distance(query, bc), bc))[0]
+	return (True, best)
+
+
+def get_barcode_dict(barcode_list):
+	return {b1: {b2: {b3: 0 for b3 in barcode_list} for b2 in barcode_list} for b1 in barcode_list}
+
+
+def dict3d_to_df(d):
+	rows = []
+	for b1, l2 in d.items():
+		for b2, l3 in l2.items():
+			for b3, count in l3.items():
+				if count > 0:
+					rows.append([b1, b2, b3, count])
+	return pd.DataFrame(rows, columns=["BC1", "BC2", "BC3", "Total_reads"])
 
 
 def output_to_fastq_gz(file_name,list_of_lines):

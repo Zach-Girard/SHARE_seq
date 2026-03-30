@@ -16,7 +16,7 @@ nextflow.enable.dsl=2
  * Requires:
  *   - RAW_FASTQ/ directory with undetermined R1/R2 fastq.gz and sample barcode file
  *   - Genomes/ and GTF/ prepared via helper scripts
- *   - utils.py and Colorer.py in project directory (demux dependencies)
+ *   - Python dependencies from environment.yml (no local utils.py required)
  */
 
 params.genomes_dir         = params.genomes_dir         ?: 'Genomes'
@@ -132,7 +132,7 @@ process DEMULTIPLEX {
 
 // Step 2: Validate three SHARE-seq round barcodes in R1 sequence, rewrite headers
 // with matched barcodes, and split into matched/junk output pairs.
-// TODO: requires utils.py and Colorer.py in the project directory.
+// Python dependencies are provided via environment.yml.
 process RENAME_FASTQ {
     tag { sample_id }
 

@@ -2,8 +2,9 @@
 import argparse
 import gzip
 import logging
+import itertools
+import csv
 import pandas as pd
-from utils import *
 
 """
 delmultiplex undetermined R1 and R2 fastq by sample barcode.
@@ -26,6 +27,98 @@ def my_args():
 	##------- add parameters above ---------------------
 	args = mainParser.parse_args()	
 	return args
+
+
+def revcomp(seq):
+	tab = str.maketrans("ACGTacgtNn", "TGCAtgcaNn")
+	return seq.translate(tab)[::-1]
+
+
+def read_fasta(path, rc=False):
+	"""Return {sample_id: barcode_seq} from FASTA."""
+	barcode = {}
+	current_id = None
+	current_seq = []
+	with open(path) as f:
+		for raw in f:
+			line = raw.strip()
+			if not line:
+				continue
+			if line.startswith(">"):
+				if current_id is not None:
+					seq = "".join(current_seq).upper()
+					barcode[current_id] = revcomp(seq) if rc else seq
+				current_id = line[1:].split()[0]
+				current_seq = []
+			else:
+				current_seq.append(line)
+	if current_id is not None:
+		seq = "".join(current_seq).upper()
+		barcode[current_id] = revcomp(seq) if rc else seq
+	return barcode
+
+
+def read_barcode_table(path, rc=False):
+	"""Return {sample_id: barcode_seq} from TSV/CSV table."""
+	rows = []
+	with open(path, newline="") as f:
+		sample = f.read(4096)
+		f.seek(0)
+		try:
+			dialect = csv.Sniffer().sniff(sample)
+			reader = csv.reader(f, dialect)
+		except Exception:
+			reader = csv.reader(f, delimiter="\t")
+		for row in reader:
+			row = [x.strip() for x in row if str(x).strip() != ""]
+			if row:
+				rows.append(row)
+	if not rows:
+		raise ValueError(f"No barcode rows found in {path}")
+
+	def looks_like_barcode(s):
+		u = s.upper()
+		return len(u) >= 6 and all(c in "ACGTN" for c in u)
+
+	barcode = {}
+	for row in rows:
+		if len(row) == 1:
+			sid = row[0]
+			seq = row[0]
+		else:
+			a, b = row[0], row[1]
+			if looks_like_barcode(a) and not looks_like_barcode(b):
+				seq, sid = a, b
+			elif looks_like_barcode(b) and not looks_like_barcode(a):
+				sid, seq = a, b
+			else:
+				# default: first column sample ID, second column barcode
+				sid, seq = a, b
+		seq = seq.upper()
+		barcode[sid] = revcomp(seq) if rc else seq
+	return barcode
+
+
+def mismatch_sequence(seq, max_mismatch):
+	"""Generate sequences within <= max_mismatch substitutions."""
+	seq = seq.upper()
+	alphabet = ("A", "C", "G", "T")
+	out = {seq}
+	if max_mismatch <= 0:
+		return out
+	positions = range(len(seq))
+	for d in range(1, max_mismatch + 1):
+		for idxs in itertools.combinations(positions, d):
+			for repl in itertools.product(alphabet, repeat=d):
+				s = list(seq)
+				ok = False
+				for i, base in zip(idxs, repl):
+					if s[i] != base:
+						s[i] = base
+						ok = True
+				if ok:
+					out.add("".join(s))
+	return out
 
 
 
