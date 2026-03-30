@@ -6,22 +6,23 @@ End-to-end SHARE-seq processing from raw FASTQs to STARsolo quantification and Q
 
 | Step | Process(es) | Output folder |
 |------|-------------|---------------|
-| 1. Demultiplex (placeholder) | `DEMULTIPLEX_PLACEHOLDER` | `demux/` |
-| 2. Raw QC | `FASTQC_RAW` | `fastqc_raw/` |
+| 1. Demultiplex + barcode validation | `DEMULTIPLEX`, `RENAME_FASTQ` | `demux/` |
+| 2. Demux QC | `FASTQC_DEMUX` | `fastqc_demux/` |
 | 3. Poly-T filtering | `POLYT_FILTER` | `polyt_filtered/` |
-| 4. Trimming (optional) | `TRIM_R1`, `TRIM_R3_PROTECTED`, `FASTQC_TRIMMED` | `trimmed/`, `fastqc_trimmed/` |
-| 5. Barcode prepend | `ADD_R2_BARCODES_TO_R3` | `trimmed/` or `polyt_filtered/` |
+| 4. Trimming (optional) | `TRIM_R1`, `TRIM_R2_PROTECTED`, `FASTQC_TRIMMED` | `trimmed/`, `fastqc_trimmed/` |
+| 5. Barcode prepend | `PREPEND_HEADER_BARCODES` | `trimmed/` or `polyt_filtered/` |
 | 6. STAR genome index | `STAR_INDEX` | `STAR_index_<species><len>bp/` |
 | 7a. Single-end alignment | `STARSOLO_SINGLE` | `STARsolo/<sample>/` |
-| 7b. Paired-end alignment | `PAIRED_BARCODE_MATCH`, `BUILD_PAIRED_WHITELIST`, `STARSOLO_PAIRED` | `STARsolo_paired/<sample>/` |
+| 7b. Paired-end alignment | `BUILD_PAIRED_WHITELIST`, `STARSOLO_PAIRED` | `STARsolo_paired/<sample>/` |
 | 8. Downstream QC | `KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES` | inside alignment output folder |
 
 **Key behaviour:**
 
-- **Poly-T filtering** is always run. Reads are split into `matched` (Poly-T present) and `noPolyT` buckets.
-- **Trimming** (`trim_reads = true`) runs fastp on Poly-T–matched R1 (standard) and R3 (first `umi_len` bases protected). Read-dropping filters are disabled to keep R1/R3 in sync. When trimming is off (default), Poly-T–matched reads flow directly to barcode prepend.
-- **Barcode prepend** extracts three 8bp barcodes from Poly-T–matched R2 and prepends them to R3 (trimmed or untrimmed). The `withBarcodes_*` output is written to `trimmed/` when trimming is enabled, or `polyt_filtered/` when disabled.
-- **STARsolo alignment** uses R1 + `withBarcodes_R3`. Single-end mode uses `CB_UMI_Complex`; paired-end mode first barcode-matches read pairs, then uses `CB_UMI_Simple` with a combinatorial 24bp whitelist.
+- **Read structure after demux**: R1 = cDNA, R2 = UMI + PolyT + cDNA. The 24bp cell barcode (3×8bp round barcodes validated by `rename_fastq.py`) is in the read header.
+- **Poly-T filtering** is always run. R2 is the anchor (cutadapt matches UMI + PolyT pattern); R1 (cDNA) is synced. Reads are split into `matched` and `noPolyT` buckets.
+- **Trimming** (`trim_reads = true`) runs fastp on Poly-T–matched R1 (standard) and R2 (first `umi_len` bases protected). Read-dropping filters are disabled to keep R1/R2 in sync. When trimming is off (default), Poly-T–matched reads flow directly to barcode prepend.
+- **Barcode prepend** extracts the 24bp cell barcode from R2's read header and prepends it to R2's sequence. The `withBarcodes_*` output is written to `trimmed/` when trimming is enabled, or `polyt_filtered/` when disabled.
+- **STARsolo alignment** uses R1 (cDNA) + `withBarcodes_R2` (24bp CB + UMI + cDNA). Single-end mode uses `CB_UMI_Complex`; paired-end mode uses `CB_UMI_Simple` with a combinatorial 24bp whitelist. Barcodes are already error-corrected by `rename_fastq.py`, so no additional barcode matching is needed.
 - **STAR genome index** is reused across runs when species, read length, genome FASTA, and GTF all match (fingerprint-based).
 - **Barnyard plots and species splits** are generated only when `species_model = hybrid`.
 
@@ -81,20 +82,21 @@ chmod +x download_gtf.sh   # first time only
 
 This will place the human and mouse GTFs under `GTF/Homo_sapiens/` and `GTF/Mus_musculus/`.
 
-### Raw FASTQ input
+### Raw FASTQ input (demultiplexing)
 
-- Place input FASTQs in the directory specified by `params.raw_fastq` (default: `demux` in `nextflow.config`).
-- Override per run with `--raw_fastq /path/to/fastqs` (relative to project root or absolute).
-- Expected naming: `*.fastq.gz` with `_R1`, `_R2`, `_R3` mate designators (e.g. `sampleA_R1.fastq.gz`, `sampleA_R2.fastq.gz`, `sampleA_R3.fastq.gz`).
-- R1 = cDNA, R2 = barcodes (3x 8bp), R3 = UMI + Poly-T + cDNA.
+- Place undetermined R1/R2 FASTQ files and the sample barcode mapping file in the `RAW_FASTQ/` directory (configurable via `params.raw_fastq`).
+- Specify filenames (not full paths) via `--undetermined_r1`, `--undetermined_r2`, and `--sample_barcode_file`; they are resolved relative to `raw_fastq/`.
+- `DEMULTIPLEX` splits undetermined reads by sample index barcode (from the read header). Output goes to `demux/`.
+- `RENAME_FASTQ` validates the three SHARE-seq round barcodes embedded in R1's sequence, rewrites headers with error-corrected barcodes, and outputs per-sample `<sample>.matched.R1.fastq.gz` / `.R2.fastq.gz` to `demux/`.
+- **Dependencies**: Both scripts require `utils.py` and `Colorer.py` in the project directory.
 
 ### Barcode configuration
 
 - By default, the pipeline uses `barcodes_RC.txt` as the 8bp barcode list.
 - A single configuration drives **all barcode-dependent steps**:
-  - Single-end STARsolo.
-  - Paired-end barcode matching.
-  - Building the 24bp whitelist for paired-end STARsolo.
+  - `RENAME_FASTQ` barcode validation (error-correction against whitelist).
+  - Single-end STARsolo (`CB_UMI_Complex` whitelist).
+  - Building the 24bp combinatorial whitelist for paired-end STARsolo.
 
 To use **your own 8bp barcode file**:
 
@@ -109,8 +111,8 @@ To use **your own 8bp barcode file**:
 - If `barcodes_rc = true`, the pipeline will:
   - Reverse complement every 8bp barcode in `barcodes_8bp_file`.
   - Use this reverse-complemented list everywhere:
+    - For `RENAME_FASTQ` barcode validation.
     - As the whitelist for single-end STARsolo.
-    - As the whitelist for paired-end barcode matching.
     - As the input to build the 24bp paired-end STARsolo whitelist (all 3-barcode combinations).
 - If `barcodes_rc = false`, the pipeline will use `barcodes_8bp_file` **as-is** in all of the above places.
 
@@ -173,8 +175,9 @@ conda activate nextflow-master
 cd $LS_SUBCWD
 
 nextflow run main.nf -profile lsf \
-  --species_model human \
-  --star_alignment_mode single
+  --undetermined_r1 Undetermined_S0_R1_001.fastq.gz \
+  --undetermined_r2 Undetermined_S0_R2_001.fastq.gz \
+  --sample_barcode_file sample_barcodes.fasta
 ```
 
 Submit with:
@@ -195,10 +198,10 @@ nextflow run main.nf -profile lsf \
 
 **Checklist before running:**
 
-- `params.raw_fastq` points to a directory containing your R1/R2/R3 `*.fastq.gz` files.
+- `RAW_FASTQ/` contains the undetermined R1/R2 and sample barcode file, and `--undetermined_r1`, `--undetermined_r2`, `--sample_barcode_file` are set.
 - `Genomes/` and `GTF/` have been prepared using `Genomes/prepare_genomes.sh` and `GTF/download_gtf.sh`.
 - `species_model` matches your genome/GTF setup (`human`, `mouse`, or `hybrid`).
 - `barcodes_8bp_file` and `barcodes_rc` are set correctly for your barcode scheme.
 - `star_alignment_mode` is `single` or `paired` as needed.
-- Set `trim_reads = true` to enable fastp trimming. R3's first `umi_len` bases (UMI) are always protected.
+- Set `trim_reads = true` to enable fastp trimming. R1 (cDNA) gets standard fastp; R2's first `umi_len` bases (UMI) are always protected.
 
