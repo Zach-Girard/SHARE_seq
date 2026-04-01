@@ -6,7 +6,7 @@
 #
 # R1 = cDNA, R2 = UMI + Poly-T + cDNA (cell barcode is in the read header).
 # R2 is the anchor: cutadapt matches the UMI+Poly-T pattern in R2.
-# R1 is synced based on the matched / noPolyT IDs derived from R2.
+# R1 is synced based on the Poly-T–extracted / noPolyT IDs derived from R2.
 
 set -euo pipefail
 
@@ -33,7 +33,7 @@ cutadapt \
   --no-trim \
   --overlap 16 \
   -e 0.2 \
-  -o "${OUTDIR}/${LABEL}.matched.R2.fastq.gz" \
+  -o "${OUTDIR}/${LABEL}.extracted.R2.fastq.gz" \
   --untrimmed-output "${OUTDIR}/${LABEL}.noPolyT.R2.fastq.gz" \
   "$R2_IN"
 
@@ -57,11 +57,11 @@ def write_ids(in_path, out_path):
                 break
             fout.write(header.split()[0] + "\n")
 
-write_ids(f"{outdir}/{label}.matched.R2.fastq.gz", f"{label}_matched_ids.txt")
+write_ids(f"{outdir}/{label}.extracted.R2.fastq.gz", f"{label}_extracted_ids.txt")
 write_ids(f"{outdir}/{label}.noPolyT.R2.fastq.gz", f"{label}_noPolyT_ids.txt")
 PY
 
-# --- 3. SYNC R1 USING MATCHED/NOPOLYT ID SETS ---
+# --- 3. SYNC R1 USING EXTRACTED/NOPOLYT ID SETS ---
 python3 - "$LABEL" "$R1_IN" "$OUTDIR" <<'PY'
 import gzip, sys
 
@@ -94,15 +94,15 @@ def filter_fastq(in_path, out_path, keep_ids):
                 fout.write(plus)
                 fout.write(qual)
 
-matched_ids = load_ids(f"{label}_matched_ids.txt")
+extracted_ids = load_ids(f"{label}_extracted_ids.txt")
 no_polyt_ids = load_ids(f"{label}_noPolyT_ids.txt")
 
-print(f"Creating {label}.matched.R1.fastq.gz...")
-filter_fastq(r1_path, f"{outdir}/{label}.matched.R1.fastq.gz", matched_ids)
+print(f"Creating {label}.extracted.R1.fastq.gz...")
+filter_fastq(r1_path, f"{outdir}/{label}.extracted.R1.fastq.gz", extracted_ids)
 print(f"Creating {label}.noPolyT.R1.fastq.gz...")
 filter_fastq(r1_path, f"{outdir}/{label}.noPolyT.R1.fastq.gz", no_polyt_ids)
 PY
 
 # --- 4. CLEANUP ---
-rm "${LABEL}_matched_ids.txt" "${LABEL}_noPolyT_ids.txt"
+rm "${LABEL}_extracted_ids.txt" "${LABEL}_noPolyT_ids.txt"
 echo "Poly-T filtering complete for $LABEL."

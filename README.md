@@ -19,8 +19,8 @@ End-to-end SHARE-seq processing from raw FASTQs to STARsolo quantification and Q
 **Key behaviour:**
 
 - **Read structure after demux**: R1 = cDNA, R2 = UMI + PolyT + cDNA. The 24bp cell barcode (3×8bp round barcodes validated by `rename_fastq.py`) is in the read header.
-- **Poly-T filtering** is always run. R2 is the anchor (cutadapt matches UMI + PolyT pattern); R1 (cDNA) is synced. Reads are split into `matched` and `noPolyT` buckets.
-- **Trimming** (`trim_reads = true`) runs fastp on Poly-T–matched R1 (standard) and R2 (first `umi_len` bases protected). Read-dropping filters are disabled to keep R1/R2 in sync. When trimming is off (default), Poly-T–matched reads flow directly to barcode prepend.
+- **Poly-T filtering** is always run. R2 is the anchor (cutadapt matches UMI + PolyT pattern); R1 (cDNA) is synced. Reads are split into `extracted` and `noPolyT` buckets.
+- **Trimming** (`trim_reads = true`) runs fastp on Poly-T–extracted R1 (standard) and R2 (first `umi_len` bases protected). Read-dropping filters are disabled to keep R1/R2 in sync. When trimming is off (default), Poly-T–extracted reads flow directly to barcode prepend.
 - **Barcode prepend** extracts the 24bp cell barcode from R2's read header and prepends it to R2's sequence. The `withBarcodes_*` output is written to `trimmed/` when trimming is enabled, or `polyt_filtered/` when disabled.
 - **STARsolo alignment** uses R1 (cDNA) + `withBarcodes_R2` (24bp CB + UMI + cDNA). Single-end mode uses `CB_UMI_Complex`; paired-end mode uses `CB_UMI_Simple` with a combinatorial 24bp whitelist. Barcodes are already error-corrected by `rename_fastq.py`, so no additional barcode matching is needed.
 - **STAR genome index** is reused across runs when species, read length, genome FASTA, and GTF all match (fingerprint-based).

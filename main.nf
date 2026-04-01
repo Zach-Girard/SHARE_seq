@@ -766,8 +766,8 @@ workflow {
         // drop STARsolo/barcode-prefix artifacts
         s = s.replaceFirst(/^withBarcodes_/, '')
         // drop pipeline-generated tags
-        s = s.replaceAll(/(\.matched|\.trimmed|_trimmed)$/, '')
-        s = s.replaceAll(/(\.matched|\.trimmed|_trimmed)/, '')
+        s = s.replaceAll(/(\.matched|\.extracted|\.trimmed|_trimmed)$/, '')
+        s = s.replaceAll(/(\.matched|\.extracted|\.trimmed|_trimmed)/, '')
         // drop read designators (common Illumina + simpler forms)
         s = s.replaceFirst(/_R[123](_\d+)?$/, '')
         s = s.replaceFirst(/\.R[123]$/, '')
@@ -799,8 +799,8 @@ workflow {
     def poly_ch = POLYT_FILTER(ch_r1_r2_for_polyt)
     def ch_polyt_fastq = poly_ch.polyt_outputs.flatten()
     // R1 = cDNA, R2 = UMI + PolyT + cDNA
-    def ch_polyt_r1 = ch_polyt_fastq.filter { it.name.contains('matched.R1') }
-    def ch_polyt_r2 = ch_polyt_fastq.filter { it.name.contains('matched.R2') }
+    def ch_polyt_r1 = ch_polyt_fastq.filter { it.name.contains('extracted.R1') }
+    def ch_polyt_r2 = ch_polyt_fastq.filter { it.name.contains('extracted.R2') }
 
     // Optional fastp trimming (runs before barcode prepend).
     // R1 (cDNA): standard fastp. R2 (UMI+cDNA): first umi_len bp protected.
@@ -824,7 +824,7 @@ workflow {
 
         FASTQC_TRIMMED(TRIM_R1.out.trimmed_r1.mix(TRIM_R2_PROTECTED.out.trimmed_r2))
     } else {
-        log.info "Trimming disabled: using Poly-T–matched reads directly."
+        log.info "Trimming disabled: using Poly-T–extracted reads directly."
         barcode_out_dir = 'polyt_filtered'
         ch_r1_for_downstream = ch_polyt_r1
         ch_r2_for_barcode_prepend = ch_polyt_r2
