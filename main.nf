@@ -124,7 +124,8 @@ process DEMULTIPLEX {
       -r1 ${r1_undetermined} \\
       -r2 ${r2_undetermined} \\
       -b ${barcode_file} \\
-      -n ${params.demux_mismatches}
+      -n ${params.demux_mismatches} \\
+      --revcomp
 
     rm -f unmatched.R1.fastq.gz unmatched.R2.fastq.gz
     """
