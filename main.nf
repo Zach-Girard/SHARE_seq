@@ -148,13 +148,17 @@ if (params.undetermined_r1 && params.undetermined_r2) {
 process SPLIT_UNDETERMINED_FASTQ {
     tag { pair_id }
 
+    // Default stage-in is symlink; splitFastq may write next to the input path and hit RAW_FASTQ instead of work/.
+    stageInMode 'copy'
+
     publishDir "${projectDir}/${rawDir}", mode: 'copy', overwrite: true
 
     input:
     tuple val(pair_id), path(r1_undetermined), path(r2_undetermined), path(barcode_file)
 
+    // Chunks under split_r1/ and split_r2/ (glob is recursive in case the tool nests files).
     output:
-    tuple val(pair_id), path("Split_${fastqStem(r1_undetermined.name)}*"), path("Split_${fastqStem(r2_undetermined.name)}*")
+    tuple val(pair_id), path("split_r1/**"), path("split_r2/**")
 
     script:
     def r1stem = fastqStem(r1_undetermined.name)
@@ -162,8 +166,9 @@ process SPLIT_UNDETERMINED_FASTQ {
     """
     set -euo pipefail
     module load gcc
-    ${params.split_fastq_bin} -n ${params.split_reads} -i ${r1_undetermined} -o Split_${r1stem}
-    ${params.split_fastq_bin} -n ${params.split_reads} -i ${r2_undetermined} -o Split_${r2stem}
+    mkdir -p split_r1 split_r2
+    ${params.split_fastq_bin} -n ${params.split_reads} -i ${r1_undetermined} -o split_r1/Split_${r1stem}
+    ${params.split_fastq_bin} -n ${params.split_reads} -i ${r2_undetermined} -o split_r2/Split_${r2stem}
     """
 }
 
@@ -815,8 +820,10 @@ workflow {
 
     SPLIT_UNDETERMINED_FASTQ.out
         .flatMap { pair_id, r1_split_files, r2_split_files ->
-            def r1Sorted = r1_split_files.sort { it.name }
-            def r2Sorted = r2_split_files.sort { it.name }
+            def r1List = (r1_split_files instanceof List) ? r1_split_files : [r1_split_files]
+            def r2List = (r2_split_files instanceof List) ? r2_split_files : [r2_split_files]
+            def r1Sorted = r1List.sort { it.name }
+            def r2Sorted = r2List.sort { it.name }
             if (r1Sorted.size() != r2Sorted.size()) {
                 error "Unequal split chunk counts for ${pair_id}: R1=${r1Sorted.size()} R2=${r2Sorted.size()}"
             }
