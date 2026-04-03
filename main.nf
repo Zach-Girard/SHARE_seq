@@ -42,6 +42,8 @@ params.sample_barcode_file = params.sample_barcode_file ?: null   // sample inde
 params.demux_mismatches    = params.demux_mismatches    ?: 1      // allowed mismatches for sample index matching
 params.split_reads         = params.split_reads         ?: 1000000
 params.split_fastq_bin     = params.split_fastq_bin     ?: '/home/yli11/HemTools/bin/splitFastq'
+// Run before splitFastq (e.g. `module load gcc/11`) if the binary needs a newer libstdc++ than /lib64 (GLIBCXX_3.4.26).
+params.split_fastq_before_script = params.split_fastq_before_script != null ? params.split_fastq_before_script : ''
 
 // Derive a single "effective" 8bp whitelist file used everywhere:
 //  - RENAME_FASTQ barcode validation (error-correction against whitelist)
@@ -102,6 +104,9 @@ if (params.undetermined_r1 && params.undetermined_r2) {
 log.info "Sample barcode file           : ${rawDir}/${params.sample_barcode_file}"
 log.info "Split reads per chunk         : ${params.split_reads}"
 log.info "splitFastq executable         : ${params.split_fastq_bin}"
+if (params.split_fastq_before_script?.toString()?.trim()) {
+    log.info "splitFastq beforeScript       : ${params.split_fastq_before_script}"
+}
 
 def barcodeFile = file("${rawDir}/${params.sample_barcode_file}")
 if (!barcodeFile.exists()) {
@@ -151,8 +156,11 @@ process SPLIT_UNDETERMINED_FASTQ {
     output:
     tuple val(pair_id), path("Split_${r1_undetermined.name}*"), path("Split_${r2_undetermined.name}*")
 
+    script:
+    def pre = params.split_fastq_before_script?.toString()?.trim() ? "${params.split_fastq_before_script}\n" : ''
     """
-    ${params.split_fastq_bin} -n ${params.split_reads} -i ${r1_undetermined} -o Split_${r1_undetermined.name}
+    set -euo pipefail
+    ${pre}${params.split_fastq_bin} -n ${params.split_reads} -i ${r1_undetermined} -o Split_${r1_undetermined.name}
     ${params.split_fastq_bin} -n ${params.split_reads} -i ${r2_undetermined} -o Split_${r2_undetermined.name}
     """
 }
