@@ -40,6 +40,8 @@ params.undetermined_r1     = params.undetermined_r1     ?: null   // R1 fastq.gz
 params.undetermined_r2     = params.undetermined_r2     ?: null   // R2 fastq.gz filename (inside raw_fastq/)
 params.sample_barcode_file = params.sample_barcode_file ?: null   // sample index barcode mapping (inside raw_fastq/)
 params.demux_mismatches    = params.demux_mismatches    ?: 1      // allowed mismatches for sample index matching
+params.split_reads         = params.split_reads         ?: 1000000
+params.split_fastq_bin     = params.split_fastq_bin     ?: '/home/yli11/HemTools/bin/splitFastq'
 
 // Derive a single "effective" 8bp whitelist file used everywhere:
 //  - RENAME_FASTQ barcode validation (error-correction against whitelist)
@@ -83,22 +85,54 @@ log.info "Trim reads (fastp)           : ${params.trim_reads}"
  */
 
 // Validate demultiplex inputs
-if (!params.undetermined_r1 || !params.undetermined_r2 || !params.sample_barcode_file) {
-    error "Demultiplexing requires --undetermined_r1, --undetermined_r2, and --sample_barcode_file"
+if (!params.sample_barcode_file) {
+    error "Demultiplexing requires --sample_barcode_file"
+}
+if ((params.undetermined_r1 && !params.undetermined_r2) || (!params.undetermined_r1 && params.undetermined_r2)) {
+    error "Provide both --undetermined_r1 and --undetermined_r2, or neither to auto-detect Undetermined FASTQ pairs."
 }
 def rawDir = params.raw_fastq
 log.info "RAW_FASTQ directory           : ${rawDir}"
-log.info "Undetermined R1               : ${rawDir}/${params.undetermined_r1}"
-log.info "Undetermined R2               : ${rawDir}/${params.undetermined_r2}"
+if (params.undetermined_r1 && params.undetermined_r2) {
+    log.info "Undetermined R1               : ${rawDir}/${params.undetermined_r1}"
+    log.info "Undetermined R2               : ${rawDir}/${params.undetermined_r2}"
+} else {
+    log.info "Undetermined FASTQs           : auto-detect *Undetermined*R1*.fastq.gz in ${rawDir}"
+}
 log.info "Sample barcode file           : ${rawDir}/${params.sample_barcode_file}"
+log.info "Split reads per chunk         : ${params.split_reads}"
+log.info "splitFastq executable         : ${params.split_fastq_bin}"
 
-Channel
-    .of(tuple(
-        file("${rawDir}/${params.undetermined_r1}"),
-        file("${rawDir}/${params.undetermined_r2}"),
-        file("${rawDir}/${params.sample_barcode_file}")
-    ))
-    .set { ch_demux_input }
+def barcodeFile = file("${rawDir}/${params.sample_barcode_file}")
+if (!barcodeFile.exists()) {
+    error "Sample barcode file not found: ${barcodeFile}"
+}
+
+if (params.undetermined_r1 && params.undetermined_r2) {
+    Channel
+        .of(tuple(
+            params.undetermined_r1.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''),
+            file("${rawDir}/${params.undetermined_r1}"),
+            file("${rawDir}/${params.undetermined_r2}"),
+            barcodeFile
+        ))
+        .set { ch_undetermined_pairs }
+} else {
+    Channel
+        .fromPath("${rawDir}/*Undetermined*R1*.fastq.gz")
+        .map { r1 ->
+            def r2name = r1.name.replaceFirst(/R1/, 'R2')
+            def r2 = file("${r1.parent}/${r2name}")
+            if (!r2.exists()) {
+                error "Missing R2 pair for ${r1}: expected ${r2}"
+            }
+            tuple(r1.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''), r1, r2, barcodeFile)
+        }
+        .ifEmpty {
+            error "No Undetermined R1 FASTQs found in ${rawDir}. Provide --undetermined_r1/--undetermined_r2 or place files matching *Undetermined*R1*.fastq.gz in RAW_FASTQ."
+        }
+        .set { ch_undetermined_pairs }
+}
 
 /*
  * Processes
@@ -106,13 +140,30 @@ Channel
 
 // Step 1: Split undetermined R1/R2 by sample index barcode in the read header.
 // Produces per-sample <name>.R1.fastq.gz / <name>.R2.fastq.gz.
+process SPLIT_UNDETERMINED_FASTQ {
+    tag { pair_id }
+
+    publishDir "${projectDir}/${rawDir}", mode: 'copy', overwrite: true
+
+    input:
+    tuple val(pair_id), path(r1_undetermined), path(r2_undetermined), path(barcode_file)
+
+    output:
+    tuple val(pair_id), path("Split_${r1_undetermined.name}*"), path("Split_${r2_undetermined.name}*")
+
+    """
+    ${params.split_fastq_bin} -n ${params.split_reads} -i ${r1_undetermined} -o Split_${r1_undetermined.name}
+    ${params.split_fastq_bin} -n ${params.split_reads} -i ${r2_undetermined} -o Split_${r2_undetermined.name}
+    """
+}
+
 process DEMULTIPLEX {
-    tag "demux"
+    tag { demux_chunk_id }
 
     publishDir "${projectDir}/demux", mode: 'copy', overwrite: true
 
     input:
-    tuple path(r1_undetermined), path(r2_undetermined), path(barcode_file)
+    tuple val(demux_chunk_id), path(r1_undetermined), path(r2_undetermined), path(barcode_file)
 
     output:
     path "*.R1.fastq.gz", emit: demux_r1
@@ -128,6 +179,21 @@ process DEMULTIPLEX {
       --revcomp
 
     rm -f unmatched.R1.fastq.gz unmatched.R2.fastq.gz
+    """
+}
+
+process MERGE_DEMUX_CHUNKS {
+    tag { sample_id }
+
+    input:
+    tuple val(sample_id), path(r1_parts), path(r2_parts)
+
+    output:
+    tuple val(sample_id), path("${sample_id}.R1.fastq.gz"), path("${sample_id}.R2.fastq.gz")
+
+    """
+    cat ${r1_parts.join(' ')} > ${sample_id}.R1.fastq.gz
+    cat ${r2_parts.join(' ')} > ${sample_id}.R2.fastq.gz
     """
 }
 
@@ -734,11 +800,28 @@ process STARSOLO_PAIRED {
 
 workflow {
     main:
-    // Step 1: Demultiplex undetermined reads by sample index barcode
+    // Step 1: Split undetermined FASTQs in RAW_FASTQ so demultiplex can fan out in parallel.
+    SPLIT_UNDETERMINED_FASTQ(ch_undetermined_pairs)
+
+    SPLIT_UNDETERMINED_FASTQ.out
+        .flatMap { pair_id, r1_split_files, r2_split_files ->
+            def r1Sorted = r1_split_files.sort { it.name }
+            def r2Sorted = r2_split_files.sort { it.name }
+            if (r1Sorted.size() != r2Sorted.size()) {
+                error "Unequal split chunk counts for ${pair_id}: R1=${r1Sorted.size()} R2=${r2Sorted.size()}"
+            }
+            def chunks = []
+            for (int i = 0; i < r1Sorted.size(); i++) {
+                chunks << tuple("${pair_id}__chunk${i + 1}", r1Sorted[i], r2Sorted[i], barcodeFile)
+            }
+            return chunks
+        }
+        .set { ch_demux_input }
+
+    // Step 2: Demultiplex split chunks by sample index barcode in parallel
     DEMULTIPLEX(ch_demux_input)
 
-    // Step 2: Pair per-sample R1/R2 and validate SHARE-seq round barcodes
-    def cb_whitelist = file(effectiveCbWhitelistPath)
+    // Merge chunk-level demultiplex output back to one R1/R2 per sample for downstream steps
     DEMULTIPLEX.out.demux_r1
         .flatten()
         .map { f -> tuple(f.name.replaceFirst(/\.R1\.fastq\.gz$/, ''), f) }
@@ -746,6 +829,17 @@ workflow {
             DEMULTIPLEX.out.demux_r2.flatten()
                 .map { f -> tuple(f.name.replaceFirst(/\.R2\.fastq\.gz$/, ''), f) }
         )
+        .groupTuple()
+        .map { sample_id, r1_parts, r2_parts ->
+            tuple(sample_id, r1_parts.sort { it.name }, r2_parts.sort { it.name })
+        }
+        .set { ch_demux_chunk_grouped }
+
+    MERGE_DEMUX_CHUNKS(ch_demux_chunk_grouped)
+
+    // Step 3: Pair per-sample R1/R2 and validate SHARE-seq round barcodes
+    def cb_whitelist = file(effectiveCbWhitelistPath)
+    MERGE_DEMUX_CHUNKS.out
         .map { sample_id, r1, r2 -> tuple(sample_id, r1, r2, cb_whitelist) }
         .set { ch_demux_pairs }
 
