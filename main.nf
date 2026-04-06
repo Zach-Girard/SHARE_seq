@@ -169,6 +169,13 @@ process SPLIT_UNDETERMINED_FASTQ {
     mkdir -p split_r1 split_r2
     ${params.split_fastq_bin} -n ${params.split_reads} -i ${r1_undetermined} -o split_r1/Split_${r1stem}
     ${params.split_fastq_bin} -n ${params.split_reads} -i ${r2_undetermined} -o split_r2/Split_${r2stem}
+    # splitFastq may emit plain .fastq (not .gz); normalize to .fastq.gz for demultiplex.py.
+    shopt -s nullglob
+    r1_plain=(split_r1/*.fastq)
+    r2_plain=(split_r2/*.fastq)
+    for f in "${r1_plain[@]}" "${r2_plain[@]}"; do
+      gzip -f "$f"
+    done
     """
 }
 
