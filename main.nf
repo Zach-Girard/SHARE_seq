@@ -156,9 +156,9 @@ process SPLIT_UNDETERMINED_FASTQ {
     input:
     tuple val(pair_id), path(r1_undetermined), path(r2_undetermined), path(barcode_file)
 
-    // Chunks under split_r1/ and split_r2/ (glob is recursive in case the tool nests files).
+    // Capture only split FASTQ chunk files (avoid recursive directory artifacts).
     output:
-    tuple val(pair_id), path("split_r1/**"), path("split_r2/**")
+    tuple val(pair_id), path("split_r1/*.fastq.gz"), path("split_r2/*.fastq.gz")
 
     script:
     def r1stem = fastqStem(r1_undetermined.name)
@@ -822,8 +822,8 @@ workflow {
         .flatMap { pair_id, r1_split_files, r2_split_files ->
             def r1List = (r1_split_files instanceof List) ? r1_split_files : [r1_split_files]
             def r2List = (r2_split_files instanceof List) ? r2_split_files : [r2_split_files]
-            def r1Sorted = r1List.sort { it.name }
-            def r2Sorted = r2List.sort { it.name }
+            def r1Sorted = r1List.toList().sort { it.name }
+            def r2Sorted = r2List.toList().sort { it.name }
             if (r1Sorted.size() != r2Sorted.size()) {
                 error "Unequal split chunk counts for ${pair_id}: R1=${r1Sorted.size()} R2=${r2Sorted.size()}"
             }
