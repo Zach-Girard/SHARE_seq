@@ -84,55 +84,12 @@ log.info "Trim reads (fastp)           : ${params.trim_reads}"
  * Channel definitions
  */
 
-// Validate demultiplex inputs
-if (!params.sample_barcode_file) {
-    error "Demultiplexing requires --sample_barcode_file"
-}
-if ((params.undetermined_r1 && !params.undetermined_r2) || (!params.undetermined_r1 && params.undetermined_r2)) {
-    error "Provide both --undetermined_r1 and --undetermined_r2, or neither to auto-detect Undetermined FASTQ pairs."
-}
 def rawDir = params.raw_fastq
 log.info "RAW_FASTQ directory           : ${rawDir}"
-if (params.undetermined_r1 && params.undetermined_r2) {
-    log.info "Undetermined R1               : ${rawDir}/${params.undetermined_r1}"
-    log.info "Undetermined R2               : ${rawDir}/${params.undetermined_r2}"
-} else {
-    log.info "Undetermined FASTQs           : auto-detect *Undetermined*R1*.fastq.gz in ${rawDir}"
-}
-log.info "Sample barcode file           : ${rawDir}/${params.sample_barcode_file}"
+log.info "Undetermined FASTQs           : explicit --undetermined_r1/--undetermined_r2 or auto-detect *Undetermined*R1*.fastq.gz in ${rawDir}"
+log.info "Sample barcode file           : ${params.sample_barcode_file ? "${rawDir}/${params.sample_barcode_file}" : 'not set'}"
 log.info "Split reads per chunk         : ${params.split_reads}"
 log.info "splitFastq executable         : ${params.split_fastq_bin}"
-
-def barcodeFile = file("${rawDir}/${params.sample_barcode_file}")
-if (!barcodeFile.exists()) {
-    error "Sample barcode file not found: ${barcodeFile}"
-}
-
-if (params.undetermined_r1 && params.undetermined_r2) {
-    Channel
-        .of(tuple(
-            params.undetermined_r1.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''),
-            file("${rawDir}/${params.undetermined_r1}"),
-            file("${rawDir}/${params.undetermined_r2}"),
-            barcodeFile
-        ))
-        .set { ch_undetermined_pairs }
-} else {
-    Channel
-        .fromPath("${rawDir}/*Undetermined*R1*.fastq.gz")
-        .map { r1 ->
-            def r2name = r1.name.replaceFirst(/R1/, 'R2')
-            def r2 = file("${r1.parent}/${r2name}")
-            if (!r2.exists()) {
-                error "Missing R2 pair for ${r1}: expected ${r2}"
-            }
-            tuple(r1.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''), r1, r2, barcodeFile)
-        }
-        .ifEmpty {
-            error "No Undetermined R1 FASTQs found in ${rawDir}. Provide --undetermined_r1/--undetermined_r2 or place files matching *Undetermined*R1*.fastq.gz in RAW_FASTQ."
-        }
-        .set { ch_undetermined_pairs }
-}
 
 /*
  * Processes
@@ -817,6 +774,45 @@ process STARSOLO_PAIRED {
 
 workflow {
     main:
+    // Validate and build undetermined input pairs here for parser compatibility across Nextflow versions.
+    if (!params.sample_barcode_file) {
+        error "Demultiplexing requires --sample_barcode_file"
+    }
+    if ((params.undetermined_r1 && !params.undetermined_r2) || (!params.undetermined_r1 && params.undetermined_r2)) {
+        error "Provide both --undetermined_r1 and --undetermined_r2, or neither to auto-detect Undetermined FASTQ pairs."
+    }
+
+    def barcodeFile = file("${rawDir}/${params.sample_barcode_file}")
+    if (!barcodeFile.exists()) {
+        error "Sample barcode file not found: ${barcodeFile}"
+    }
+
+    if (params.undetermined_r1 && params.undetermined_r2) {
+        Channel
+            .of(tuple(
+                params.undetermined_r1.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''),
+                file("${rawDir}/${params.undetermined_r1}"),
+                file("${rawDir}/${params.undetermined_r2}"),
+                barcodeFile
+            ))
+            .set { ch_undetermined_pairs }
+    } else {
+        Channel
+            .fromPath("${rawDir}/*Undetermined*R1*.fastq.gz")
+            .map { r1 ->
+                def r2name = r1.name.replaceFirst(/R1/, 'R2')
+                def r2 = file("${r1.parent}/${r2name}")
+                if (!r2.exists()) {
+                    error "Missing R2 pair for ${r1}: expected ${r2}"
+                }
+                tuple(r1.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''), r1, r2, barcodeFile)
+            }
+            .ifEmpty {
+                error "No Undetermined R1 FASTQs found in ${rawDir}. Provide --undetermined_r1/--undetermined_r2 or place files matching *Undetermined*R1*.fastq.gz in RAW_FASTQ."
+            }
+            .set { ch_undetermined_pairs }
+    }
+
     // Step 1: Split undetermined FASTQs in RAW_FASTQ so demultiplex can fan out in parallel.
     SPLIT_UNDETERMINED_FASTQ(ch_undetermined_pairs)
 
