@@ -87,7 +87,8 @@ log.info "Trim reads (fastp)           : ${params.trim_reads}"
 def rawDir = params.raw_fastq
 log.info "RAW_FASTQ directory           : ${rawDir}"
 log.info "Undetermined FASTQs           : explicit --undetermined_r1/--undetermined_r2 or auto-detect *Undetermined*R1*.fastq.gz in ${rawDir}"
-log.info "Sample barcode file           : ${params.sample_barcode_file ? "${rawDir}/${params.sample_barcode_file}" : 'not set'}"
+def sampleBarcodePath = params.sample_barcode_file ? "${rawDir}/${params.sample_barcode_file}" : 'not set'
+log.info "Sample barcode file           : ${sampleBarcodePath}"
 log.info "Split reads per chunk         : ${params.split_reads}"
 log.info "splitFastq executable         : ${params.split_fastq_bin}"
 
@@ -122,10 +123,8 @@ process SPLIT_UNDETERMINED_FASTQ {
     ${params.split_fastq_bin} -n ${params.split_reads} -i ${r1_undetermined} -o split_r1/Split_${r1stem}
     ${params.split_fastq_bin} -n ${params.split_reads} -i ${r2_undetermined} -o split_r2/Split_${r2stem}
     # splitFastq may emit plain .fastq (not .gz); normalize to .fastq.gz for demultiplex.py.
-    shopt -s nullglob
-    r1_plain=(split_r1/*.fastq)
-    r2_plain=(split_r2/*.fastq)
-    for f in "${r1_plain[@]}" "${r2_plain[@]}"; do
+    for f in split_r1/*.fastq split_r2/*.fastq; do
+      [ -e "$f" ] || continue
       gzip -f "$f"
     done
     """
