@@ -43,11 +43,6 @@ params.demux_mismatches    = params.demux_mismatches    ?: 1      // allowed mis
 params.split_reads         = params.split_reads         ?: 1000000
 params.split_fastq_bin     = params.split_fastq_bin     ?: '/home/yli11/HemTools/bin/splitFastq'
 
-// Strip .fastq.gz / .fq.gz so splitFastq -o prefix matches chunk names (e.g. Split_<stem>_1.fastq.gz).
-def fastqStem(String filename) {
-    filename.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, '')
-}
-
 // Derive a single "effective" 8bp whitelist file used everywhere:
 //  - RENAME_FASTQ barcode validation (error-correction against whitelist)
 //  - Single-end STARsolo (CB_UMI_Complex whitelist)
@@ -161,8 +156,8 @@ process SPLIT_UNDETERMINED_FASTQ {
     tuple val(pair_id), path("split_r1/*.fastq.gz"), path("split_r2/*.fastq.gz")
 
     script:
-    def r1stem = fastqStem(r1_undetermined.name)
-    def r2stem = fastqStem(r2_undetermined.name)
+    def r1stem = r1_undetermined.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, '')
+    def r2stem = r2_undetermined.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, '')
     """
     set -euo pipefail
     module load gcc
