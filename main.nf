@@ -124,8 +124,8 @@ process SPLIT_UNDETERMINED_FASTQ {
     ${params.split_fastq_bin} -n ${params.split_reads} -i ${r2_undetermined} -o split_r2/Split_${r2stem}
     # splitFastq may emit plain .fastq (not .gz); normalize to .fastq.gz for demultiplex.py.
     for f in split_r1/*.fastq split_r2/*.fastq; do
-      [ -e "$f" ] || continue
-      gzip -f "$f"
+      [ -e "\$f" ] || continue
+      gzip -f "\$f"
     done
     """
 }
