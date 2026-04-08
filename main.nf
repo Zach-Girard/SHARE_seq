@@ -800,7 +800,7 @@ summary_csv = rel_list("STARsolo/*/Solo.out/GeneFull/Summary.csv") + rel_list("S
 barnyard = rel_list("STARsolo/*/*collision_plot.png") + rel_list("STARsolo_paired/*/*collision_plot.png")
 
 parts = []
-parts.append("""<!doctype html>
+parts.append('''<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -816,7 +816,7 @@ parts.append("""<!doctype html>
 <body>
 <h1>SHARE-seq QC and Visualization Report</h1>
 <p>Generated from pipeline outputs in <code>{}</code>.</p>
-""".format(html.escape(proj)))
+'''.format(html.escape(proj)))
 
 parts.append("<h2>Demultiplexing</h2>")
 parts.append(links_block("demux/*.total_number_reads.tsv", demux_total))
