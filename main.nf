@@ -159,14 +159,14 @@ process MERGE_DEMUX_CHUNKS {
     tag { sample_id }
 
     input:
-    tuple val(sample_id), path(r1_parts, stageAs: 'r1_parts/*'), path(r2_parts, stageAs: 'r2_parts/*')
+    tuple val(sample_id), path(r1_parts, stageAs: 'r1_parts??/*'), path(r2_parts, stageAs: 'r2_parts??/*')
 
     output:
     tuple val(sample_id), path("${sample_id}.R1.fastq.gz"), path("${sample_id}.R2.fastq.gz")
 
     """
-    cat r1_parts/* > ${sample_id}.R1.fastq.gz
-    cat r2_parts/* > ${sample_id}.R2.fastq.gz
+    cat r1_parts*/* > ${sample_id}.R1.fastq.gz
+    cat r2_parts*/* > ${sample_id}.R2.fastq.gz
     """
 }
 
