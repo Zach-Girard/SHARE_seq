@@ -738,6 +738,8 @@ process BUILD_QC_HTML {
 
     output:
     path "QC_Report.html", emit: qc_html
+    path "QC_Report_assets/*", emit: qc_assets
+    path "QC_Report_bundle.zip", emit: qc_bundle
 
     """
     python3 - "${projectDir}" <<'PY'
@@ -746,10 +748,13 @@ import html
 import os
 import csv
 import sys
-from pathlib import Path
+import shutil
+import zipfile
 
 proj = sys.argv[1]
 out_path = "QC_Report.html"
+assets_dir = "QC_Report_assets"
+os.makedirs(assets_dir, exist_ok=True)
 
 def rel_list(pattern):
     return sorted([
@@ -758,8 +763,17 @@ def rel_list(pattern):
         if os.path.isfile(p)
     ])
 
-def file_url(rel_path):
-    return Path(os.path.join(proj, rel_path)).resolve().as_uri()
+def safe_asset_name(rel_path):
+    name = rel_path.replace("/", "__")
+    return name.replace(" ", "_")
+
+def stage_asset(rel_path):
+    src = os.path.join(proj, rel_path)
+    if not os.path.isfile(src):
+        return None
+    dest = os.path.join(assets_dir, safe_asset_name(rel_path))
+    shutil.copy2(src, dest)
+    return dest
 
 def read_table_preview(rel_path, max_rows=8):
     abs_path = os.path.join(proj, rel_path)
@@ -787,11 +801,15 @@ def read_table_preview(rel_path, max_rows=8):
 def links_block(title, paths):
     if not paths:
         return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
-    items = "".join(
-        f'<li><a href="{html.escape(file_url(p))}">{html.escape(p)}</a></li>'
-        for p in paths
-    )
-    return f"<h3>{html.escape(title)}</h3><ul>{items}</ul>"
+    items = []
+    for p in paths:
+        asset = stage_asset(p)
+        if asset is None:
+            continue
+        items.append(f'<li><a href="{html.escape(asset)}">{html.escape(p)}</a></li>')
+    if not items:
+        return f"<h3>{html.escape(title)}</h3><p><em>No readable files found.</em></p>"
+    return f"<h3>{html.escape(title)}</h3><ul>{''.join(items)}</ul>"
 
 demux_total = rel_list("demux/*.total_number_reads.tsv")
 demux_stats = rel_list("demux/SHARE-seq.demultiplex.stats.tsv")
@@ -848,6 +866,13 @@ parts.append("</body></html>")
 
 with open(out_path, "w") as out:
     out.write("\\n".join(parts))
+
+with zipfile.ZipFile("QC_Report_bundle.zip", "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    zf.write(out_path, arcname=out_path)
+    for root, _, files in os.walk(assets_dir):
+        for f in files:
+            p = os.path.join(root, f)
+            zf.write(p, arcname=p)
 PY
     """
 }
