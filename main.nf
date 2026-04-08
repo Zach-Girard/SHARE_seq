@@ -815,8 +815,8 @@ parts.append('''<!doctype html>
 </head>
 <body>
 <h1>SHARE-seq QC and Visualization Report</h1>
-<p>Generated from pipeline outputs in <code>{}</code>.</p>
-'''.format(html.escape(proj)))
+<p>Generated from pipeline outputs in <code>__PROJECT_DIR__</code>.</p>
+'''.replace("__PROJECT_DIR__", html.escape(proj)))
 
 parts.append("<h2>Demultiplexing</h2>")
 parts.append(links_block("demux/*.total_number_reads.tsv", demux_total))
