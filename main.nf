@@ -985,7 +985,7 @@ for sample in sorted(all_sample_candidates):
         return "".join(chunks)
 
     sample_parts = []
-    sample_parts.append(f"""<!doctype html>
+    sample_parts.append(f'''<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -1002,7 +1002,7 @@ for sample in sorted(all_sample_candidates):
 <body>
 <h1>SHARE-seq QC Report: {html.escape(sample)}</h1>
 <p>Project path: <code>{html.escape(proj)}</code></p>
-""")
+''')
     sample_parts.append(text_files_block("Log.final.out", sample_logs, max_lines=120))
     sample_parts.append(sample_image_block("Knee plots", sample_knee))
     sample_parts.append(text_files_block("Barcodes.stats", sample_barcodes, max_lines=120))
