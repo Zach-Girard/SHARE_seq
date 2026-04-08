@@ -746,6 +746,7 @@ import html
 import os
 import csv
 import sys
+from pathlib import Path
 
 proj = sys.argv[1]
 out_path = "QC_Report.html"
@@ -756,6 +757,9 @@ def rel_list(pattern):
         for p in glob.glob(os.path.join(proj, pattern))
         if os.path.isfile(p)
     ])
+
+def file_url(rel_path):
+    return Path(os.path.join(proj, rel_path)).resolve().as_uri()
 
 def read_table_preview(rel_path, max_rows=8):
     abs_path = os.path.join(proj, rel_path)
@@ -784,7 +788,7 @@ def links_block(title, paths):
     if not paths:
         return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
     items = "".join(
-        f'<li><a href="{html.escape(p)}">{html.escape(p)}</a></li>'
+        f'<li><a href="{html.escape(file_url(p))}">{html.escape(p)}</a></li>'
         for p in paths
     )
     return f"<h3>{html.escape(title)}</h3><ul>{items}</ul>"
