@@ -249,7 +249,7 @@ process POLYT_FILTER {
     tuple val(sample_id), path(r1_fastq), path(r2_fastq)
 
     output:
-    tuple val(sample_id), path "polyt_filtered/*.fastq.gz", emit: polyt_outputs
+    tuple val(sample_id), path("polyt_filtered/*.fastq.gz"), emit: polyt_outputs
 
     """
     mkdir -p polyt_filtered
@@ -269,7 +269,7 @@ process TRIM_R1 {
     tuple val(sample_id), path(fastq)
 
     output:
-    tuple val(sample_id), path "trimmed/*.fastq.gz", emit: trimmed_r1
+    tuple val(sample_id), path("trimmed/*.fastq.gz"), emit: trimmed_r1
     path "trimmed/*.fastp.json"
     path "trimmed/*.fastp.html"
 
@@ -298,7 +298,7 @@ process TRIM_R2_PROTECTED {
     tuple val(sample_id), path(fastq), val(protect_len)
 
     output:
-    tuple val(sample_id), path "trimmed/*.fastq.gz", emit: trimmed_r2
+    tuple val(sample_id), path("trimmed/*.fastq.gz"), emit: trimmed_r2
     path "trimmed/*.fastp.json"
     path "trimmed/*.fastp.html"
 
