@@ -92,6 +92,29 @@ log.info "Sample barcode file           : ${sampleBarcodePath}"
 log.info "Split reads per chunk         : ${params.split_reads}"
 log.info "splitFastq executable         : ${params.split_fastq_bin}"
 
+def loadSampleTypes = { File barcodePath ->
+    def sampleTypes = [:]
+    barcodePath.eachLine { raw ->
+        def line = raw?.trim()
+        if (!line || line.startsWith('#')) {
+            return
+        }
+        def cols = line.split(/\t|,/, -1).collect { it.trim() }
+        if (cols.size() < 3) {
+            return
+        }
+        def sample = cols[0]
+        def sampleType = cols[2].toUpperCase()
+        if (!sample || sample.equalsIgnoreCase('sample') || sampleType in ['TYPE', 'SAMPLE_TYPE']) {
+            return
+        }
+        if (sampleType in ['RNA', 'ATAC']) {
+            sampleTypes[sample] = sampleType
+        }
+    }
+    return sampleTypes
+}
+
 /*
  * Processes
  */
@@ -158,6 +181,8 @@ process DEMULTIPLEX {
 process MERGE_DEMUX_CHUNKS {
     tag { sample_id }
 
+    publishDir "${projectDir}/demux/${sample_id}", mode: 'copy', overwrite: true
+
     input:
     tuple val(sample_id), path(r1_parts, stageAs: 'r1_parts??/*'), path(r2_parts, stageAs: 'r2_parts??/*')
 
@@ -176,7 +201,7 @@ process MERGE_DEMUX_CHUNKS {
 process RENAME_FASTQ {
     tag { sample_id }
 
-    publishDir "${projectDir}/demux", mode: 'copy', overwrite: true
+    publishDir "${projectDir}/demux/${sample_id}", mode: 'copy', overwrite: true
 
     input:
     tuple val(sample_id), path(r1_demux), path(r2_demux), path(barcode_list)
@@ -199,12 +224,12 @@ process RENAME_FASTQ {
 }
 
 process FASTQC_DEMUX {
-    tag { file(fastq).name }
+    tag { sample_id }
 
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
+    publishDir "${projectDir}/fastqc_demux/${sample_id}", mode: 'copy', overwrite: true
 
     input:
-    path fastq
+    tuple val(sample_id), path(fastq)
 
     output:
     path "fastqc_demux/*_fastqc.*", emit: demux_reports
@@ -216,15 +241,15 @@ process FASTQC_DEMUX {
 }
 
 process POLYT_FILTER {
-    tag { file(r2_fastq).name }
+    tag { sample_id }
 
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
+    publishDir "${projectDir}/polyt_filtered/${sample_id}", mode: 'copy', overwrite: true
 
     input:
-    tuple path(r1_fastq), path(r2_fastq)
+    tuple val(sample_id), path(r1_fastq), path(r2_fastq)
 
     output:
-    path "polyt_filtered/*.fastq.gz", emit: polyt_outputs
+    tuple val(sample_id), path "polyt_filtered/*.fastq.gz", emit: polyt_outputs
 
     """
     mkdir -p polyt_filtered
@@ -236,15 +261,15 @@ process POLYT_FILTER {
 }
 
 process TRIM_R1 {
-    tag { file(fastq).name }
+    tag { sample_id }
 
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
+    publishDir "${projectDir}/trimmed/${sample_id}", mode: 'copy', overwrite: true
 
     input:
-    path fastq
+    tuple val(sample_id), path(fastq)
 
     output:
-    path "trimmed/*.fastq.gz", emit: trimmed_r1
+    tuple val(sample_id), path "trimmed/*.fastq.gz", emit: trimmed_r1
     path "trimmed/*.fastp.json"
     path "trimmed/*.fastp.html"
 
@@ -265,15 +290,15 @@ process TRIM_R1 {
 }
 
 process TRIM_R2_PROTECTED {
-    tag { file(fastq).name }
+    tag { sample_id }
 
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
+    publishDir "${projectDir}/trimmed/${sample_id}", mode: 'copy', overwrite: true
 
     input:
-    tuple path(fastq), val(protect_len)
+    tuple val(sample_id), path(fastq), val(protect_len)
 
     output:
-    path "trimmed/*.fastq.gz", emit: trimmed_r2
+    tuple val(sample_id), path "trimmed/*.fastq.gz", emit: trimmed_r2
     path "trimmed/*.fastp.json"
     path "trimmed/*.fastp.html"
 
@@ -382,15 +407,15 @@ process FASTQC_TRIMMED {
 // as @readname_<BC1><BC2><BC3>) and prepend it to the R2 sequence/quality lines.
 // Result: each R2 read becomes 24bp_CB + UMI + cDNA.
 process PREPEND_HEADER_BARCODES {
-    tag { file(r2_fastq).name }
+    tag { sample_id }
 
     publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
-    tuple path(r2_fastq), val(out_dir), val(bc_len)
+    tuple val(sample_id), path(r2_fastq), val(out_dir), val(bc_len)
 
     output:
-    path "${out_dir}/withBarcodes_*", emit: r2_with_barcodes
+    tuple val(sample_id), path("${out_dir}/withBarcodes_*"), emit: r2_with_barcodes
 
     script:
     def outName = "withBarcodes_${r2_fastq.name}"
@@ -739,6 +764,7 @@ process BUILD_QC_HTML {
     output:
     path "QC_Report.html", emit: qc_html
     path "QC_Report_assets/*", emit: qc_assets
+    path "QC_Report/**", emit: qc_report_dir
     path "QC_Report_bundle.zip", emit: qc_bundle
 
     """
@@ -754,7 +780,9 @@ import zipfile
 proj = sys.argv[1]
 out_path = "QC_Report.html"
 assets_dir = "QC_Report_assets"
+per_sample_dir = "QC_Report"
 os.makedirs(assets_dir, exist_ok=True)
+os.makedirs(per_sample_dir, exist_ok=True)
 
 def rel_list(pattern):
     return sorted([
@@ -772,6 +800,15 @@ def stage_asset(rel_path):
     if not os.path.isfile(src):
         return None
     dest = os.path.join(assets_dir, safe_asset_name(rel_path))
+    shutil.copy2(src, dest)
+    return dest
+
+def stage_asset_in(rel_path, dest_dir):
+    src = os.path.join(proj, rel_path)
+    if not os.path.isfile(src):
+        return None
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, safe_asset_name(rel_path))
     shutil.copy2(src, dest)
     return dest
 
@@ -911,9 +948,78 @@ parts.append("</body></html>")
 with open(out_path, "w") as out:
     out.write("\\n".join(parts))
 
+def sample_from_starsolo_path(rel_path):
+    bits = rel_path.split("/")
+    if len(bits) >= 3 and bits[0] in ("STARsolo", "STARsolo_paired"):
+        return bits[1]
+    return None
+
+all_sample_candidates = set()
+for p in starsolo_logs + knee_plots + barcodes_stats + summary_csv + barnyard:
+    s = sample_from_starsolo_path(p)
+    if s:
+        all_sample_candidates.add(s)
+
+for sample in sorted(all_sample_candidates):
+    sample_root = os.path.join(per_sample_dir, sample)
+    sample_assets = os.path.join(sample_root, "assets")
+    os.makedirs(sample_assets, exist_ok=True)
+
+    sample_logs = [p for p in starsolo_logs if sample_from_starsolo_path(p) == sample]
+    sample_knee = [p for p in knee_plots if sample_from_starsolo_path(p) == sample]
+    sample_barcodes = [p for p in barcodes_stats if sample_from_starsolo_path(p) == sample]
+    sample_summary = [p for p in summary_csv if sample_from_starsolo_path(p) == sample]
+    sample_barnyard = [p for p in barnyard if sample_from_starsolo_path(p) == sample]
+
+    def sample_image_block(title, paths):
+        if not paths:
+            return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
+        chunks = [f"<h3>{html.escape(title)}</h3>"]
+        for p in paths:
+            asset = stage_asset_in(p, sample_assets)
+            if asset is None:
+                continue
+            rel_asset = os.path.relpath(asset, sample_root)
+            chunks.append(f"<h4>{html.escape(p)}</h4>")
+            chunks.append(f'<img src="{html.escape(rel_asset)}" alt="{html.escape(p)}" style="max-width: 1200px; width: 100%; border: 1px solid #ddd; margin-bottom: 14px;" />')
+        return "".join(chunks)
+
+    sample_parts = []
+    sample_parts.append(f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SHARE-seq QC Report - {html.escape(sample)}</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 24px; line-height: 1.45; }}
+    h1, h2, h3 {{ margin-top: 1.1em; }}
+    code {{ background: #f3f3f3; padding: 2px 4px; border-radius: 3px; }}
+    pre {{ background: #f8f8f8; border: 1px solid #ddd; padding: 10px; overflow-x: auto; }}
+    table {{ border-collapse: collapse; margin: 8px 0 18px 0; }}
+    th, td {{ border: 1px solid #ccc; padding: 4px 8px; font-size: 12px; }}
+  </style>
+</head>
+<body>
+<h1>SHARE-seq QC Report: {html.escape(sample)}</h1>
+<p>Project path: <code>{html.escape(proj)}</code></p>
+""")
+    sample_parts.append(text_files_block("Log.final.out", sample_logs, max_lines=120))
+    sample_parts.append(sample_image_block("Knee plots", sample_knee))
+    sample_parts.append(text_files_block("Barcodes.stats", sample_barcodes, max_lines=120))
+    sample_parts.append(table_files_block("GeneFull Summary.csv", sample_summary, max_rows=20))
+    sample_parts.append(sample_image_block("Barnyard plots (if hybrid)", sample_barnyard))
+    sample_parts.append("</body></html>")
+
+    with open(os.path.join(sample_root, "index.html"), "w") as sf:
+        sf.write("\\n".join(sample_parts))
+
 with zipfile.ZipFile("QC_Report_bundle.zip", "w", compression=zipfile.ZIP_DEFLATED) as zf:
     zf.write(out_path, arcname=out_path)
     for root, _, files in os.walk(assets_dir):
+        for f in files:
+            p = os.path.join(root, f)
+            zf.write(p, arcname=p)
+    for root, _, files in os.walk(per_sample_dir):
         for f in files:
             p = os.path.join(root, f)
             zf.write(p, arcname=p)
@@ -978,6 +1084,13 @@ workflow {
     if (!barcodeFile.exists()) {
         error "Sample barcode file not found: ${barcodeFile}"
     }
+    def sampleTypeMap = loadSampleTypes(barcodeFile as File)
+    if (!sampleTypeMap) {
+        error "No valid sample types found in ${barcodeFile}. Expected column 1 = sample name and column 3 = RNA or ATAC."
+    }
+    def nRNA = sampleTypeMap.findAll { k, v -> v == 'RNA' }.size()
+    def nATAC = sampleTypeMap.findAll { k, v -> v == 'ATAC' }.size()
+    log.info "Sample types loaded            : RNA=${nRNA}, ATAC=${nATAC}"
 
     if (params.undetermined_r1 && params.undetermined_r2) {
         Channel
@@ -1052,10 +1165,34 @@ workflow {
 
     RENAME_FASTQ(ch_demux_pairs)
 
-    // Matched outputs: R1 = cDNA, R2 = UMI + cDNA.
-    // Cell barcode (24bp) is in the read header (appended by rename_fastq.py).
-    def ch_input_fastq = RENAME_FASTQ.out.matched_r1
-        .mix(RENAME_FASTQ.out.matched_r2)
+    // Attach sample type to matched outputs using sample_barcode_file (col1 sample, col3 RNA/ATAC).
+    def ch_matched_r1_typed = RENAME_FASTQ.out.matched_r1
+        .map { f ->
+            def sample = f.name.replaceFirst(/\.matched\.R1\.fastq\.gz$/, '')
+            def sampleType = sampleTypeMap[sample]
+            if (!sampleType) {
+                error "Sample ${sample} not found in sample_barcode_file with RNA/ATAC type."
+            }
+            tuple(sample, sampleType, f)
+        }
+
+    def ch_matched_r2_typed = RENAME_FASTQ.out.matched_r2
+        .map { f ->
+            def sample = f.name.replaceFirst(/\.matched\.R2\.fastq\.gz$/, '')
+            def sampleType = sampleTypeMap[sample]
+            if (!sampleType) {
+                error "Sample ${sample} not found in sample_barcode_file with RNA/ATAC type."
+            }
+            tuple(sample, sampleType, f)
+        }
+
+    def ch_matched_pairs_typed = ch_matched_r1_typed
+        .join(ch_matched_r2_typed)
+        .map { sample_id, sample_type, r1, _, r2 -> tuple(sample_id, sample_type, r1, r2) }
+
+    // ATAC and RNA both run through FASTQC_DEMUX (up to first five processes).
+    def ch_input_fastq = ch_matched_pairs_typed
+        .flatMap { sample_id, sample_type, r1, r2 -> [tuple(sample_id, r1), tuple(sample_id, r2)] }
 
     /*
      * Normalize sample identifiers across different FASTQ naming conventions.
@@ -1080,29 +1217,38 @@ workflow {
 
     FASTQC_DEMUX(ch_input_fastq)
 
-    // Split demuxed FASTQs: R1 = cDNA, R2 = UMI + cDNA
-    def ch_r1_demux = ch_input_fastq
-        .filter { f -> f.name =~ /[._]R1[._]/ }
-        .map { f -> tuple(normalizeSampleId(f.name), f) }
+    // Only RNA samples continue through the full workflow.
+    def ch_rna_pairs = ch_matched_pairs_typed
+        .filter { sample_id, sample_type, r1, r2 -> sample_type == 'RNA' }
+        .map { sample_id, sample_type, r1, r2 -> tuple(sample_id, r1, r2) }
 
-    def ch_r2_demux = ch_input_fastq
-        .filter { f -> f.name =~ /[._]R2[._]/ }
-        .map { f -> tuple(normalizeSampleId(f.name), f) }
+    // Split demuxed FASTQs: R1 = cDNA, R2 = UMI + cDNA
+    def ch_r1_demux = ch_rna_pairs
+        .map { sample_id, r1, r2 -> tuple(sample_id, r1) }
+
+    def ch_r2_demux = ch_rna_pairs
+        .map { sample_id, r1, r2 -> tuple(sample_id, r2) }
 
     // Poly-T filtering: R2 is the anchor (UMI + PolyT + cDNA), R1 (cDNA) is synced
     def ch_r1_r2_for_polyt = ch_r1_demux
         .join(ch_r2_demux)
-        .map { sample_id, r1, r2 -> tuple(r1, r2) }
+        .map { sample_id, r1, r2 -> tuple(sample_id, r1, r2) }
         .ifEmpty {
             log.warn "No R1/R2 FASTQ pairs found for Poly-T filtering."
             Channel.empty()
         }
 
     def poly_ch = POLYT_FILTER(ch_r1_r2_for_polyt)
-    def ch_polyt_fastq = poly_ch.polyt_outputs.flatten()
+    def ch_polyt_fastq = poly_ch.polyt_outputs
+        .flatMap { sample_id, files ->
+            def fList = (files instanceof List) ? files : [files]
+            fList.collect { f -> tuple(sample_id, f) }
+        }
     // R1 = cDNA, R2 = UMI + PolyT + cDNA
-    def ch_polyt_r1 = ch_polyt_fastq.filter { it.name.contains('extracted.R1') }
-    def ch_polyt_r2 = ch_polyt_fastq.filter { it.name.contains('extracted.R2') }
+    def ch_polyt_r1 = ch_polyt_fastq
+        .filter { sample_id, f -> f.name.contains('extracted.R1') }
+    def ch_polyt_r2 = ch_polyt_fastq
+        .filter { sample_id, f -> f.name.contains('extracted.R2') }
 
     // Optional fastp trimming (runs before barcode prepend).
     // R1 (cDNA): standard fastp. R2 (UMI+cDNA): first umi_len bp protected.
@@ -1119,12 +1265,16 @@ workflow {
         ch_r1_for_downstream = TRIM_R1.out.trimmed_r1
 
         ch_polyt_r2
-            .map { r2 -> tuple(r2, params.umi_len) }
+            .map { sample_id, r2 -> tuple(sample_id, r2, params.umi_len) }
             .set { ch_r2_for_trim }
         TRIM_R2_PROTECTED(ch_r2_for_trim)
         ch_r2_for_barcode_prepend = TRIM_R2_PROTECTED.out.trimmed_r2
 
-        FASTQC_TRIMMED(TRIM_R1.out.trimmed_r1.mix(TRIM_R2_PROTECTED.out.trimmed_r2))
+        FASTQC_TRIMMED(
+            TRIM_R1.out.trimmed_r1
+                .mix(TRIM_R2_PROTECTED.out.trimmed_r2)
+                .map { sample_id, fastq -> fastq }
+        )
     } else {
         log.info "Trimming disabled: using Poly-T–extracted reads directly."
         barcode_out_dir = 'polyt_filtered'
@@ -1133,20 +1283,20 @@ workflow {
     }
 
     // Read length from R1 (cDNA read) drives STAR index sjdbOverhang
-    def ch_r1_for_index = ch_r1_for_downstream.take(1)
+    def ch_r1_for_index = ch_r1_for_downstream.map { sample_id, r1 -> r1 }.take(1)
     DETERMINE_READ_LENGTH(ch_r1_for_index)
     def ch_read_length = DETERMINE_READ_LENGTH.out.read_length.map { it.trim() }
 
     // Barcode prepend: extract 24bp barcode from R2 header and prepend to R2 sequence.
     // Only R2 is needed; the barcode is already in the header from rename_fastq.py.
     ch_r2_for_barcode_prepend
-        .map { r2 -> tuple(r2, barcode_out_dir, params.total_bc_len) }
+        .map { sample_id, r2 -> tuple(sample_id, r2, barcode_out_dir, params.total_bc_len) }
         .set { ch_r2_for_barcode }
 
     PREPEND_HEADER_BARCODES(ch_r2_for_barcode)
 
     ch_read_length
-        .combine(PREPEND_HEADER_BARCODES.out.r2_with_barcodes.take(1))
+        .combine(PREPEND_HEADER_BARCODES.out.r2_with_barcodes.map { sample_id, r2wb -> r2wb }.take(1))
         .set { ch_star_index_input }
     STAR_INDEX(ch_star_index_input)
 
@@ -1155,17 +1305,11 @@ workflow {
         log.info "Running single-end STARsolo alignment."
 
         ch_r1_for_downstream
-            .map { r1 ->
-                def sample = normalizeSampleId(r1.name)
-                tuple(sample, r1)
-            }
+            .map { sample_id, r1 -> tuple(sample_id, r1) }
             .set { ch_r1_for_align }
 
         PREPEND_HEADER_BARCODES.out.r2_with_barcodes
-            .map { r2wb ->
-                def sample = normalizeSampleId(r2wb.name)
-                tuple(sample, r2wb)
-            }
+            .map { sample_id, r2wb -> tuple(sample_id, r2wb) }
             .set { ch_r2_barcode }
 
         ch_r1_for_align
@@ -1201,11 +1345,11 @@ workflow {
         log.info "Running paired-end STARsolo CB_UMI_Simple alignment."
 
         ch_r1_for_downstream
-            .map { r1 -> tuple(normalizeSampleId(r1.name), r1) }
+            .map { sample_id, r1 -> tuple(sample_id, r1) }
             .set { ch_r1_for_paired }
 
         PREPEND_HEADER_BARCODES.out.r2_with_barcodes
-            .map { r2wb -> tuple(normalizeSampleId(r2wb.name), r2wb) }
+            .map { sample_id, r2wb -> tuple(sample_id, r2wb) }
             .set { ch_r2wb_for_paired }
 
         ch_r1_for_paired
