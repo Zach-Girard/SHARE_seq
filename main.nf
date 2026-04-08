@@ -92,7 +92,8 @@ log.info "Sample barcode file           : ${sampleBarcodePath}"
 log.info "Split reads per chunk         : ${params.split_reads}"
 log.info "splitFastq executable         : ${params.split_fastq_bin}"
 
-def loadSampleTypes = { File barcodePath ->
+def loadSampleTypes = { barcodePathObj ->
+    File barcodePath = (barcodePathObj instanceof File) ? barcodePathObj : new File(barcodePathObj.toString())
     def sampleTypes = [:]
     barcodePath.eachLine { raw ->
         def line = raw?.trim()
@@ -1084,7 +1085,7 @@ workflow {
     if (!barcodeFile.exists()) {
         error "Sample barcode file not found: ${barcodeFile}"
     }
-    def sampleTypeMap = loadSampleTypes(barcodeFile as File)
+    def sampleTypeMap = loadSampleTypes(barcodeFile)
     if (!sampleTypeMap) {
         error "No valid sample types found in ${barcodeFile}. Expected column 1 = sample name and column 3 = RNA or ATAC."
     }
