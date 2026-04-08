@@ -798,6 +798,23 @@ def read_table_preview(rel_path, max_rows=8):
         cells.append("<tr>" + "".join(f"<{tag}>{c}</{tag}>" for c in row) + "</tr>")
     return "<table>" + "".join(cells) + "</table>"
 
+def read_text_preview(rel_path, max_lines=80):
+    abs_path = os.path.join(proj, rel_path)
+    if not os.path.exists(abs_path):
+        return "<p><em>Missing file</em></p>"
+    try:
+        lines = []
+        with open(abs_path, "r", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                lines.append(html.escape(line.rstrip("\\n")))
+                if i + 1 >= max_lines:
+                    break
+        if not lines:
+            return "<p><em>File is empty</em></p>"
+        return "<pre>" + "\\n".join(lines) + "</pre>"
+    except Exception as e:
+        return f"<p><em>Could not read file: {html.escape(str(e))}</em></p>"
+
 def links_block(title, paths):
     if not paths:
         return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
@@ -810,6 +827,36 @@ def links_block(title, paths):
     if not items:
         return f"<h3>{html.escape(title)}</h3><p><em>No readable files found.</em></p>"
     return f"<h3>{html.escape(title)}</h3><ul>{''.join(items)}</ul>"
+
+def text_files_block(title, paths, max_lines=80):
+    if not paths:
+        return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
+    chunks = [f"<h3>{html.escape(title)}</h3>"]
+    for p in paths:
+        chunks.append(f"<h4>{html.escape(p)}</h4>")
+        chunks.append(read_text_preview(p, max_lines=max_lines))
+    return "".join(chunks)
+
+def table_files_block(title, paths, max_rows=12):
+    if not paths:
+        return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
+    chunks = [f"<h3>{html.escape(title)}</h3>"]
+    for p in paths:
+        chunks.append(f"<h4>{html.escape(p)}</h4>")
+        chunks.append(read_table_preview(p, max_rows=max_rows))
+    return "".join(chunks)
+
+def image_files_block(title, paths):
+    if not paths:
+        return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
+    chunks = [f"<h3>{html.escape(title)}</h3>"]
+    for p in paths:
+        asset = stage_asset(p)
+        if asset is None:
+            continue
+        chunks.append(f"<h4>{html.escape(p)}</h4>")
+        chunks.append(f'<img src="{html.escape(asset)}" alt="{html.escape(p)}" style="max-width: 1200px; width: 100%; border: 1px solid #ddd; margin-bottom: 14px;" />')
+    return "".join(chunks)
 
 demux_total = rel_list("demux/*.total_number_reads.tsv")
 demux_stats = rel_list("demux/SHARE-seq.demultiplex.stats.tsv")
@@ -841,26 +888,23 @@ parts.append('''<!doctype html>
 '''.replace("__PROJECT_DIR__", html.escape(proj)))
 
 parts.append("<h2>Demultiplexing</h2>")
-parts.append(links_block("demux/*.total_number_reads.tsv", demux_total))
-parts.append(links_block("demux/SHARE-seq.demultiplex.stats.tsv", demux_stats))
 if demux_stats:
     parts.append("<h3>Demultiplex Stats Preview</h3>")
     parts.append(read_table_preview(demux_stats[0]))
+else:
+    parts.append("<p><em>No demultiplex stats file found.</em></p>")
 
 parts.append("<h2>FastQC (Demultiplexed)</h2>")
 parts.append(links_block("fastqc_demux/*_fastqc.html", fastqc_html))
 
 parts.append("<h2>STARsolo QC</h2>")
-parts.append(links_block("STARsolo*/<sample>/Log.final.out", starsolo_logs))
-parts.append(links_block("STARsolo*/<sample>/*_knee_plot.png", knee_plots))
-parts.append(links_block("STARsolo*/<sample>/Solo.out/Barcodes.stats", barcodes_stats))
-parts.append(links_block("STARsolo*/<sample>/Solo.out/GeneFull/Summary.csv", summary_csv))
-if summary_csv:
-    parts.append("<h3>GeneFull Summary Preview</h3>")
-    parts.append(read_table_preview(summary_csv[0]))
+parts.append(text_files_block("STARsolo*/<sample>/Log.final.out", starsolo_logs, max_lines=120))
+parts.append(image_files_block("STARsolo*/<sample>/*_knee_plot.png", knee_plots))
+parts.append(text_files_block("STARsolo*/<sample>/Solo.out/Barcodes.stats", barcodes_stats, max_lines=120))
+parts.append(table_files_block("STARsolo*/<sample>/Solo.out/GeneFull/Summary.csv", summary_csv, max_rows=20))
 
 parts.append("<h2>Hybrid Barnyard Plots (if applicable)</h2>")
-parts.append(links_block("STARsolo*/<sample>/*collision_plot.png", barnyard))
+parts.append(image_files_block("STARsolo*/<sample>/*collision_plot.png", barnyard))
 
 parts.append("</body></html>")
 
