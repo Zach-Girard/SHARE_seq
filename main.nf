@@ -728,6 +728,126 @@ process BUILD_PAIRED_WHITELIST {
     """
 }
 
+process BUILD_QC_HTML {
+    tag "qc_report"
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    val(report_trigger)
+
+    output:
+    path "QC_Report.html", emit: qc_html
+
+    """
+    python3 - "${projectDir}" <<'PY'
+import glob
+import html
+import os
+import csv
+import sys
+
+proj = sys.argv[1]
+out_path = "QC_Report.html"
+
+def rel_list(pattern):
+    return sorted([
+        os.path.relpath(p, proj)
+        for p in glob.glob(os.path.join(proj, pattern))
+        if os.path.isfile(p)
+    ])
+
+def read_table_preview(rel_path, max_rows=8):
+    abs_path = os.path.join(proj, rel_path)
+    if not os.path.exists(abs_path):
+        return "<p><em>Missing file</em></p>"
+    rows = []
+    delim = "," if rel_path.endswith(".csv") else "\\t"
+    try:
+        with open(abs_path, newline="") as fh:
+            reader = csv.reader(fh, delimiter=delim)
+            for i, row in enumerate(reader):
+                rows.append([html.escape(x) for x in row])
+                if i + 1 >= max_rows:
+                    break
+    except Exception as e:
+        return f"<p><em>Could not parse preview: {html.escape(str(e))}</em></p>"
+    if not rows:
+        return "<p><em>File is empty</em></p>"
+    cells = []
+    for ridx, row in enumerate(rows):
+        tag = "th" if ridx == 0 else "td"
+        cells.append("<tr>" + "".join(f"<{tag}>{c}</{tag}>" for c in row) + "</tr>")
+    return "<table>" + "".join(cells) + "</table>"
+
+def links_block(title, paths):
+    if not paths:
+        return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
+    items = "".join(
+        f'<li><a href="{html.escape(p)}">{html.escape(p)}</a></li>'
+        for p in paths
+    )
+    return f"<h3>{html.escape(title)}</h3><ul>{items}</ul>"
+
+demux_total = rel_list("demux/*.total_number_reads.tsv")
+demux_stats = rel_list("demux/SHARE-seq.demultiplex.stats.tsv")
+fastqc_html = rel_list("fastqc_demux/*_fastqc.html")
+
+starsolo_logs = rel_list("STARsolo/*/Log.final.out") + rel_list("STARsolo_paired/*/Log.final.out")
+knee_plots = rel_list("STARsolo/*/*_knee_plot.png") + rel_list("STARsolo_paired/*/*_knee_plot.png")
+barcodes_stats = rel_list("STARsolo/*/Solo.out/Barcodes.stats") + rel_list("STARsolo_paired/*/Solo.out/Barcodes.stats")
+summary_csv = rel_list("STARsolo/*/Solo.out/GeneFull/Summary.csv") + rel_list("STARsolo_paired/*/Solo.out/GeneFull/Summary.csv")
+barnyard = rel_list("STARsolo/*/*collision_plot.png") + rel_list("STARsolo_paired/*/*collision_plot.png")
+
+parts = []
+parts.append("""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SHARE-seq QC Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; line-height: 1.45; }
+    h1, h2, h3 { margin-top: 1.1em; }
+    code { background: #f3f3f3; padding: 2px 4px; border-radius: 3px; }
+    table { border-collapse: collapse; margin: 8px 0 18px 0; }
+    th, td { border: 1px solid #ccc; padding: 4px 8px; font-size: 12px; }
+  </style>
+</head>
+<body>
+<h1>SHARE-seq QC and Visualization Report</h1>
+<p>Generated from pipeline outputs in <code>{}</code>.</p>
+""".format(html.escape(proj)))
+
+parts.append("<h2>Demultiplexing</h2>")
+parts.append(links_block("demux/*.total_number_reads.tsv", demux_total))
+parts.append(links_block("demux/SHARE-seq.demultiplex.stats.tsv", demux_stats))
+if demux_stats:
+    parts.append("<h3>Demultiplex Stats Preview</h3>")
+    parts.append(read_table_preview(demux_stats[0]))
+
+parts.append("<h2>FastQC (Demultiplexed)</h2>")
+parts.append(links_block("fastqc_demux/*_fastqc.html", fastqc_html))
+
+parts.append("<h2>STARsolo QC</h2>")
+parts.append(links_block("STARsolo*/<sample>/Log.final.out", starsolo_logs))
+parts.append(links_block("STARsolo*/<sample>/*_knee_plot.png", knee_plots))
+parts.append(links_block("STARsolo*/<sample>/Solo.out/Barcodes.stats", barcodes_stats))
+parts.append(links_block("STARsolo*/<sample>/Solo.out/GeneFull/Summary.csv", summary_csv))
+if summary_csv:
+    parts.append("<h3>GeneFull Summary Preview</h3>")
+    parts.append(read_table_preview(summary_csv[0]))
+
+parts.append("<h2>Hybrid Barnyard Plots (if applicable)</h2>")
+parts.append(links_block("STARsolo*/<sample>/*collision_plot.png", barnyard))
+
+parts.append("</body></html>")
+
+with open(out_path, "w") as out:
+    out.write("\\n".join(parts))
+PY
+    """
+}
+
 process STARSOLO_PAIRED {
     tag { sample_id }
 
@@ -992,10 +1112,16 @@ workflow {
 
         KNEE_PLOT(ch_starsolo_for_hybrid_qc)
 
+        def ch_report_trigger_single = KNEE_PLOT.out.knee_plot
         if( params.species_model == 'hybrid' ) {
             BARNYARD_PLOT(ch_starsolo_for_hybrid_qc)
             HYBRID_SPLIT_SPECIES(ch_starsolo_for_hybrid_qc)
+            ch_report_trigger_single = ch_report_trigger_single
+                .mix(BARNYARD_PLOT.out.barnyard80)
+                .mix(BARNYARD_PLOT.out.barnyard90)
         }
+        ch_report_trigger_single.collect().map { 1 }.set { ch_build_qc_report_single }
+        BUILD_QC_HTML(ch_build_qc_report_single)
     // Paired-end STARsolo (CB_UMI_Simple): R1 (cDNA) + withBarcodes_R2 (24bp CB + UMI + cDNA).
     // Barcodes are already error-corrected by rename_fastq.py, so no barcode matching needed.
     } else if( params.star_alignment_mode == 'paired' ) {
@@ -1036,10 +1162,16 @@ workflow {
 
         KNEE_PLOT(ch_starsolo_paired_for_qc)
 
+        def ch_report_trigger_paired = KNEE_PLOT.out.knee_plot
         if( params.species_model == 'hybrid' ) {
             BARNYARD_PLOT(ch_starsolo_paired_for_qc)
             HYBRID_SPLIT_SPECIES(ch_starsolo_paired_for_qc)
+            ch_report_trigger_paired = ch_report_trigger_paired
+                .mix(BARNYARD_PLOT.out.barnyard80)
+                .mix(BARNYARD_PLOT.out.barnyard90)
         }
+        ch_report_trigger_paired.collect().map { 1 }.set { ch_build_qc_report_paired }
+        BUILD_QC_HTML(ch_build_qc_report_paired)
     } else {
         log.info "Unknown star_alignment_mode = ${params.star_alignment_mode}; skipping STARsolo alignment."
     }
