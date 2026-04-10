@@ -951,12 +951,6 @@ parts.append('''<!doctype html>
 
 parts.append("<h2>Demultiplexing</h2>")
 if demux_stats:
-    demux_stats_asset = stage_asset(demux_stats[0])
-    if demux_stats_asset:
-        parts.append(
-            f'<p><strong>Demultiplex stats file:</strong> '
-            f'<a href="{html.escape(demux_stats_asset)}">{html.escape(demux_stats[0])}</a></p>'
-        )
     parts.append("<h3>Demultiplex Stats Preview</h3>")
     parts.append(read_table_preview(demux_stats[0]))
 else:
