@@ -800,6 +800,13 @@ def rel_list(pattern):
         if os.path.isfile(p)
     ])
 
+def rel_list_recursive(pattern):
+    return sorted([
+        os.path.relpath(p, proj)
+        for p in glob.glob(os.path.join(proj, pattern), recursive=True)
+        if os.path.isfile(p)
+    ])
+
 def safe_asset_name(rel_path):
     name = rel_path.replace("/", "__")
     return name.replace(" ", "_")
@@ -913,7 +920,12 @@ fastqc_html = sorted(set(
 ))
 
 starsolo_logs = rel_list("STARsolo/*/Log.final.out") + rel_list("STARsolo_paired/*/Log.final.out")
-knee_plots = rel_list("STARsolo/*/*_knee_plot.png") + rel_list("STARsolo_paired/*/*_knee_plot.png")
+knee_plots = sorted(set(
+    rel_list("STARsolo/*/*_knee_plot.png") +
+    rel_list("STARsolo_paired/*/*_knee_plot.png") +
+    rel_list_recursive("**/*_knee_plot.png")
+))
+knee_plots = [p for p in knee_plots if not p.startswith("QC_Report")]
 barcodes_stats = rel_list("STARsolo/*/Solo.out/Barcodes.stats") + rel_list("STARsolo_paired/*/Solo.out/Barcodes.stats")
 summary_csv = rel_list("STARsolo/*/Solo.out/GeneFull/Summary.csv") + rel_list("STARsolo_paired/*/Solo.out/GeneFull/Summary.csv")
 barnyard = rel_list("STARsolo/*/*collision_plot.png") + rel_list("STARsolo_paired/*/*collision_plot.png")
