@@ -161,6 +161,9 @@ process SPLIT_UNDETERMINED_FASTQ {
 process DEMULTIPLEX {
     tag { demux_chunk_id }
 
+    // Keep demultiplex stats at demux/ root; do not publish chunk FASTQs here.
+    publishDir "${projectDir}/demux", mode: 'copy', overwrite: true, pattern: "SHARE-seq.demultiplex.stats.tsv"
+
     input:
     tuple val(demux_chunk_id), path(r1_undetermined), path(r2_undetermined), path(barcode_file)
 
@@ -936,6 +939,12 @@ parts.append('''<!doctype html>
 
 parts.append("<h2>Demultiplexing</h2>")
 if demux_stats:
+    demux_stats_asset = stage_asset(demux_stats[0])
+    if demux_stats_asset:
+        parts.append(
+            f'<p><strong>Demultiplex stats file:</strong> '
+            f'<a href="{html.escape(demux_stats_asset)}">{html.escape(demux_stats[0])}</a></p>'
+        )
     parts.append("<h3>Demultiplex Stats Preview</h3>")
     parts.append(read_table_preview(demux_stats[0]))
 else:
