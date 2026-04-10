@@ -4,17 +4,22 @@ nextflow.enable.dsl=2
  * SHARE-seq processing pipeline.
  *
  * Steps:
- *   1. Demultiplex by sample index barcode, then validate SHARE-seq round barcodes
- *   2. FastQC on demultiplexed reads
- *   3. Poly-T filtering (R2 anchor, R1 synced)
- *   4. Optional fastp trimming (R1 standard; R2 with UMI protection)
- *   5. Barcode prepending (24bp cell barcode from R2 header → R2 sequence)
- *   6. STAR genome index (built or reused via fingerprint)
- *   7. STARsolo alignment (single-end CB_UMI_Complex or paired-end CB_UMI_Simple)
- *   8. QC: knee plots, barnyard plots (hybrid), species-purity splits (hybrid)
+ *   1. Split undetermined FASTQs into read-count chunks, then demultiplex chunk pairs in parallel
+ *   2. Merge chunk-level demultiplex output back to per-sample FASTQ pairs
+ *   3. Validate SHARE-seq round barcodes (rename_fastq.py) and run FastQC on matched reads
+ *   4. Route by sample type from sample_barcode_file (column 3):
+ *      - ATAC: stop after FASTQC_DEMUX
+ *      - RNA : continue through full RNA workflow below
+ *   5. Poly-T filtering (R2 anchor, R1 synced) for RNA samples
+ *   6. Optional fastp trimming (R1 standard; R2 with UMI protection)
+ *   7. Barcode prepending (24bp cell barcode from R2 header → R2 sequence)
+ *   8. STAR genome index (built or reused via fingerprint)
+ *   9. STARsolo alignment (single-end CB_UMI_Complex or paired-end CB_UMI_Simple)
+ *  10. QC: knee plots, barnyard plots (hybrid), species-purity splits (hybrid), HTML report outputs
  *
  * Requires:
  *   - RAW_FASTQ/ directory with undetermined R1/R2 fastq.gz and sample barcode file
+ *   - sample_barcode_file column 1 = sample name, column 3 = sample type (RNA/ATAC)
  *   - Genomes/ and GTF/ prepared via helper scripts
  *   - Python dependencies from environment.yml (no local utils.py required)
  */
@@ -120,8 +125,7 @@ def loadSampleTypes = { barcodePathObj ->
  * Processes
  */
 
-// Step 1: Split undetermined R1/R2 by sample index barcode in the read header.
-// Produces per-sample <name>.R1.fastq.gz / <name>.R2.fastq.gz.
+// Step 1: Split undetermined input FASTQs into smaller chunks for parallel demultiplexing.
 process SPLIT_UNDETERMINED_FASTQ {
     tag { pair_id }
 
@@ -157,11 +161,10 @@ process SPLIT_UNDETERMINED_FASTQ {
 process DEMULTIPLEX {
     tag { demux_chunk_id }
 
-    publishDir "${projectDir}/demux", mode: 'copy', overwrite: true
-
     input:
     tuple val(demux_chunk_id), path(r1_undetermined), path(r2_undetermined), path(barcode_file)
 
+    // Chunk-level outputs stay in work/; final sample-level demux outputs are published by MERGE_DEMUX_CHUNKS/RENAME_FASTQ.
     output:
     path "*.R1.fastq.gz", emit: demux_r1
     path "*.R2.fastq.gz", emit: demux_r2
@@ -182,6 +185,7 @@ process DEMULTIPLEX {
 process MERGE_DEMUX_CHUNKS {
     tag { sample_id }
 
+    // Final per-sample demultiplexed FASTQs.
     publishDir "${projectDir}/demux/${sample_id}", mode: 'copy', overwrite: true
 
     input:
@@ -191,17 +195,18 @@ process MERGE_DEMUX_CHUNKS {
     tuple val(sample_id), path("${sample_id}.R1.fastq.gz"), path("${sample_id}.R2.fastq.gz")
 
     """
-    cat r1_parts*/* > ${sample_id}.R1.fastq.gz
-    cat r2_parts*/* > ${sample_id}.R2.fastq.gz
+    cat r1_parts*/* > "${sample_id}.R1.fastq.gz"
+    cat r2_parts*/* > "${sample_id}.R2.fastq.gz"
     """
 }
 
-// Step 2: Validate three SHARE-seq round barcodes in R1 sequence, rewrite headers
+// Validate three SHARE-seq round barcodes in R1 sequence, rewrite headers
 // with matched barcodes, and split into matched/junk output pairs.
 // Python dependencies are provided via environment.yml.
 process RENAME_FASTQ {
     tag { sample_id }
 
+    // Keep rename outputs grouped under demux/<sample_id>/.
     publishDir "${projectDir}/demux/${sample_id}", mode: 'copy', overwrite: true
 
     input:
@@ -227,88 +232,87 @@ process RENAME_FASTQ {
 process FASTQC_DEMUX {
     tag { sample_id }
 
+    // Per-sample FastQC outputs.
     publishDir "${projectDir}/fastqc_demux/${sample_id}", mode: 'copy', overwrite: true
 
     input:
     tuple val(sample_id), path(fastq)
 
     output:
-    path "fastqc_demux/*_fastqc.*", emit: demux_reports
+    path "*_fastqc.*", emit: demux_reports
 
     """
-    mkdir -p fastqc_demux
-    fastqc -o fastqc_demux -f fastq ${fastq}
+    fastqc -o . -f fastq ${fastq}
     """
 }
 
 process POLYT_FILTER {
     tag { sample_id }
 
+    // RNA-only branch: per-sample Poly-T outputs under polyt_filtered/<sample_id>/.
     publishDir "${projectDir}/polyt_filtered/${sample_id}", mode: 'copy', overwrite: true
 
     input:
     tuple val(sample_id), path(r1_fastq), path(r2_fastq)
 
     output:
-    tuple val(sample_id), path("polyt_filtered/*.fastq.gz"), emit: polyt_outputs
+    tuple val(sample_id), path("*extracted*.fastq.gz"), emit: polyt_outputs
 
     """
-    mkdir -p polyt_filtered
     bash "${projectDir}/PolyT_cutadapt.sh" \\
       ${r1_fastq} \\
       ${r2_fastq} \\
-      polyt_filtered
+      .
     """
 }
 
 process TRIM_R1 {
     tag { sample_id }
 
+    // Per-sample trimmed outputs under trimmed/<sample_id>/.
     publishDir "${projectDir}/trimmed/${sample_id}", mode: 'copy', overwrite: true
 
     input:
     tuple val(sample_id), path(fastq)
 
     output:
-    tuple val(sample_id), path("trimmed/*.fastq.gz"), emit: trimmed_r1
-    path "trimmed/*.fastp.json"
-    path "trimmed/*.fastp.html"
+    tuple val(sample_id), path("*.fastq.gz"), emit: trimmed_r1
+    path "*.fastp.json"
+    path "*.fastp.html"
 
     script:
     def stem = fastq.name.replaceFirst(/\.(fastq|fq)(\.gz)?$/, '')
     def outBase = stem.replaceFirst(/\.(R[123])$/, '.trimmed.$1')
     """
-    mkdir -p trimmed
     fastp \\
       -i ${fastq} \\
-      -o trimmed/${outBase}.fastq.gz \\
+      -o ${outBase}.fastq.gz \\
       -w ${task.cpus} \\
       --disable_quality_filtering \\
       --disable_length_filtering \\
-      -j trimmed/${outBase}.fastp.json \\
-      -h trimmed/${outBase}.fastp.html
+      -j ${outBase}.fastp.json \\
+      -h ${outBase}.fastp.html
     """
 }
 
 process TRIM_R2_PROTECTED {
     tag { sample_id }
 
+    // Per-sample trimmed outputs under trimmed/<sample_id>/.
     publishDir "${projectDir}/trimmed/${sample_id}", mode: 'copy', overwrite: true
 
     input:
     tuple val(sample_id), path(fastq), val(protect_len)
 
     output:
-    tuple val(sample_id), path("trimmed/*.fastq.gz"), emit: trimmed_r2
-    path "trimmed/*.fastp.json"
-    path "trimmed/*.fastp.html"
+    tuple val(sample_id), path("*.fastq.gz"), emit: trimmed_r2
+    path "*.fastp.json"
+    path "*.fastp.html"
 
     script:
     def stem = fastq.name.replaceFirst(/\.(fastq|fq)(\.gz)?$/, '')
     def outBase = stem.replaceFirst(/\.(R[123])$/, '.trimmed.$1')
     """
-    mkdir -p trimmed
-
     python3 - "${fastq}" "${protect_len}" <<'PY'
 import gzip, sys, os
 
@@ -345,10 +349,10 @@ PY
       -w ${task.cpus} \\
       --disable_quality_filtering \\
       --disable_length_filtering \\
-      -j trimmed/${outBase}.fastp.json \\
-      -h trimmed/${outBase}.fastp.html
+      -j ${outBase}.fastp.json \\
+      -h ${outBase}.fastp.html
 
-    python3 - "_protected.fastq" "_suffix_trimmed.fastq.gz" "trimmed/${outBase}.fastq.gz" <<'PY'
+    python3 - "_protected.fastq" "_suffix_trimmed.fastq.gz" "${outBase}.fastq.gz" <<'PY'
 import gzip, sys
 
 prot_path = sys.argv[1]
@@ -410,20 +414,21 @@ process FASTQC_TRIMMED {
 process PREPEND_HEADER_BARCODES {
     tag { sample_id }
 
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
+    // Route withBarcodes outputs to either:
+    //   - polyt_filtered/<sample_id>/ (trim disabled)
+    //   - trimmed/<sample_id>/        (trim enabled)
+    publishDir "${projectDir}", mode: 'copy', overwrite: true, saveAs: { filename -> "${out_dir}/${sample_id}/${filename}" }
 
     input:
     tuple val(sample_id), path(r2_fastq), val(out_dir), val(bc_len)
 
     output:
-    tuple val(sample_id), path("${out_dir}/withBarcodes_*"), emit: r2_with_barcodes
+    tuple val(sample_id), path("withBarcodes_*"), emit: r2_with_barcodes
 
     script:
     def outName = "withBarcodes_${r2_fastq.name}"
     """
-    mkdir -p ${out_dir}
-
-    python3 - "${r2_fastq}" "${out_dir}/${outName}" "${bc_len}" <<'PY'
+    python3 - "${r2_fastq}" "${outName}" "${bc_len}" <<'PY'
 import gzip, sys
 
 in_path  = sys.argv[1]
@@ -898,7 +903,11 @@ def image_files_block(title, paths):
 
 demux_total = rel_list("demux/*.total_number_reads.tsv")
 demux_stats = rel_list("demux/SHARE-seq.demultiplex.stats.tsv")
-fastqc_html = rel_list("fastqc_demux/*_fastqc.html")
+fastqc_html = sorted(set(
+    rel_list("fastqc_demux/*/*_fastqc.html") +
+    rel_list("fastqc_demux/*/fastqc_demux/*_fastqc.html") +
+    rel_list("fastqc_demux/*_fastqc.html")
+))
 
 starsolo_logs = rel_list("STARsolo/*/Log.final.out") + rel_list("STARsolo_paired/*/Log.final.out")
 knee_plots = rel_list("STARsolo/*/*_knee_plot.png") + rel_list("STARsolo_paired/*/*_knee_plot.png")
@@ -933,7 +942,7 @@ else:
     parts.append("<p><em>No demultiplex stats file found.</em></p>")
 
 parts.append("<h2>FastQC (Demultiplexed)</h2>")
-parts.append(links_block("fastqc_demux/*_fastqc.html", fastqc_html))
+parts.append(links_block("fastqc_demux/<sample>/*_fastqc.html", fastqc_html))
 
 parts.append("<h2>STARsolo QC</h2>")
 parts.append(text_files_block("STARsolo*/<sample>/Log.final.out", starsolo_logs, max_lines=120))
