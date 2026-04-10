@@ -35,7 +35,7 @@ def revcomp(seq):
 
 
 def read_fasta(path, rc=False):
-	"""Return {sample_id: barcode_seq} from FASTA."""
+	"""Return ({sample_id: barcode_seq}, {}) from FASTA (no sample-type column)."""
 	barcode = {}
 	current_id = None
 	current_seq = []
@@ -55,11 +55,13 @@ def read_fasta(path, rc=False):
 	if current_id is not None:
 		seq = "".join(current_seq).upper()
 		barcode[current_id] = revcomp(seq) if rc else seq
-	return barcode
+	# FASTA has no table columns for sample type; caller may ignore second value.
+	return barcode, {}
 
 
 def read_barcode_table(path, rc=False):
-	"""Return {sample_id: barcode_seq} from TSV/CSV table."""
+	"""Return ({sample_id: barcode_seq}, {sample_id: sample_type}) from TSV/CSV table.
+	Column 1 = sample name, column 2 = barcode (typical), column 3 = sample type when present."""
 	rows = []
 	with open(path, newline="") as f:
 		sample = f.read(4096)
@@ -81,7 +83,12 @@ def read_barcode_table(path, rc=False):
 		return len(u) >= 6 and all(c in "ACGTN" for c in u)
 
 	barcode = {}
+	# Column 1 = sample name (sid); column 3 = sample type (RNA/ATAC/etc.) when present.
+	sample_type_by_sid = {}
 	for row in rows:
+		sample_type = ""
+		if len(row) >= 3:
+			sample_type = row[2].strip()
 		if len(row) == 1:
 			sid = row[0]
 			seq = row[0]
@@ -96,7 +103,8 @@ def read_barcode_table(path, rc=False):
 				sid, seq = a, b
 		seq = seq.upper()
 		barcode[sid] = revcomp(seq) if rc else seq
-	return barcode
+		sample_type_by_sid[sid] = sample_type
+	return barcode, sample_type_by_sid
 
 
 def mismatch_sequence(seq, max_mismatch):
@@ -127,12 +135,13 @@ def main():
 
 	args = my_args()
 	
-	# read barcode
+	# read barcode (+ optional sample type from column 3 of table input)
 	logging.info("Reading barcode file")
+	sample_type_by_sid = {}
 	try:
-		barcode = read_barcode_table(args.barcode,rc = args.revcomp)
-	except:
-		barcode = read_fasta(args.barcode,rc = args.revcomp)
+		barcode, sample_type_by_sid = read_barcode_table(args.barcode, rc=args.revcomp)
+	except Exception:
+		barcode, sample_type_by_sid = read_fasta(args.barcode, rc=args.revcomp)
 	# open files
 	R1 = {}
 	R2 = {}
@@ -205,10 +214,38 @@ def main():
 					R2['unmatched'].write("\n".join(lines)+"\n")
 				lines=[]
 
-	df = pd.DataFrame.from_dict(log_count,orient="index",columns=['Total_reads'])
-	df = df.sort_values("Total_reads",ascending=False)
-	print (df)
-	df.to_csv("SHARE-seq.demultiplex.stats.tsv",sep="\t")
+	# Map observed index sequence -> sample name (column 1); include mismatch variants.
+	seq_to_sid = {}
+	for sid, seq in barcode.items():
+		seq_to_sid[seq] = sid
+		if args.num_mismatch > 0:
+			for k in mismatch_sequence(seq, args.num_mismatch):
+				seq_to_sid[k] = sid
+
+	rows_out = []
+	for seq_key, total in sorted(log_count.items(), key=lambda kv: kv[1], reverse=True):
+		if seq_key == "unmatched":
+			rows_out.append(
+				{
+					"Sample_Index": "unmatched",
+					"Sample_Name": "unmatched",
+					"Sample_Type": "",
+					"Total_reads": total,
+				}
+			)
+		else:
+			sid = seq_to_sid.get(seq_key, "")
+			rows_out.append(
+				{
+					"Sample_Index": seq_key,
+					"Sample_Name": sid if sid else "",
+					"Sample_Type": sample_type_by_sid.get(sid, "") if sid else "",
+					"Total_reads": total,
+				}
+			)
+	df = pd.DataFrame(rows_out)
+	print(df)
+	df.to_csv("SHARE-seq.demultiplex.stats.tsv", sep="\t", index=False)
 if __name__ == "__main__":
 	main()
 
