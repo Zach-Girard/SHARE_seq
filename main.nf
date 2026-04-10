@@ -833,7 +833,7 @@ def read_table_preview(rel_path, max_rows=8):
     if not os.path.exists(abs_path):
         return "<p><em>Missing file</em></p>"
     rows = []
-    delim = "," if rel_path.endswith(".csv") else "\\t"
+    delim = "," if rel_path.lower().endswith(".csv") else chr(9)
     try:
         with open(abs_path, newline="") as fh:
             reader = csv.reader(fh, delimiter=delim)
@@ -850,6 +850,63 @@ def read_table_preview(rel_path, max_rows=8):
         tag = "th" if ridx == 0 else "td"
         cells.append("<tr>" + "".join(f"<{tag}>{c}</{tag}>" for c in row) + "</tr>")
     return "<table>" + "".join(cells) + "</table>"
+
+def load_demux_sample_names(rel_paths):
+    names = set()
+    delim_tsv = chr(9)
+    for rel in rel_paths:
+        p = os.path.join(proj, rel)
+        if not os.path.isfile(p):
+            continue
+        delim = "," if rel.lower().endswith(".csv") else delim_tsv
+        try:
+            with open(p, newline="") as fh:
+                reader = csv.reader(fh, delimiter=delim)
+                rows = list(reader)
+        except Exception:
+            continue
+        if not rows:
+            continue
+        header = rows[0]
+        try:
+            name_idx = header.index("Sample_Name")
+        except ValueError:
+            continue
+        for r in rows[1:]:
+            if len(r) > name_idx and r[name_idx].strip():
+                names.add(r[name_idx].strip())
+    return names
+
+def demux_stats_html_for_sample(rel_paths, sample):
+    delim_tsv = chr(9)
+    for rel in rel_paths:
+        p = os.path.join(proj, rel)
+        if not os.path.isfile(p):
+            continue
+        delim = "," if rel.lower().endswith(".csv") else delim_tsv
+        try:
+            with open(p, newline="") as fh:
+                reader = csv.reader(fh, delimiter=delim)
+                all_rows = list(reader)
+        except Exception:
+            continue
+        if not all_rows:
+            continue
+        header = all_rows[0]
+        try:
+            name_idx = header.index("Sample_Name")
+        except ValueError:
+            continue
+        body = [r for r in all_rows[1:] if len(r) > name_idx and r[name_idx] == sample]
+        if not body:
+            continue
+        esc_rows = [[html.escape(x) for x in row] for row in [header] + body]
+        cells = []
+        for ridx, row in enumerate(esc_rows):
+            tag = "th" if ridx == 0 else "td"
+            cells.append("<tr>" + "".join(f"<{tag}>{c}</{tag}>" for c in row) + "</tr>")
+        return "<table>" + "".join(cells) + "</table>"
+    return f"<p><em>No demultiplex stats row for <code>{html.escape(sample)}</code>.</em></p>"
 
 def read_text_preview(rel_path, max_lines=80):
     abs_path = os.path.join(proj, rel_path)
@@ -912,7 +969,10 @@ def image_files_block(title, paths):
     return "".join(chunks)
 
 demux_total = rel_list("demux/*.total_number_reads.tsv")
-demux_stats = rel_list("demux/SHARE-seq.demultiplex.stats.tsv")
+demux_stats = sorted(set(
+    rel_list("demux/SHARE-seq.demultiplex.stats.tsv")
+    + rel_list_recursive("demux/**/SHARE-seq.demultiplex.stats.tsv")
+))
 fastqc_html = sorted(set(
     rel_list("fastqc_demux/*/*_fastqc.html") +
     rel_list("fastqc_demux/*/fastqc_demux/*_fastqc.html") +
@@ -952,7 +1012,14 @@ parts.append('''<!doctype html>
 parts.append("<h2>Demultiplexing</h2>")
 if demux_stats:
     parts.append("<h3>Demultiplex Stats Preview</h3>")
-    parts.append(read_table_preview(demux_stats[0]))
+    parts.append(
+        "<p>Columns: <code>Sample_Index</code>, <code>Sample_Name</code>, "
+        "<code>Sample_Type</code>, <code>Total_reads</code>.</p>"
+    )
+    for dsp in demux_stats:
+        if len(demux_stats) > 1:
+            parts.append(f"<h4>{html.escape(dsp)}</h4>")
+        parts.append(read_table_preview(dsp, max_rows=500))
 else:
     parts.append("<p><em>No demultiplex stats file found.</em></p>")
 
@@ -984,6 +1051,7 @@ for p in starsolo_logs + knee_plots + barcodes_stats + summary_csv + barnyard:
     s = sample_from_starsolo_path(p)
     if s:
         all_sample_candidates.add(s)
+all_sample_candidates.update(load_demux_sample_names(demux_stats))
 
 for sample in sorted(all_sample_candidates):
     sample_root = os.path.join(per_sample_dir, sample)
@@ -1028,6 +1096,8 @@ for sample in sorted(all_sample_candidates):
 <h1>SHARE-seq QC Report: {html.escape(sample)}</h1>
 <p>Project path: <code>{html.escape(proj)}</code></p>
 ''')
+    sample_parts.append("<h2>Demultiplexing (this sample)</h2>")
+    sample_parts.append(demux_stats_html_for_sample(demux_stats, sample))
     sample_parts.append(text_files_block("Log.final.out", sample_logs, max_lines=120))
     sample_parts.append(sample_image_block("Knee plots", sample_knee))
     sample_parts.append(text_files_block("Barcodes.stats", sample_barcodes, max_lines=120))
