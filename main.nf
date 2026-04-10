@@ -923,9 +923,9 @@ starsolo_logs = rel_list("STARsolo/*/Log.final.out") + rel_list("STARsolo_paired
 knee_plots = sorted(set(
     rel_list("STARsolo/*/*_knee_plot.png") +
     rel_list("STARsolo_paired/*/*_knee_plot.png") +
-    rel_list_recursive("**/*_knee_plot.png")
+    rel_list_recursive("STARsolo/**/*_knee_plot.png") +
+    rel_list_recursive("STARsolo_paired/**/*_knee_plot.png")
 ))
-knee_plots = [p for p in knee_plots if not p.startswith("QC_Report")]
 barcodes_stats = rel_list("STARsolo/*/Solo.out/Barcodes.stats") + rel_list("STARsolo_paired/*/Solo.out/Barcodes.stats")
 summary_csv = rel_list("STARsolo/*/Solo.out/GeneFull/Summary.csv") + rel_list("STARsolo_paired/*/Solo.out/GeneFull/Summary.csv")
 barnyard = rel_list("STARsolo/*/*collision_plot.png") + rel_list("STARsolo_paired/*/*collision_plot.png")
