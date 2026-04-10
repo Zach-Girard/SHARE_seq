@@ -773,7 +773,7 @@ process BUILD_QC_HTML {
     output:
     path "QC_Report.html", emit: qc_html
     path "QC_Report_assets/*", emit: qc_assets
-    path "QC_Report/**", emit: qc_report_dir
+    path "QC_Report", emit: qc_report_dir
     path "QC_Report_bundle.zip", emit: qc_bundle
 
     """
