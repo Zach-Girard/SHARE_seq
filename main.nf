@@ -170,7 +170,6 @@ process DEMULTIPLEX {
     output:
     path "*.R1.fastq.gz", emit: demux_r1
     path "*.R2.fastq.gz", emit: demux_r2
-    path "*.demultiplex.stats.tsv", emit: stats
 
     """
     python "${projectDir}/demultiplex.py" \\
@@ -179,19 +178,20 @@ process DEMULTIPLEX {
       -b ${barcode_file} \\
       -n ${params.demux_mismatches} \\
       --revcomp
-    mv "SHARE-seq.demultiplex.stats.tsv" "${demux_chunk_id}.demultiplex.stats.tsv"
+    rm -f SHARE-seq.demultiplex.stats.tsv
 
     rm -f unmatched.R1.fastq.gz unmatched.R2.fastq.gz
     """
 }
 
-process MERGE_DEMUX_STATS {
-    tag "demux_stats"
+process BUILD_DEMUX_STATS_FROM_MERGED {
+    tag "demux_stats_from_merged"
 
     publishDir "${projectDir}/demux", mode: 'copy', overwrite: true
 
     input:
-    path(stats_files)
+    path(r1_fastqs)
+    path(barcode_file)
 
     output:
     path "SHARE-seq.demultiplex.stats.tsv", emit: merged_stats
@@ -199,49 +199,70 @@ process MERGE_DEMUX_STATS {
     """
     python3 - <<'PY'
 import csv
-import glob
-from collections import defaultdict
-
-files = sorted(glob.glob("*.demultiplex.stats.tsv"))
+import gzip
+import os
+import subprocess
 
 tab = chr(9)
-agg = defaultdict(int)
-for fp in files:
-    try:
-        with open(fp, newline='') as fh:
-            reader = csv.DictReader(fh, delimiter=tab)
-            if not reader.fieldnames:
-                continue
-            required = {'Sample_Index', 'Sample_Name', 'Sample_Type', 'Total_reads'}
-            if not required.issubset(set(reader.fieldnames)):
-                continue
-            for row in reader:
-                sidx = (row.get('Sample_Index') or '').strip()
-                sname = (row.get('Sample_Name') or '').strip()
-                stype = (row.get('Sample_Type') or '').strip()
-                total_str = (row.get('Total_reads') or '').strip()
-                if not total_str:
-                    continue
-                # Accept integer-like values that may be emitted as floats in edge cases.
-                total_str = total_str.split('.')[0]
-                if not total_str or (not total_str.isdigit() and not (total_str.startswith('-') and total_str[1:].isdigit())):
-                    continue
-                total = int(total_str or 0)
-                agg[(sidx, sname, stype)] += total
-    except Exception:
-        continue
+barcode_file = "${barcode_file}"
 
-rows = [
-    (k[0], k[1], k[2], v)
-    for k, v in agg.items()
-]
-if not rows:
-    raise SystemExit("No demultiplex rows found while merging chunk stats.")
+def read_barcode_table(path):
+    rows = []
+    with open(path, newline="") as f:
+        sample = f.read(4096)
+        f.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample)
+            reader = csv.reader(f, dialect)
+        except Exception:
+            reader = csv.reader(f, delimiter=tab)
+        for row in reader:
+            row = [x.strip() for x in row if str(x).strip() != ""]
+            if row:
+                rows.append(row)
+    barcode = {}
+    sample_type = {}
+    for row in rows:
+        if len(row) < 2:
+            continue
+        sid = row[0]
+        seq = row[1].upper()
+        stype = row[2].strip() if len(row) >= 3 else ""
+        barcode[sid] = seq
+        sample_type[sid] = stype
+    return barcode, sample_type
+
+def count_reads_gz(path):
+    # Fast line-count using zcat/wc when available, fallback to Python stream count.
+    try:
+        out = subprocess.check_output(f"zcat '{path}' | wc -l", shell=True, text=True).strip()
+        lines = int(out.split()[0])
+        return lines // 4
+    except Exception:
+        n = 0
+        with gzip.open(path, "rt") as fh:
+            for _ in fh:
+                n += 1
+        return n // 4
+
+barcode_by_sample, type_by_sample = read_barcode_table(barcode_file)
+
+rows = []
+for fp in sorted([p for p in os.listdir(".") if p.endswith(".R1.fastq.gz")]):
+    sample = fp.replace(".R1.fastq.gz", "")
+    total = count_reads_gz(fp)
+    rows.append((
+        barcode_by_sample.get(sample, ""),
+        sample,
+        type_by_sample.get(sample, ""),
+        total
+    ))
+
 rows.sort(key=lambda x: x[3], reverse=True)
 
-with open('SHARE-seq.demultiplex.stats.tsv', 'w', newline='') as out:
+with open("SHARE-seq.demultiplex.stats.tsv", "w", newline="") as out:
     w = csv.writer(out, delimiter=tab)
-    w.writerow(['Sample_Index', 'Sample_Name', 'Sample_Type', 'Total_reads'])
+    w.writerow(["Sample_Index", "Sample_Name", "Sample_Type", "Total_reads"])
     for r in rows:
         w.writerow(r)
 PY
@@ -1298,7 +1319,6 @@ workflow {
 
     // Step 2: Demultiplex split chunks by sample index barcode in parallel
     DEMULTIPLEX(ch_demux_input)
-    MERGE_DEMUX_STATS(DEMULTIPLEX.out.stats.collect())
 
     // Merge chunk-level demultiplex output back to one R1/R2 per sample for downstream steps
     DEMULTIPLEX.out.demux_r1
@@ -1315,6 +1335,10 @@ workflow {
         .set { ch_demux_chunk_grouped }
 
     MERGE_DEMUX_CHUNKS(ch_demux_chunk_grouped)
+    BUILD_DEMUX_STATS_FROM_MERGED(
+        MERGE_DEMUX_CHUNKS.out.map { sample_id, r1, r2 -> r1 }.collect(),
+        barcodeFile
+    )
 
     // Step 3: Pair per-sample R1/R2 and validate SHARE-seq round barcodes
     def cb_whitelist = file(effectiveCbWhitelistPath)
