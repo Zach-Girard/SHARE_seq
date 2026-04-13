@@ -923,10 +923,10 @@ def read_table_preview(rel_path, max_rows=8):
             reader = csv.reader(fh, delimiter=delim)
             for i, row in enumerate(reader):
                 rows.append([html.escape(x) for x in row])
-                if i + 1 >= max_rows:
+                if max_rows is not None and i + 1 >= max_rows:
                     break
     except Exception as e:
-        return f"<p><em>Could not parse preview: {html.escape(str(e))}</em></p>"
+        return f"<p><em>Could not parse table: {html.escape(str(e))}</em></p>"
     if not rows:
         return "<p><em>File is empty</em></p>"
     cells = []
@@ -1095,7 +1095,7 @@ parts.append('''<!doctype html>
 
 parts.append("<h2>Demultiplexing</h2>")
 if demux_stats:
-    parts.append("<h3>Demultiplex Stats Preview</h3>")
+    parts.append("<h3>Demultiplex Stats</h3>")
     parts.append(
         "<p>Columns: <code>Sample_Index</code>, <code>Sample_Name</code>, "
         "<code>Sample_Type</code>, <code>Total_reads</code>.</p>"
@@ -1103,7 +1103,7 @@ if demux_stats:
     for dsp in demux_stats:
         if len(demux_stats) > 1:
             parts.append(f"<h4>{html.escape(dsp)}</h4>")
-        parts.append(read_table_preview(dsp, max_rows=500))
+        parts.append(read_table_preview(dsp, max_rows=None))
 else:
     parts.append("<p><em>No demultiplex stats file found.</em></p>")
 
