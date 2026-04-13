@@ -190,7 +190,7 @@ process MERGE_DEMUX_STATS {
     publishDir "${projectDir}/demux", mode: 'copy', overwrite: true
 
     input:
-    path(stats_files)
+    path(stats_files, stageAs: 'stats??/*')
 
     output:
     path "SHARE-seq.demultiplex.stats.tsv", emit: merged_stats
