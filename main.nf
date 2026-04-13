@@ -170,7 +170,7 @@ process DEMULTIPLEX {
     output:
     path "*.R1.fastq.gz", emit: demux_r1
     path "*.R2.fastq.gz", emit: demux_r2
-    path "SHARE-seq.demultiplex.stats.tsv", emit: stats
+    path "*.demultiplex.stats.tsv", emit: stats
 
     """
     python "${projectDir}/demultiplex.py" \\
@@ -179,6 +179,7 @@ process DEMULTIPLEX {
       -b ${barcode_file} \\
       -n ${params.demux_mismatches} \\
       --revcomp
+    mv "SHARE-seq.demultiplex.stats.tsv" "${demux_chunk_id}.demultiplex.stats.tsv"
 
     rm -f unmatched.R1.fastq.gz unmatched.R2.fastq.gz
     """
@@ -190,7 +191,7 @@ process MERGE_DEMUX_STATS {
     publishDir "${projectDir}/demux", mode: 'copy', overwrite: true
 
     input:
-    path(stats_files, stageAs: 'stats??/*')
+    path(stats_files)
 
     output:
     path "SHARE-seq.demultiplex.stats.tsv", emit: merged_stats
@@ -201,8 +202,7 @@ import csv
 import glob
 from collections import defaultdict
 
-files = sorted(glob.glob("stats*/*")) + sorted(glob.glob("SHARE-seq.demultiplex.stats.tsv"))
-files = [f for f in files if f and not f.startswith("SHARE-seq.demultiplex.stats.tsv.")]
+files = sorted(glob.glob("*.demultiplex.stats.tsv"))
 
 tab = chr(9)
 agg = defaultdict(int)
@@ -235,6 +235,8 @@ rows = [
     (k[0], k[1], k[2], v)
     for k, v in agg.items()
 ]
+if not rows:
+    raise SystemExit("No demultiplex rows found while merging chunk stats.")
 rows.sort(key=lambda x: x[3], reverse=True)
 
 with open('SHARE-seq.demultiplex.stats.tsv', 'w', newline='') as out:
