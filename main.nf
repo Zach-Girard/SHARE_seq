@@ -1096,10 +1096,6 @@ parts.append('''<!doctype html>
 parts.append("<h2>Demultiplexing</h2>")
 if demux_stats:
     parts.append("<h3>Demultiplex Stats</h3>")
-    parts.append(
-        "<p>Columns: <code>Sample_Index</code>, <code>Sample_Name</code>, "
-        "<code>Sample_Type</code>, <code>Total_reads</code>.</p>"
-    )
     for dsp in demux_stats:
         if len(demux_stats) > 1:
             parts.append(f"<h4>{html.escape(dsp)}</h4>")
