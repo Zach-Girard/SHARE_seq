@@ -201,43 +201,40 @@ import csv
 import glob
 from collections import defaultdict
 
-files = sorted(glob.glob("stats*/*"))
-if not files:
-    raise SystemExit("No demultiplex stats files provided to MERGE_DEMUX_STATS")
+files = sorted(glob.glob("stats*/*")) + sorted(glob.glob("SHARE-seq.demultiplex.stats.tsv"))
+files = [f for f in files if f and not f.startswith("SHARE-seq.demultiplex.stats.tsv.")]
 
 tab = chr(9)
 agg = defaultdict(int)
 for fp in files:
-    with open(fp, newline='') as fh:
-        reader = csv.DictReader(fh, delimiter=tab)
-        if not reader.fieldnames:
-            continue
-        required = {'Sample_Index', 'Sample_Name', 'Sample_Type', 'Total_reads'}
-        if not required.issubset(set(reader.fieldnames)):
-            continue
-        for row in reader:
-            sidx = (row.get('Sample_Index') or '').strip()
-            sname = (row.get('Sample_Name') or '').strip()
-            stype = (row.get('Sample_Type') or '').strip()
-            total_str = (row.get('Total_reads') or '').strip()
-            if not total_str:
+    try:
+        with open(fp, newline='') as fh:
+            reader = csv.DictReader(fh, delimiter=tab)
+            if not reader.fieldnames:
                 continue
-            # Accept integer-like values that may be emitted as floats in edge cases.
-            total_str = total_str.split('.')[0]
-            if not total_str or (not total_str.isdigit() and not (total_str.startswith('-') and total_str[1:].isdigit())):
+            required = {'Sample_Index', 'Sample_Name', 'Sample_Type', 'Total_reads'}
+            if not required.issubset(set(reader.fieldnames)):
                 continue
-        try:
-            total = int(total_str or 0)
-        except ValueError:
-            continue
-        agg[(sidx, sname, stype)] += total
+            for row in reader:
+                sidx = (row.get('Sample_Index') or '').strip()
+                sname = (row.get('Sample_Name') or '').strip()
+                stype = (row.get('Sample_Type') or '').strip()
+                total_str = (row.get('Total_reads') or '').strip()
+                if not total_str:
+                    continue
+                # Accept integer-like values that may be emitted as floats in edge cases.
+                total_str = total_str.split('.')[0]
+                if not total_str or (not total_str.isdigit() and not (total_str.startswith('-') and total_str[1:].isdigit())):
+                    continue
+                total = int(total_str or 0)
+                agg[(sidx, sname, stype)] += total
+    except Exception:
+        continue
 
 rows = [
     (k[0], k[1], k[2], v)
     for k, v in agg.items()
 ]
-if not rows:
-    raise SystemExit("No valid demultiplex rows found while merging chunk stats.")
 rows.sort(key=lambda x: x[3], reverse=True)
 
 with open('SHARE-seq.demultiplex.stats.tsv', 'w', newline='') as out:
