@@ -161,8 +161,7 @@ process SPLIT_UNDETERMINED_FASTQ {
 process DEMULTIPLEX {
     tag { demux_chunk_id }
 
-    // Keep demultiplex stats at demux/ root; do not publish chunk FASTQs here.
-    publishDir "${projectDir}/demux", mode: 'copy', overwrite: true, pattern: "SHARE-seq.demultiplex.stats.tsv"
+    // Chunk-level outputs stay in work/; merged stats are published by MERGE_DEMUX_STATS.
 
     input:
     tuple val(demux_chunk_id), path(r1_undetermined), path(r2_undetermined), path(barcode_file)
@@ -182,6 +181,53 @@ process DEMULTIPLEX {
       --revcomp
 
     rm -f unmatched.R1.fastq.gz unmatched.R2.fastq.gz
+    """
+}
+
+process MERGE_DEMUX_STATS {
+    tag "demux_stats"
+
+    publishDir "${projectDir}/demux", mode: 'copy', overwrite: true
+
+    input:
+    path(stats_files)
+
+    output:
+    path "SHARE-seq.demultiplex.stats.tsv", emit: merged_stats
+
+    """
+    python3 - ${stats_files} <<'PY'
+import csv
+import sys
+from collections import defaultdict
+
+files = [p for p in sys.argv[1:] if p]
+if not files:
+    raise SystemExit("No demultiplex stats files provided to MERGE_DEMUX_STATS")
+
+agg = defaultdict(int)
+for fp in files:
+    with open(fp, newline='') as fh:
+        reader = csv.DictReader(fh, delimiter='\\t')
+        for row in reader:
+            sidx = (row.get('Sample_Index') or '').strip()
+            sname = (row.get('Sample_Name') or '').strip()
+            stype = (row.get('Sample_Type') or '').strip()
+            total = int((row.get('Total_reads') or '0').strip() or 0)
+            agg[(sidx, sname, stype)] += total
+
+rows = [
+    (k[0], k[1], k[2], v)
+    for k, v in agg.items()
+]
+rows.sort(key=lambda x: x[3], reverse=True)
+
+with open('SHARE-seq.demultiplex.stats.tsv', 'w', newline='') as out:
+    w = csv.writer(out, delimiter='\\t')
+    w.writerow(['Sample_Index', 'Sample_Name', 'Sample_Type', 'Total_reads'])
+    for r in rows:
+        w.writerow(r)
+PY
     """
 }
 
@@ -1235,6 +1281,7 @@ workflow {
 
     // Step 2: Demultiplex split chunks by sample index barcode in parallel
     DEMULTIPLEX(ch_demux_input)
+    MERGE_DEMUX_STATS(DEMULTIPLEX.out.stats.collect())
 
     // Merge chunk-level demultiplex output back to one R1/R2 per sample for downstream steps
     DEMULTIPLEX.out.demux_r1
