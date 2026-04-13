@@ -198,6 +198,7 @@ process MERGE_DEMUX_STATS {
     """
     python3 - ${stats_files} <<'PY'
 import csv
+import re
 import sys
 from collections import defaultdict
 
@@ -205,25 +206,59 @@ files = [p for p in sys.argv[1:] if p]
 if not files:
     raise SystemExit("No demultiplex stats files provided to MERGE_DEMUX_STATS")
 
+tab = chr(9)
+
+def split_line(line, delim):
+    if delim == 'whitespace':
+        return re.split(r'\\s+', line.strip())
+    return [x.strip() for x in line.rstrip('\\n').split(delim)]
+
 agg = defaultdict(int)
 for fp in files:
-    with open(fp, newline='') as fh:
-        reader = csv.DictReader(fh, delimiter='\\t')
-        for row in reader:
-            sidx = (row.get('Sample_Index') or '').strip()
-            sname = (row.get('Sample_Name') or '').strip()
-            stype = (row.get('Sample_Type') or '').strip()
-            total = int((row.get('Total_reads') or '0').strip() or 0)
-            agg[(sidx, sname, stype)] += total
+    with open(fp, 'r', newline='') as fh:
+        lines = [ln.rstrip('\\n') for ln in fh if ln.strip()]
+    if not lines:
+        continue
+
+    header_line = lines[0]
+    if tab in header_line:
+        delim = tab
+    elif ',' in header_line:
+        delim = ','
+    else:
+        delim = 'whitespace'
+
+    header = split_line(header_line, delim)
+    header_map = {h.strip(): i for i, h in enumerate(header)}
+    required = ['Sample_Index', 'Sample_Name', 'Sample_Type', 'Total_reads']
+    if not all(k in header_map for k in required):
+        # Skip malformed inputs; prevents collapsing all counts into one blank row.
+        continue
+
+    for line in lines[1:]:
+        cols = split_line(line, delim)
+        if len(cols) <= header_map['Total_reads']:
+            continue
+        sidx = cols[header_map['Sample_Index']].strip()
+        sname = cols[header_map['Sample_Name']].strip()
+        stype = cols[header_map['Sample_Type']].strip()
+        total_str = cols[header_map['Total_reads']].strip()
+        try:
+            total = int(total_str or 0)
+        except ValueError:
+            continue
+        agg[(sidx, sname, stype)] += total
 
 rows = [
     (k[0], k[1], k[2], v)
     for k, v in agg.items()
 ]
+if not rows:
+    raise SystemExit("No valid demultiplex rows found while merging chunk stats.")
 rows.sort(key=lambda x: x[3], reverse=True)
 
 with open('SHARE-seq.demultiplex.stats.tsv', 'w', newline='') as out:
-    w = csv.writer(out, delimiter='\\t')
+    w = csv.writer(out, delimiter=tab)
     w.writerow(['Sample_Index', 'Sample_Name', 'Sample_Type', 'Total_reads'])
     for r in rows:
         w.writerow(r)
