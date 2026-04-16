@@ -13,3 +13,4 @@ Genomes/*
 !Genomes/prepare_genomes.sh
 GTF/*
 !GTF/download_gtf.sh
+QC_Report*

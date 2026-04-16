@@ -869,6 +869,9 @@ import csv
 import sys
 import shutil
 import zipfile
+import re
+import datetime
+import statistics
 
 proj = sys.argv[1]
 out_path = "QC_Report.html"
@@ -1052,6 +1055,358 @@ def image_files_block(title, paths):
         chunks.append(f'<img src="{html.escape(asset)}" alt="{html.escape(p)}" style="max-width: 1200px; width: 100%; border: 1px solid #ddd; margin-bottom: 14px;" />')
     return "".join(chunks)
 
+def image_gallery_block(title, paths):
+    if not paths:
+        return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
+    chunks = [f"<h3>{html.escape(title)}</h3>", '<div class="img-grid">']
+    for p in paths:
+        asset = stage_asset(p)
+        if asset is None:
+            continue
+        chunks.append(
+            '<figure class="img-card">'
+            f'<img src="{html.escape(asset)}" alt="{html.escape(p)}" />'
+            f'<figcaption>{html.escape(p)}</figcaption>'
+            '</figure>'
+        )
+    chunks.append("</div>")
+    return "".join(chunks)
+
+def sample_from_report_path(rel_path):
+    bits = rel_path.split("/")
+    if len(bits) >= 3 and bits[0] in ("STARsolo", "STARsolo_paired"):
+        return bits[1]
+    return None
+
+def parse_starsolo_log_metrics(rel_path):
+    wanted = [
+        "Number of input reads",
+        "Uniquely mapped reads %",
+        "% of reads mapped to multiple loci",
+        "% of reads unmapped: other",
+        "% of reads unmapped: too short",
+    ]
+    out = {k: "" for k in wanted}
+    abs_path = os.path.join(proj, rel_path)
+    if not os.path.isfile(abs_path):
+        return out
+    try:
+        with open(abs_path, "r", errors="replace") as fh:
+            for line in fh:
+                if "|" not in line:
+                    continue
+                left, right = line.split("|", 1)
+                key = left.strip()
+                val = right.strip()
+                if key in out:
+                    out[key] = val
+    except Exception:
+        return out
+    return out
+
+def starsolo_summary_table(log_paths):
+    if not log_paths:
+        return "<p><em>No STARsolo Log.final.out files found.</em></p>"
+    headers = [
+        "Sample",
+        "Number of input reads",
+        "Uniquely mapped reads %",
+        "% of reads mapped to multiple loci",
+        "% of reads unmapped: other",
+        "% of reads unmapped: too short",
+    ]
+    rows = []
+    for p in sorted(log_paths):
+        bits = p.split("/")
+        if len(bits) >= 3 and bits[0] in ("STARsolo", "STARsolo_paired"):
+            sample = bits[1]
+        else:
+            sample = os.path.basename(os.path.dirname(p))
+        m = parse_starsolo_log_metrics(p)
+        rows.append([
+            sample,
+            m["Number of input reads"],
+            m["Uniquely mapped reads %"],
+            m["% of reads mapped to multiple loci"],
+            m["% of reads unmapped: other"],
+            m["% of reads unmapped: too short"],
+        ])
+    cells = []
+    cells.append("<tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in headers) + "</tr>")
+    for row in rows:
+        cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in row) + "</tr>")
+    return "<table>" + "".join(cells) + "</table>"
+
+def _parse_pct(value):
+    if value is None:
+        return 0.0
+    s = str(value).strip().replace("%", "").replace(",", "")
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+def _parse_number(value):
+    if value is None:
+        return None
+    s = str(value).strip().replace(",", "").replace("%", "")
+    if s == "":
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+def _fmt_int(v):
+    try:
+        return f"{int(round(v)):,}"
+    except Exception:
+        return "N/A"
+
+def _fmt_float(v, nd=1, suffix=""):
+    try:
+        return f"{float(v):.{nd}f}{suffix}"
+    except Exception:
+        return "N/A"
+
+def starsolo_metrics_by_sample(log_paths):
+    out = {}
+    for p in sorted(log_paths):
+        sample = sample_from_report_path(p) or os.path.basename(os.path.dirname(p))
+        out[sample] = parse_starsolo_log_metrics(p)
+    return out
+
+def summary_metrics_by_sample(paths):
+    out = {}
+    for p in sorted(paths):
+        sample = sample_from_report_path(p) or os.path.basename(os.path.dirname(p))
+        out[sample] = parse_summary_csv_metrics(p)
+    return out
+
+def overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample):
+    unique_vals = []
+    med_reads_cell_vals = []
+    est_cells_vals = []
+    for s in sample_names:
+        sm = starsolo_by_sample.get(s, {})
+        unique = _parse_pct(sm.get("Uniquely mapped reads %", ""))
+        if unique > 0:
+            unique_vals.append(unique)
+        sy = summary_by_sample.get(s, {})
+        mrc = _parse_number(sy.get("Median Reads per Cell", ""))
+        if mrc is not None:
+            med_reads_cell_vals.append(mrc)
+        est = _parse_number(sy.get("Estimated Number of Cells", ""))
+        if est is not None:
+            est_cells_vals.append(est)
+    n_samples = len(sample_names)
+    med_unique = statistics.median(unique_vals) if unique_vals else None
+    med_reads_cell = statistics.median(med_reads_cell_vals) if med_reads_cell_vals else None
+    total_est_cells = sum(est_cells_vals) if est_cells_vals else None
+    generated = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    cards = []
+    cards.append('<div class="kpi-grid">')
+    cards.append(f'<div class="kpi-card"><div class="kpi-label">Samples</div><div class="kpi-value">{_fmt_int(n_samples)}</div></div>')
+    cards.append(f'<div class="kpi-card"><div class="kpi-label">Median Unique Mapping</div><div class="kpi-value">{_fmt_float(med_unique, 1, "%")}</div></div>')
+    cards.append(f'<div class="kpi-card"><div class="kpi-label">Median Reads per Cell</div><div class="kpi-value">{_fmt_int(med_reads_cell)}</div></div>')
+    cards.append(f'<div class="kpi-card"><div class="kpi-label">Total Estimated Cells</div><div class="kpi-value">{_fmt_int(total_est_cells)}</div></div>')
+    cards.append('</div>')
+    cards.append(f'<p class="meta-line"><strong>Generated:</strong> {html.escape(generated)} | <strong>Project:</strong> <code>{html.escape(proj)}</code></p>')
+    return "".join(cards)
+
+def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample):
+    if not sample_names:
+        return "<p><em>No samples detected.</em></p>"
+    rows = []
+    rows.append("<tr><th>Sample</th><th>Uniquely mapped reads %</th><th>Median Reads per Cell</th><th>Estimated Number of Cells</th><th>Sample report</th></tr>")
+    for s in sample_names:
+        sm = starsolo_by_sample.get(s, {})
+        sy = summary_by_sample.get(s, {})
+        unique = sm.get("Uniquely mapped reads %", "")
+        mrc = sy.get("Median Reads per Cell", "")
+        enc = sy.get("Estimated Number of Cells", "")
+        link = f'QC_Report/{s}/index.html'
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(s)}</td>"
+            f"<td>{html.escape(unique)}</td>"
+            f"<td>{html.escape(mrc)}</td>"
+            f"<td>{html.escape(enc)}</td>"
+            f'<td><a href="{html.escape(link)}">Open</a></td>'
+            "</tr>"
+        )
+    return "<table>" + "".join(rows) + "</table>"
+
+def alignment_summary_chart(log_paths):
+    if not log_paths:
+        return "<p><em>No STARsolo Log.final.out files found.</em></p>"
+    rows = []
+    for p in sorted(log_paths):
+        bits = p.split("/")
+        if len(bits) >= 3 and bits[0] in ("STARsolo", "STARsolo_paired"):
+            sample = bits[1]
+        else:
+            sample = os.path.basename(os.path.dirname(p))
+        m = parse_starsolo_log_metrics(p)
+        unique = _parse_pct(m.get("Uniquely mapped reads %", ""))
+        multi = _parse_pct(m.get("% of reads mapped to multiple loci", ""))
+        unmapped = max(0.0, 100.0 - unique - multi)
+        total = unique + multi + unmapped
+        if total <= 0:
+            unique_w = multi_w = unmapped_w = 0.0
+        else:
+            unique_w = (unique / total) * 100.0
+            multi_w = (multi / total) * 100.0
+            unmapped_w = (unmapped / total) * 100.0
+        rows.append((sample, unique, multi, unmapped, unique_w, multi_w, unmapped_w))
+
+    chunks = []
+    chunks.append('<div class="align-legend">')
+    chunks.append('<span><i class="swatch unique"></i>Uniquely Mapped</span>')
+    chunks.append('<span><i class="swatch multi"></i>Multi-mapped</span>')
+    chunks.append('<span><i class="swatch unmapped"></i>Unmapped</span>')
+    chunks.append('</div>')
+    chunks.append('<div class="align-chart">')
+    for sample, unique, multi, unmapped, unique_w, multi_w, unmapped_w in rows:
+        chunks.append('<div class="align-row">')
+        chunks.append(f'<div class="align-sample">{html.escape(sample)}</div>')
+        chunks.append('<div class="align-bar">')
+        chunks.append(f'<span class="seg unique" style="width:{unique_w:.4f}%"></span>')
+        chunks.append(f'<span class="seg multi" style="width:{multi_w:.4f}%"></span>')
+        chunks.append(f'<span class="seg unmapped" style="width:{unmapped_w:.4f}%"></span>')
+        chunks.append('</div>')
+        chunks.append(
+            f'<div class="align-values">U: {unique:.2f}% | M: {multi:.2f}% | Un: {unmapped:.2f}%</div>'
+        )
+        chunks.append('</div>')
+    chunks.append('</div>')
+    return "".join(chunks)
+
+def parse_barcodes_stats_metrics(rel_path):
+    metrics = {}
+    abs_path = os.path.join(proj, rel_path)
+    if not os.path.isfile(abs_path):
+        return metrics
+    try:
+        with open(abs_path, "r", errors="replace") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                key = None
+                val = None
+                if "\t" in line:
+                    parts = [x.strip() for x in line.split("\t") if x.strip()]
+                    if len(parts) >= 2:
+                        key = parts[0]
+                        val = parts[-1]
+                elif "|" in line:
+                    left, right = line.split("|", 1)
+                    key = left.strip()
+                    val = right.strip()
+                elif ":" in line:
+                    left, right = line.split(":", 1)
+                    key = left.strip()
+                    val = right.strip()
+                else:
+                    parts = re.split(r"\s{2,}", line)
+                    if len(parts) >= 2:
+                        key = parts[0].strip()
+                        val = parts[-1].strip()
+                if key and val:
+                    metrics[key] = val
+    except Exception:
+        return {}
+    return metrics
+
+def barcodes_stats_summary_table(paths):
+    if not paths:
+        return "<p><em>No Barcodes.stats files found.</em></p>"
+    sample_metrics = []
+    metric_order = []
+    metric_seen = set()
+    for p in sorted(paths):
+        bits = p.split("/")
+        if len(bits) >= 3 and bits[0] in ("STARsolo", "STARsolo_paired"):
+            sample = bits[1]
+        else:
+            sample = os.path.basename(os.path.dirname(p))
+        metrics = parse_barcodes_stats_metrics(p)
+        sample_metrics.append((sample, metrics))
+        for k in metrics.keys():
+            if k not in metric_seen:
+                metric_seen.add(k)
+                metric_order.append(k)
+    sample_names = [s for s, _ in sample_metrics]
+    headers = ["Metric"] + sample_names
+    cells = []
+    cells.append("<tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in headers) + "</tr>")
+    for metric in metric_order:
+        row = [metric] + [metrics.get(metric, "") for _, metrics in sample_metrics]
+        cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in row) + "</tr>")
+    return "<table>" + "".join(cells) + "</table>"
+
+def parse_summary_csv_metrics(rel_path):
+    metrics = {}
+    abs_path = os.path.join(proj, rel_path)
+    if not os.path.isfile(abs_path):
+        return metrics
+    try:
+        with open(abs_path, newline="") as fh:
+            reader = csv.reader(fh)
+            for row in reader:
+                if not row:
+                    continue
+                key = row[0].strip()
+                val = (row[1].strip() if len(row) > 1 else "")
+                if key:
+                    metrics[key] = val
+    except Exception:
+        return {}
+    return metrics
+
+def summary_csv_key_metrics_table(paths):
+    wanted_metrics = [
+        "Number of Reads",
+        "Reads Mapped to Genome: Unique",
+        "Estimated Number of Cells",
+        "Median Reads per Cell",
+        "Median UMI per Cell",
+        "Total GeneFull Detected",
+    ]
+    if not paths:
+        return "<p><em>No Summary.csv files found.</em></p>"
+    sample_metrics = []
+    for p in sorted(paths):
+        bits = p.split("/")
+        if len(bits) >= 3 and bits[0] in ("STARsolo", "STARsolo_paired"):
+            sample = bits[1]
+        else:
+            sample = os.path.basename(os.path.dirname(p))
+        metrics = parse_summary_csv_metrics(p)
+        sample_metrics.append((sample, metrics))
+    headers = ["Metric"] + [s for s, _ in sample_metrics]
+    cells = []
+    cells.append("<tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in headers) + "</tr>")
+    for metric in wanted_metrics:
+        row_html = [f"<td>{html.escape(metric)}</td>"]
+        for _, m in sample_metrics:
+            val = m.get(metric, "")
+            if metric == "Reads Mapped to Genome: Unique":
+                pct = _parse_pct(val)
+                if pct >= 85.0:
+                    cls = "qc-good"
+                elif pct >= 70.0:
+                    cls = "qc-warn"
+                else:
+                    cls = "qc-bad"
+                row_html.append(f'<td class="{cls}">{html.escape(str(val))}</td>')
+            else:
+                row_html.append(f"<td>{html.escape(str(val))}</td>")
+        cells.append("<tr>" + "".join(row_html) + "</tr>")
+    return "<table>" + "".join(cells) + "</table>"
+
 demux_total = rel_list("demux/*.total_number_reads.tsv")
 demux_stats = sorted(set(
     rel_list("demux/SHARE-seq.demultiplex.stats.tsv")
@@ -1073,26 +1428,214 @@ knee_plots = sorted(set(
 barcodes_stats = rel_list("STARsolo/*/Solo.out/Barcodes.stats") + rel_list("STARsolo_paired/*/Solo.out/Barcodes.stats")
 summary_csv = rel_list("STARsolo/*/Solo.out/GeneFull/Summary.csv") + rel_list("STARsolo_paired/*/Solo.out/GeneFull/Summary.csv")
 barnyard = rel_list("STARsolo/*/*collision_plot.png") + rel_list("STARsolo_paired/*/*collision_plot.png")
+sample_names = sorted(set(
+    [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard) if sample_from_report_path(p)]
+    + list(load_demux_sample_names(demux_stats))
+))
+starsolo_by_sample = starsolo_metrics_by_sample(starsolo_logs)
+summary_by_sample = summary_metrics_by_sample(summary_csv)
 
 parts = []
 parts.append('''<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SHARE-seq QC Report</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 24px; line-height: 1.45; }
-    h1, h2, h3 { margin-top: 1.1em; }
-    code { background: #f3f3f3; padding: 2px 4px; border-radius: 3px; }
-    table { border-collapse: collapse; margin: 8px 0 18px 0; }
-    th, td { border: 1px solid #ccc; padding: 4px 8px; font-size: 12px; }
+    body {
+      font-family: "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px;
+      color: #1f2937;
+      margin: 24px auto;
+      max-width: 1400px;
+      line-height: 1.55;
+      padding: 0 12px;
+      background: #fafbfc;
+      scroll-padding-top: 86px;
+    }
+    h1, h2, h3, h4 {
+      color: #0f172a;
+      margin-top: 1.15em;
+      margin-bottom: 0.45em;
+      font-weight: 700;
+      letter-spacing: 0.1px;
+    }
+    h1 { font-size: 30px; margin-top: 0.3em; }
+    h2 { font-size: 21px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }
+    h3 { font-size: 16px; font-weight: 700; }
+    h4 { font-size: 13px; font-weight: 600; color: #475569; }
+    p { margin: 0.45em 0 0.8em 0; }
+    em { color: #6b7280; }
+    code { background: #f1f5f9; padding: 2px 5px; border-radius: 4px; font-size: 0.92em; }
+    table {
+      border-collapse: collapse;
+      margin: 10px 0 20px 0;
+      width: 100%;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+      display: block;
+      overflow-x: auto;
+    }
+    th, td {
+      border: 1px solid #d7dde5;
+      padding: 6px 10px;
+      font-size: 12px;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    th {
+      background: #f3f6fa;
+      font-weight: 700;
+      text-align: left;
+      color: #0f172a;
+      position: sticky;
+      top: 56px;
+      z-index: 2;
+    }
+    th:first-child { left: 0; z-index: 4; }
+    td:first-child { position: sticky; left: 0; z-index: 1; background: #ffffff; font-weight: 600; }
+    tr:nth-child(even) td { background: #fbfdff; }
+    tr:nth-child(even) td:first-child { background: #fbfdff; }
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0 18px 0;
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      background: rgba(250, 251, 252, 0.96);
+      backdrop-filter: blur(2px);
+      padding: 8px 0;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .tabs a {
+      text-decoration: none;
+      border: 1px solid #cfd8dc;
+      background: #f7f9fb;
+      color: #1f2937;
+      padding: 7px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .tabs a:hover { background: #eef3f7; border-color: #bcc7d3; }
+    section {
+      padding: 10px 14px 6px 14px;
+      margin: 8px 0 14px 0;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      scroll-margin-top: 90px;
+    }
+    .img-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 12px;
+      margin: 8px 0 18px 0;
+    }
+    .img-card {
+      margin: 0;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 8px;
+      background: #fff;
+    }
+    .img-card img {
+      width: 100%;
+      height: auto;
+      max-height: 260px;
+      object-fit: contain;
+      display: block;
+    }
+    .img-card figcaption {
+      font-size: 11px;
+      margin-top: 6px;
+      word-break: break-word;
+    }
+    .align-legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 6px 0 10px 0; font-size: 12px; }
+    .align-legend .swatch {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 5px;
+      vertical-align: middle;
+    }
+    .align-chart { margin: 6px 0 16px 0; }
+    .align-row {
+      display: grid;
+      grid-template-columns: 180px minmax(280px, 1fr) 260px;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .align-sample { font-size: 12px; word-break: break-word; }
+    .align-bar {
+      display: flex;
+      height: 14px;
+      border: 1px solid #d0d0d0;
+      border-radius: 3px;
+      overflow: hidden;
+      background: #f5f5f5;
+    }
+    .align-bar .seg { height: 100%; display: block; }
+    .align-values { font-size: 11px; color: #374151; font-weight: 600; }
+    .unique { background: #2e7d32; }
+    .multi { background: #1976d2; }
+    .unmapped { background: #d32f2f; }
+    .qc-good { background: #e6f4ea; color: #1b5e20; font-weight: 700; }
+    .qc-warn { background: #fff8e1; color: #8a6d00; font-weight: 700; }
+    .qc-bad { background: #fdecea; color: #b71c1c; font-weight: 700; }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 10px;
+      margin: 8px 0 10px 0;
+    }
+    .kpi-card {
+      border: 1px solid #dce3ea;
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 10px 12px;
+    }
+    .kpi-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #64748b;
+      margin-bottom: 2px;
+    }
+    .kpi-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: #0f172a;
+      line-height: 1.2;
+    }
+    .meta-line { margin-top: 4px; color: #475569; }
   </style>
 </head>
 <body>
 <h1>SHARE-seq QC and Visualization Report</h1>
 <p>Generated from pipeline outputs in <code>__PROJECT_DIR__</code>.</p>
+<div class="tabs">
+  <a href="#sec-overview">Overview</a>
+  <a href="#sec-demux">Demultiplexing</a>
+  <a href="#sec-fastqc">FastQC (Demultiplexed)</a>
+  <a href="#sec-starsolo">STARsolo QC</a>
+  <a href="#sec-barnyard">Hybrid Barnyard</a>
+</div>
 '''.replace("__PROJECT_DIR__", html.escape(proj)))
 
+parts.append('<section id="sec-overview">')
+parts.append("<h2>Overview</h2>")
+parts.append(overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample))
+parts.append("<h3>Sample Directory</h3>")
+parts.append(sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample))
+parts.append("</section>")
+
+parts.append('<section id="sec-demux">')
 parts.append("<h2>Demultiplexing</h2>")
 if demux_stats:
     parts.append("<h3>Demultiplex Stats</h3>")
@@ -1102,18 +1645,31 @@ if demux_stats:
         parts.append(read_table_preview(dsp, max_rows=None))
 else:
     parts.append("<p><em>No demultiplex stats file found.</em></p>")
+parts.append("</section>")
 
+parts.append('<section id="sec-fastqc">')
 parts.append("<h2>FastQC (Demultiplexed)</h2>")
 parts.append(links_block("fastqc_demux/<sample>/*_fastqc.html", fastqc_html))
+parts.append("</section>")
 
+parts.append('<section id="sec-starsolo">')
 parts.append("<h2>STARsolo QC</h2>")
+parts.append("<h3>STARsolo Key Metrics by Sample</h3>")
+parts.append(starsolo_summary_table(starsolo_logs))
+parts.append("<h3>Alignment Summary Bar Chart</h3>")
+parts.append(alignment_summary_chart(starsolo_logs))
 parts.append(text_files_block("STARsolo*/<sample>/Log.final.out", starsolo_logs, max_lines=120))
-parts.append(image_files_block("STARsolo*/<sample>/*_knee_plot.png", knee_plots))
-parts.append(text_files_block("STARsolo*/<sample>/Solo.out/Barcodes.stats", barcodes_stats, max_lines=120))
-parts.append(table_files_block("STARsolo*/<sample>/Solo.out/GeneFull/Summary.csv", summary_csv, max_rows=20))
+parts.append(image_gallery_block("STARsolo*/<sample>/*_knee_plot.png", knee_plots))
+parts.append("<h3>Barcodes.stats Summary by Sample</h3>")
+parts.append(barcodes_stats_summary_table(barcodes_stats))
+parts.append("<h3>Summary.csv Key Metrics by Sample</h3>")
+parts.append(summary_csv_key_metrics_table(summary_csv))
+parts.append("</section>")
 
+parts.append('<section id="sec-barnyard">')
 parts.append("<h2>Hybrid Barnyard Plots (if applicable)</h2>")
 parts.append(image_files_block("STARsolo*/<sample>/*collision_plot.png", barnyard))
+parts.append("</section>")
 
 parts.append("</body></html>")
 
@@ -1162,14 +1718,53 @@ for sample in sorted(all_sample_candidates):
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SHARE-seq QC Report - {html.escape(sample)}</title>
   <style>
-    body {{ font-family: Arial, sans-serif; margin: 24px; line-height: 1.45; }}
-    h1, h2, h3 {{ margin-top: 1.1em; }}
-    code {{ background: #f3f3f3; padding: 2px 4px; border-radius: 3px; }}
-    pre {{ background: #f8f8f8; border: 1px solid #ddd; padding: 10px; overflow-x: auto; }}
-    table {{ border-collapse: collapse; margin: 8px 0 18px 0; }}
-    th, td {{ border: 1px solid #ccc; padding: 4px 8px; font-size: 12px; }}
+    body {{
+      font-family: "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px;
+      color: #1f2937;
+      margin: 24px auto;
+      max-width: 1200px;
+      line-height: 1.55;
+      padding: 0 12px;
+      background: #fafbfc;
+    }}
+    h1, h2, h3 {{
+      color: #0f172a;
+      margin-top: 1.15em;
+      margin-bottom: 0.45em;
+      font-weight: 700;
+      letter-spacing: 0.1px;
+    }}
+    h1 {{ font-size: 28px; margin-top: 0.3em; }}
+    h2 {{ font-size: 20px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }}
+    h3 {{ font-size: 16px; }}
+    code {{ background: #f1f5f9; padding: 2px 5px; border-radius: 4px; font-size: 0.92em; }}
+    pre {{
+      background: #f8fafc;
+      border: 1px solid #d7dde5;
+      padding: 10px;
+      overflow-x: auto;
+      line-height: 1.45;
+      font-size: 12px;
+    }}
+    table {{
+      border-collapse: collapse;
+      margin: 10px 0 20px 0;
+      width: 100%;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+    }}
+    th, td {{
+      border: 1px solid #d7dde5;
+      padding: 6px 10px;
+      font-size: 12px;
+      vertical-align: top;
+    }}
+    th {{ background: #f3f6fa; font-weight: 700; text-align: left; color: #0f172a; }}
+    tr:nth-child(even) td {{ background: #fbfdff; }}
   </style>
 </head>
 <body>
