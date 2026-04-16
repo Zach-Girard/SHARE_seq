@@ -4,7 +4,8 @@ import argparse
 import gzip
 import logging
 import itertools
-import pandas as pd
+import csv
+from collections import defaultdict
 
 
 current_file_base_name = __file__.split("/")[-1].split(".")[0]
@@ -80,36 +81,52 @@ def find_dist(kmer_lookup, query, barcode_list):
 	return (True, best)
 
 
-def get_barcode_dict(barcode_list):
-	return {b1: {b2: {b3: 0 for b3 in barcode_list} for b2 in barcode_list} for b1 in barcode_list}
+def read_fastq_record(handle):
+	h = handle.readline()
+	if not h:
+		return None
+	s = handle.readline()
+	p = handle.readline()
+	q = handle.readline()
+	if not s or not p or not q:
+		return None
+	return (h, s, p, q)
 
 
-def dict3d_to_df(d):
-	rows = []
-	for b1, l2 in d.items():
-		for b2, l3 in l2.items():
-			for b3, count in l3.items():
-				if count > 0:
-					rows.append([b1, b2, b3, count])
-	return pd.DataFrame(rows, columns=["BC1", "BC2", "BC3", "Total_reads"])
-
-
-def output_to_fastq_gz(file_name,list_of_lines):
-	f = gzip.open(file_name,"wt")
-	[f.write(x) for x in list_of_lines]
-	f.close()
+def read_barcode_list(path):
+	barcodes = []
+	with open(path, newline="") as f:
+		sample = f.read(4096)
+		f.seek(0)
+		try:
+			dialect = csv.Sniffer().sniff(sample)
+			reader = csv.reader(f, dialect)
+		except Exception:
+			reader = csv.reader(f, delimiter="\t")
+		for row in reader:
+			if not row:
+				continue
+			val = str(row[0]).strip().replace(" ", "")
+			if val:
+				barcodes.append(val)
+	return barcodes
 
 def share_seq_rename_fastq(Read1,Read2,label, barcode_list, error, sp1_length,bc1_length,sp2_length,bc2_length,sp3_length,bc3_length):
 	"""general utils for demultiplexing read in PE mode"""
-	
-	barcode_dict = get_barcode_dict(barcode_list) # used to count reads
-	
-	junk_list_R1 = []
-	junk_list_R2 = []
-	matched_list_R1 = []
-	matched_list_R2 = []
+
+	barcode_counts = defaultdict(int)
+
+	junk_R1_output = label + ".junk.R1.fastq.gz"
+	junk_R2_output = label + ".junk.R2.fastq.gz"
+	matched_R1_output = label + ".matched.R1.fastq.gz"
+	matched_R2_output = label + ".matched.R2.fastq.gz"
+
 	f1 = gzip.open(Read1, 'rt')
-	f2 = gzip.open(Read2, 'rt')	
+	f2 = gzip.open(Read2, 'rt')
+	j1 = gzip.open(junk_R1_output, "wt")
+	j2 = gzip.open(junk_R2_output, "wt")
+	m1 = gzip.open(matched_R1_output, "wt")
+	m2 = gzip.open(matched_R2_output, "wt")
 	logging.info("Allowed barcode error: %s"%(error))
 	# edit distance is better than hamming distance
 	bc3_kmer = k_mer_distance(bc3_length,error,barcode_list=barcode_list)
@@ -129,23 +146,24 @@ def share_seq_rename_fastq(Read1,Read2,label, barcode_list, error, sp1_length,bc
 	bc1_bc2_count =0
 	bc1_bc3_count =0
 	bc2_bc3_count =0
-	line1 = f1.readline()
-	line2 = f2.readline()
 	count = 0
 	total_valid_reads = 0
-	while (line1):
+	while True:
+		rec1 = read_fastq_record(f1)
+		rec2 = read_fastq_record(f2)
+		if rec1 is None or rec2 is None:
+			break
 		count +=1
 		if count % 10000 == 0:
 			logging.info("%s reads processed"%(count))
-		name,barcode_r1 = line1.split()
-		# print (line2)
-		_ = line2.split()
-		name_r1 = name + "1\n" 
+		h1, s1, p1, q1 = rec1
+		h2, s2, p2, q2 = rec2
+		header_bits = h1.strip().split()
+		name = header_bits[0]
+		barcode_r1 = header_bits[-1].split(":")[-1] if len(header_bits) > 1 else ""
+		name_r1 = name + "1\n"
 		name_r2 = name + "2\n"
-		barcode_r1 = barcode_r1.split(":")[-1]
 
-		line1 = f1.readline()
-		line2 = f2.readline()
 		bc3 = barcode_r1[bc3_start:bc3_end]
 		bc2 = barcode_r1[bc2_start:bc2_end]
 		bc1 = barcode_r1[bc1_start:bc1_end]
@@ -167,59 +185,42 @@ def share_seq_rename_fastq(Read1,Read2,label, barcode_list, error, sp1_length,bc
 		if bc2_dist and bc3_dist:
 			bc2_bc3_count += 1
 		if bc1_dist and bc2_dist and bc3_dist :
-			barcode_dict[barcode_1][barcode_2][barcode_3]+=1
-			# first_line_r1 = '@' + ",".join(["NNNN",barcode_1,barcode_2,barcode_3]) + ',' + name_r1[1:]
-			# first_line_r2 = '@' + ",".join(["NNNN",barcode_1,barcode_2,barcode_3])+ ',' + name_r2[1:]
+			barcode_counts[(barcode_1, barcode_2, barcode_3)] += 1
 			first_line_r1 = name + "_"+"".join([barcode_1,barcode_2,barcode_3]) + "\n"
 			first_line_r2 = first_line_r1
-			matched_list_R1.append(first_line_r1)
-			matched_list_R2.append(first_line_r2)
-
-			matched_list_R1.append(line1)
-			matched_list_R2.append(line2)	
-			
-			third_line_r1 = f1.readline()
-			third_line_r2 = f2.readline()
-			matched_list_R1.append(third_line_r1)
-			matched_list_R2.append(third_line_r2)	
-	
-			four_line_r1 = f1.readline()
-			four_line_r2 = f2.readline()
-			matched_list_R1.append(four_line_r1)
-			matched_list_R2.append(four_line_r2)	
+			m1.write(first_line_r1)
+			m2.write(first_line_r2)
+			m1.write(s1)
+			m2.write(s2)
+			m1.write(p1)
+			m2.write(p2)
+			m1.write(q1)
+			m2.write(q2)
 			total_valid_reads += 1
 
 		else:
-			junk_list_R1.append(name_r1)
-			junk_list_R2.append(name_r2)
-			junk_list_R1.append(line1)
-			junk_list_R2.append(line2)
-			
-			third_line_r1 = f1.readline()
-			third_line_r2 = f2.readline()
-			junk_list_R1.append(third_line_r1)
-			junk_list_R2.append(third_line_r2)	
-	
-			four_line_r1 = f1.readline()
-			four_line_r2 = f2.readline()
-			junk_list_R1.append(four_line_r1)
-			junk_list_R2.append(four_line_r2)	
-				
-			
-		line1 = f1.readline()
-		line2 = f2.readline()
+			j1.write(name_r1)
+			j2.write(name_r2)
+			j1.write(s1)
+			j2.write(s2)
+			j1.write(p1)
+			j2.write(p2)
+			j1.write(q1)
+			j2.write(q2)
 
-	junk_R1_output = label + ".junk.R1.fastq.gz"
-	junk_R2_output = label + ".junk.R2.fastq.gz"
-	output_to_fastq_gz(junk_R1_output,junk_list_R1)
-	output_to_fastq_gz(junk_R2_output,junk_list_R2)
-	
-	matched_R1_output = label + ".matched.R1.fastq.gz"
-	matched_R2_output = label + ".matched.R2.fastq.gz"
-	output_to_fastq_gz(matched_R1_output,matched_list_R1)
-	output_to_fastq_gz(matched_R2_output,matched_list_R2)
-	df = dict3d_to_df(barcode_dict)
-	df.to_csv(label + ".total_number_reads.tsv",sep="\t",index=False)
+	f1.close()
+	f2.close()
+	j1.close()
+	j2.close()
+	m1.close()
+	m2.close()
+
+	with open(label + ".total_number_reads.tsv", "w", newline="") as out:
+		w = csv.writer(out, delimiter="\t")
+		w.writerow(["BC1", "BC2", "BC3", "Total_reads"])
+		for (b1, b2, b3), c in sorted(barcode_counts.items(), key=lambda kv: kv[1], reverse=True):
+			w.writerow([b1, b2, b3, c])
+
 	print ("Sample: %s has %s BC1 %s BC2 %s BC3"%(label,bc1_count,bc2_count,bc3_count))
 	print ("Sample: %s has %s BC1_2 %s BC1_3 %s BC2_3"%(label,bc1_bc2_count,bc1_bc3_count,bc2_bc3_count))
 	print ("Sample: %s has %s total valid reads. Total read is %s"%(label,total_valid_reads,count))
@@ -230,8 +231,7 @@ def main():
 	
 	# read barcode
 	logging.info("Reading barcode file")
-	barcode_list = pd.read_csv(args.barcode_list,header=None)[0].tolist()
-	barcode_list = [x.replace(" ","") for x in barcode_list]
+	barcode_list = read_barcode_list(args.barcode_list)
 
 	if args.revcomp:
 		barcode_list = [revcomp(x) for x in barcode_list]
