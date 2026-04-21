@@ -1243,8 +1243,8 @@ def sample_sidebar_links(sample_names):
         return "<p><em>No sample reports</em></p>"
     chunks = ['<div class="sample-side-title">Sample Reports</div>', '<div class="sample-side-links">']
     for s in sample_names:
-        link = f'QC_Report/{s}/index.html'
-        chunks.append(f'<a href="{html.escape(link)}" target="_blank">{html.escape(s)}</a>')
+        link = f'./QC_Report/{s}/index.html'
+        chunks.append(f'<a href="{html.escape(link)}">{html.escape(s)}</a>')
     chunks.append('</div>')
     return "".join(chunks)
 
@@ -1456,51 +1456,51 @@ parts.append('''<!doctype html>
     body {
       font-family: "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       font-size: 14px;
-      color: #1f2937;
+      color: #474c55;
       margin: 24px auto;
       max-width: 1400px;
       line-height: 1.55;
       padding: 0 12px;
-      background: #fafbfc;
+      background: #ffffff;
       scroll-padding-top: 86px;
     }
     h1, h2, h3, h4 {
-      color: #0f172a;
+      color: #8d0034;
       margin-top: 1.15em;
       margin-bottom: 0.45em;
       font-weight: 700;
       letter-spacing: 0.1px;
     }
     h1 { font-size: 30px; margin-top: 0.3em; }
-    h2 { font-size: 21px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }
+    h2 { font-size: 21px; border-bottom: 1px solid #dfe1df; padding-bottom: 4px; }
     h3 { font-size: 16px; font-weight: 700; }
-    h4 { font-size: 13px; font-weight: 600; color: #475569; }
+    h4 { font-size: 13px; font-weight: 600; color: #474c55; }
     p { margin: 0.45em 0 0.8em 0; }
-    em { color: #6b7280; }
-    code { background: #f1f5f9; padding: 2px 5px; border-radius: 4px; font-size: 0.92em; }
+    em { color: #474c55; }
+    code { background: #ffffff; color: #8d0034; border: 1px solid #dfe1df; padding: 2px 5px; border-radius: 4px; font-size: 0.92em; }
     table {
       border-collapse: collapse;
       margin: 10px 0 20px 0;
       width: 100%;
       background: #fff;
-      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+      box-shadow: 0 1px 2px rgba(141, 0, 52, 0.08);
       display: table;
     }
     th, td {
-      border: 1px solid #d7dde5;
+      border: 1px solid #dfe1df;
       padding: 6px 10px;
       font-size: 12px;
       vertical-align: top;
       white-space: nowrap;
     }
     th {
-      background: #f3f6fa;
+      background: #ffffff;
       font-weight: 700;
       text-align: left;
-      color: #0f172a;
+      color: #8d0034;
     }
-    td:first-child { font-weight: 600; }
-    tr:nth-child(even) td { background: #fbfdff; }
+    td:first-child { font-weight: 600; color: #8d0034; }
+    tr:nth-child(even) td { background: #ffffff; }
     .tabs {
       display: flex;
       flex-wrap: wrap;
@@ -1509,29 +1509,29 @@ parts.append('''<!doctype html>
       position: sticky;
       top: 0;
       z-index: 1000;
-      background: rgba(250, 251, 252, 0.96);
+      background: rgba(255, 255, 255, 0.96);
       backdrop-filter: blur(2px);
       padding: 8px 0;
-      border-bottom: 1px solid #e5e7eb;
+      border-bottom: 1px solid #dfe1df;
     }
     .tabs a {
       text-decoration: none;
-      border: 1px solid #cfd8dc;
-      background: #f7f9fb;
-      color: #1f2937;
+      border: 1px solid #d11947;
+      background: #ffffff;
+      color: #8d0034;
       padding: 7px 12px;
       border-radius: 6px;
       font-size: 12px;
       font-weight: 600;
     }
-    .tabs a:hover { background: #eef3f7; border-color: #bcc7d3; }
+    .tabs a:hover { background: #d11947; color: #ffffff; border-color: #8d0034; }
     section {
       padding: 10px 14px 6px 14px;
       margin: 8px 0 14px 0;
       background: #ffffff;
-      border: 1px solid #e5e7eb;
+      border: 1px solid #dfe1df;
       border-radius: 10px;
-      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      box-shadow: 0 1px 2px rgba(141, 0, 52, 0.06);
       scroll-margin-top: 90px;
     }
     .img-grid {
@@ -1542,7 +1542,7 @@ parts.append('''<!doctype html>
     }
     .img-card {
       margin: 0;
-      border: 1px solid #ddd;
+      border: 1px solid #dfe1df;
       border-radius: 6px;
       padding: 8px;
       background: #fff;
@@ -1600,7 +1600,7 @@ parts.append('''<!doctype html>
       margin: 8px 0 10px 0;
     }
     .kpi-card {
-      border: 1px solid #dce3ea;
+      border: 1px solid #dfe1df;
       border-radius: 8px;
       background: #ffffff;
       padding: 10px 12px;
@@ -1608,16 +1608,16 @@ parts.append('''<!doctype html>
     .kpi-label {
       font-size: 12px;
       font-weight: 600;
-      color: #64748b;
+      color: #8d0034;
       margin-bottom: 2px;
     }
     .kpi-value {
       font-size: 24px;
       font-weight: 700;
-      color: #0f172a;
+      color: #8d0034;
       line-height: 1.2;
     }
-    .meta-line { margin-top: 4px; color: #475569; }
+    .meta-line { margin-top: 4px; color: #7a4254; }
     .main-layout {
       display: grid;
       grid-template-columns: 230px minmax(0, 1fr);
@@ -1628,17 +1628,17 @@ parts.append('''<!doctype html>
       position: sticky;
       top: 64px;
       background: #ffffff;
-      border: 1px solid #e5e7eb;
+      border: 1px solid #efc9d5;
       border-radius: 10px;
       padding: 10px;
-      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      box-shadow: 0 1px 2px rgba(141, 0, 52, 0.06);
       max-height: calc(100vh - 86px);
       overflow: auto;
     }
     .sample-side-title {
       font-size: 12px;
       font-weight: 700;
-      color: #334155;
+      color: #8d0034;
       margin-bottom: 8px;
       text-transform: uppercase;
       letter-spacing: 0.3px;
@@ -1651,13 +1651,13 @@ parts.append('''<!doctype html>
     .sample-side-links a {
       text-decoration: none;
       font-size: 12px;
-      color: #1e3a8a;
-      border: 1px solid #dbe3ee;
+      color: #8d0034;
+      border: 1px solid #d11947;
       border-radius: 6px;
       padding: 6px 8px;
-      background: #f8fbff;
+      background: #ffffff;
     }
-    .sample-side-links a:hover { background: #eef4ff; border-color: #c9d7ee; }
+    .sample-side-links a:hover { background: #d11947; color: #ffffff; border-color: #8d0034; }
     .main-content { min-width: 0; }
     .starsolo-block { margin: 0 0 18px 0; }
     @media (max-width: 1100px) {
@@ -1710,9 +1710,6 @@ parts.append("</section>")
 
 parts.append('<section id="sec-starsolo">')
 parts.append("<h2>STARsolo QC</h2>")
-parts.append('<div class="starsolo-block"><h3>STARsolo Key Metrics by Sample</h3>')
-parts.append(starsolo_summary_table(starsolo_logs))
-parts.append("</div>")
 parts.append('<div class="starsolo-block"><h3>Alignment Summary Bar Chart</h3>')
 parts.append(alignment_summary_chart(starsolo_logs))
 parts.append("</div>")
@@ -1789,27 +1786,27 @@ for sample in sorted(all_sample_candidates):
     body {{
       font-family: "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       font-size: 14px;
-      color: #1f2937;
+      color: #474c55;
       margin: 24px auto;
       max-width: 1200px;
       line-height: 1.55;
       padding: 0 12px;
-      background: #fafbfc;
+      background: #ffffff;
     }}
     h1, h2, h3 {{
-      color: #0f172a;
+      color: #8d0034;
       margin-top: 1.15em;
       margin-bottom: 0.45em;
       font-weight: 700;
       letter-spacing: 0.1px;
     }}
     h1 {{ font-size: 28px; margin-top: 0.3em; }}
-    h2 {{ font-size: 20px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }}
+    h2 {{ font-size: 20px; border-bottom: 1px solid #dfe1df; padding-bottom: 4px; }}
     h3 {{ font-size: 16px; }}
-    code {{ background: #f1f5f9; padding: 2px 5px; border-radius: 4px; font-size: 0.92em; }}
+    code {{ background: #ffffff; color: #8d0034; border: 1px solid #dfe1df; padding: 2px 5px; border-radius: 4px; font-size: 0.92em; }}
     pre {{
-      background: #f8fafc;
-      border: 1px solid #d7dde5;
+      background: #ffffff;
+      border: 1px solid #dfe1df;
       padding: 10px;
       overflow-x: auto;
       line-height: 1.45;
@@ -1820,16 +1817,16 @@ for sample in sorted(all_sample_candidates):
       margin: 10px 0 20px 0;
       width: 100%;
       background: #fff;
-      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+      box-shadow: 0 1px 2px rgba(141, 0, 52, 0.08);
     }}
     th, td {{
-      border: 1px solid #d7dde5;
+      border: 1px solid #dfe1df;
       padding: 6px 10px;
       font-size: 12px;
       vertical-align: top;
     }}
-    th {{ background: #f3f6fa; font-weight: 700; text-align: left; color: #0f172a; }}
-    tr:nth-child(even) td {{ background: #fbfdff; }}
+    th {{ background: #ffffff; font-weight: 700; text-align: left; color: #8d0034; }}
+    tr:nth-child(even) td {{ background: #ffffff; }}
   </style>
 </head>
 <body>
