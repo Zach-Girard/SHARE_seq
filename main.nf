@@ -1505,13 +1505,9 @@ parts.append('''<!doctype html>
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
-      margin: 8px 0 0 0;
-      position: sticky;
-      top: 0;
-      z-index: 1000;
-      padding: 8px 0 2px 0;
-      background: #d11947;
-      border-radius: 0 0 8px 8px;
+      gap: 8px;
+      padding-left: 10px;
+      padding-right: 8px;
     }
     .tabs a {
       text-decoration: none;
@@ -1651,7 +1647,7 @@ parts.append('''<!doctype html>
     }
     .sample-sidebar {
       position: sticky;
-      top: 62px;
+      top: 74px;
       align-self: start;
       background: #d11947;
       border: 1px solid #8d0034;
@@ -1661,6 +1657,16 @@ parts.append('''<!doctype html>
       box-shadow: 0 2px 6px rgba(141, 0, 52, 0.22);
       max-height: calc(100vh - 74px);
       overflow-y: auto;
+    }
+    .tabs-wrap {
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      background: #d11947;
+      border-radius: 0 0 8px 8px;
+      padding: 8px 0 6px 0;
+      margin-bottom: 14px;
+      box-shadow: 0 2px 4px rgba(141, 0, 52, 0.18);
     }
     .sample-side-title {
       font-size: 12px;
@@ -1699,12 +1705,14 @@ parts.append('''<!doctype html>
 <h1>SHARE-seq QC and Visualization Report</h1>
 <p>Generated from pipeline outputs in <code>__PROJECT_DIR__</code>.</p>
 </div>
+<div class="tabs-wrap">
 <div class="tabs">
   <a href="#sec-overview">Overview</a>
   <a href="#sec-demux">Demultiplexing</a>
   <a href="#sec-fastqc">FastQC (Demultiplexed)</a>
   <a href="#sec-starsolo">STARsolo QC</a>
   <a href="#sec-barnyard">Hybrid Barnyard</a>
+</div>
 </div>
 <div class="main-layout">
 <aside class="sample-sidebar">
