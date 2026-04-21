@@ -1456,7 +1456,7 @@ parts.append('''<!doctype html>
     body {
       font-family: "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       font-size: 14px;
-      color: #474c55;
+      color: #000000;
       margin: 24px auto;
       max-width: 1400px;
       line-height: 1.55;
@@ -1465,7 +1465,7 @@ parts.append('''<!doctype html>
       scroll-padding-top: 86px;
     }
     h1, h2, h3, h4 {
-      color: #8d0034;
+      color: #000000;
       margin-top: 1.15em;
       margin-bottom: 0.45em;
       font-weight: 700;
@@ -1474,10 +1474,10 @@ parts.append('''<!doctype html>
     h1 { font-size: 30px; margin-top: 0.3em; }
     h2 { font-size: 21px; border-bottom: 1px solid #dfe1df; padding-bottom: 4px; }
     h3 { font-size: 16px; font-weight: 700; }
-    h4 { font-size: 13px; font-weight: 600; color: #474c55; }
+    h4 { font-size: 13px; font-weight: 600; color: #000000; }
     p { margin: 0.45em 0 0.8em 0; }
-    em { color: #474c55; }
-    code { background: #ffffff; color: #8d0034; border: 1px solid #dfe1df; padding: 2px 5px; border-radius: 4px; font-size: 0.92em; }
+    em { color: #000000; }
+    code { background: #ffffff; color: #000000; border: 1px solid #dfe1df; padding: 2px 5px; border-radius: 4px; font-size: 0.92em; }
     table {
       border-collapse: collapse;
       margin: 10px 0 20px 0;
@@ -1497,42 +1497,68 @@ parts.append('''<!doctype html>
       background: #ffffff;
       font-weight: 700;
       text-align: left;
-      color: #8d0034;
+      color: #000000;
     }
-    td:first-child { font-weight: 600; color: #8d0034; }
+    td:first-child { font-weight: 600; color: #000000; }
     tr:nth-child(even) td { background: #ffffff; }
     .tabs {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
-      margin: 12px 0 18px 0;
+      margin: 8px 0 0 0;
       position: sticky;
       top: 0;
       z-index: 1000;
-      background: rgba(255, 255, 255, 0.96);
-      backdrop-filter: blur(2px);
-      padding: 8px 0;
-      border-bottom: 1px solid #dfe1df;
+      padding: 8px 0 2px 0;
     }
     .tabs a {
       text-decoration: none;
-      border: 1px solid #d11947;
-      background: #ffffff;
-      color: #8d0034;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      background: rgba(255, 255, 255, 0.14);
+      color: #ffffff;
       padding: 7px 12px;
       border-radius: 6px;
       font-size: 12px;
       font-weight: 600;
     }
-    .tabs a:hover { background: #d11947; color: #ffffff; border-color: #8d0034; }
+    .tabs a:hover { background: rgba(255, 255, 255, 0.26); border-color: #ffffff; }
+    .top-banner {
+      position: sticky;
+      top: 0;
+      z-index: 1100;
+      background: #d11947;
+      color: #ffffff;
+      border-radius: 10px;
+      padding: 12px 14px 10px 14px;
+      margin: 0 0 14px 0;
+      box-shadow: 0 2px 6px rgba(141, 0, 52, 0.22);
+    }
+    .top-banner h1, .top-banner h2, .top-banner h3, .top-banner h4,
+    .top-banner p, .top-banner em, .top-banner code { color: #ffffff; }
+    .top-banner code {
+      background: rgba(255, 255, 255, 0.14);
+      border: 1px solid rgba(255, 255, 255, 0.45);
+    }
     section {
       padding: 10px 14px 6px 14px;
       margin: 8px 0 14px 0;
       background: #ffffff;
+      color: #000000;
       border: 1px solid #dfe1df;
       border-radius: 10px;
       box-shadow: 0 1px 2px rgba(141, 0, 52, 0.06);
       scroll-margin-top: 90px;
+    }
+    section h2, section h3, section h4, section p, section em, section a { color: #000000; }
+    section h2 { border-bottom: 1px solid #dfe1df; }
+    section code {
+      background: #ffffff;
+      border: 1px solid #dfe1df;
+      color: #000000;
+    }
+    section table, section th, section td {
+      background: #ffffff;
+      color: #000000;
     }
     .img-grid {
       display: grid;
@@ -1586,7 +1612,7 @@ parts.append('''<!doctype html>
       background: #f5f5f5;
     }
     .align-bar .seg { height: 100%; display: block; }
-    .align-values { font-size: 11px; color: #374151; font-weight: 600; }
+    .align-values { font-size: 11px; color: #000000; font-weight: 600; }
     .unique { background: #2e7d32; }
     .multi { background: #1976d2; }
     .unmapped { background: #d32f2f; }
@@ -1608,16 +1634,16 @@ parts.append('''<!doctype html>
     .kpi-label {
       font-size: 12px;
       font-weight: 600;
-      color: #8d0034;
+      color: #000000;
       margin-bottom: 2px;
     }
     .kpi-value {
       font-size: 24px;
       font-weight: 700;
-      color: #8d0034;
+      color: #000000;
       line-height: 1.2;
     }
-    .meta-line { margin-top: 4px; color: #7a4254; }
+    .meta-line { margin-top: 4px; color: #000000; }
     .main-layout {
       display: grid;
       grid-template-columns: 230px minmax(0, 1fr);
@@ -1627,18 +1653,19 @@ parts.append('''<!doctype html>
     .sample-sidebar {
       position: sticky;
       top: 64px;
-      background: #ffffff;
-      border: 1px solid #efc9d5;
+      background: #d11947;
+      border: 1px solid #8d0034;
       border-radius: 10px;
       padding: 10px;
-      box-shadow: 0 1px 2px rgba(141, 0, 52, 0.06);
+      color: #ffffff;
+      box-shadow: 0 2px 6px rgba(141, 0, 52, 0.22);
       max-height: calc(100vh - 86px);
       overflow: auto;
     }
     .sample-side-title {
       font-size: 12px;
       font-weight: 700;
-      color: #8d0034;
+      color: #ffffff;
       margin-bottom: 8px;
       text-transform: uppercase;
       letter-spacing: 0.3px;
@@ -1651,13 +1678,14 @@ parts.append('''<!doctype html>
     .sample-side-links a {
       text-decoration: none;
       font-size: 12px;
-      color: #8d0034;
-      border: 1px solid #d11947;
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.6);
       border-radius: 6px;
       padding: 6px 8px;
-      background: #ffffff;
+      background: rgba(255, 255, 255, 0.14);
+      font-weight: 700;
     }
-    .sample-side-links a:hover { background: #d11947; color: #ffffff; border-color: #8d0034; }
+    .sample-side-links a:hover { background: rgba(255, 255, 255, 0.26); border-color: #ffffff; }
     .main-content { min-width: 0; }
     .starsolo-block { margin: 0 0 18px 0; }
     @media (max-width: 1100px) {
@@ -1667,6 +1695,7 @@ parts.append('''<!doctype html>
   </style>
 </head>
 <body>
+<div class="top-banner">
 <h1>SHARE-seq QC and Visualization Report</h1>
 <p>Generated from pipeline outputs in <code>__PROJECT_DIR__</code>.</p>
 <div class="tabs">
@@ -1675,6 +1704,7 @@ parts.append('''<!doctype html>
   <a href="#sec-fastqc">FastQC (Demultiplexed)</a>
   <a href="#sec-starsolo">STARsolo QC</a>
   <a href="#sec-barnyard">Hybrid Barnyard</a>
+</div>
 </div>
 <div class="main-layout">
 <aside class="sample-sidebar">
@@ -1786,7 +1816,7 @@ for sample in sorted(all_sample_candidates):
     body {{
       font-family: "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       font-size: 14px;
-      color: #474c55;
+      color: #000000;
       margin: 24px auto;
       max-width: 1200px;
       line-height: 1.55;
@@ -1794,7 +1824,7 @@ for sample in sorted(all_sample_candidates):
       background: #ffffff;
     }}
     h1, h2, h3 {{
-      color: #8d0034;
+      color: #000000;
       margin-top: 1.15em;
       margin-bottom: 0.45em;
       font-weight: 700;
@@ -1803,7 +1833,7 @@ for sample in sorted(all_sample_candidates):
     h1 {{ font-size: 28px; margin-top: 0.3em; }}
     h2 {{ font-size: 20px; border-bottom: 1px solid #dfe1df; padding-bottom: 4px; }}
     h3 {{ font-size: 16px; }}
-    code {{ background: #ffffff; color: #8d0034; border: 1px solid #dfe1df; padding: 2px 5px; border-radius: 4px; font-size: 0.92em; }}
+    code {{ background: #ffffff; color: #000000; border: 1px solid #dfe1df; padding: 2px 5px; border-radius: 4px; font-size: 0.92em; }}
     pre {{
       background: #ffffff;
       border: 1px solid #dfe1df;
@@ -1825,7 +1855,7 @@ for sample in sorted(all_sample_candidates):
       font-size: 12px;
       vertical-align: top;
     }}
-    th {{ background: #ffffff; font-weight: 700; text-align: left; color: #8d0034; }}
+    th {{ background: #ffffff; font-weight: 700; text-align: left; color: #000000; }}
     tr:nth-child(even) td {{ background: #ffffff; }}
   </style>
 </head>
