@@ -1238,6 +1238,16 @@ def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample):
         )
     return "<table>" + "".join(rows) + "</table>"
 
+def sample_sidebar_links(sample_names):
+    if not sample_names:
+        return "<p><em>No sample reports</em></p>"
+    chunks = ['<div class="sample-side-title">Sample Reports</div>', '<div class="sample-side-links">']
+    for s in sample_names:
+        link = f'QC_Report/{s}/index.html'
+        chunks.append(f'<a href="{html.escape(link)}" target="_blank">{html.escape(s)}</a>')
+    chunks.append('</div>')
+    return "".join(chunks)
+
 def alignment_summary_chart(log_paths):
     if not log_paths:
         return "<p><em>No STARsolo Log.final.out files found.</em></p>"
@@ -1474,8 +1484,7 @@ parts.append('''<!doctype html>
       width: 100%;
       background: #fff;
       box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
-      display: block;
-      overflow-x: auto;
+      display: table;
     }
     th, td {
       border: 1px solid #d7dde5;
@@ -1489,14 +1498,9 @@ parts.append('''<!doctype html>
       font-weight: 700;
       text-align: left;
       color: #0f172a;
-      position: sticky;
-      top: 56px;
-      z-index: 2;
     }
-    th:first-child { left: 0; z-index: 4; }
-    td:first-child { position: sticky; left: 0; z-index: 1; background: #ffffff; font-weight: 600; }
+    td:first-child { font-weight: 600; }
     tr:nth-child(even) td { background: #fbfdff; }
-    tr:nth-child(even) td:first-child { background: #fbfdff; }
     .tabs {
       display: flex;
       flex-wrap: wrap;
@@ -1614,6 +1618,52 @@ parts.append('''<!doctype html>
       line-height: 1.2;
     }
     .meta-line { margin-top: 4px; color: #475569; }
+    .main-layout {
+      display: grid;
+      grid-template-columns: 230px minmax(0, 1fr);
+      gap: 14px;
+      align-items: start;
+    }
+    .sample-sidebar {
+      position: sticky;
+      top: 64px;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 10px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      max-height: calc(100vh - 86px);
+      overflow: auto;
+    }
+    .sample-side-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #334155;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .sample-side-links {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .sample-side-links a {
+      text-decoration: none;
+      font-size: 12px;
+      color: #1e3a8a;
+      border: 1px solid #dbe3ee;
+      border-radius: 6px;
+      padding: 6px 8px;
+      background: #f8fbff;
+    }
+    .sample-side-links a:hover { background: #eef4ff; border-color: #c9d7ee; }
+    .main-content { min-width: 0; }
+    .starsolo-block { margin: 0 0 18px 0; }
+    @media (max-width: 1100px) {
+      .main-layout { grid-template-columns: 1fr; }
+      .sample-sidebar { position: static; max-height: none; }
+    }
   </style>
 </head>
 <body>
@@ -1626,7 +1676,13 @@ parts.append('''<!doctype html>
   <a href="#sec-starsolo">STARsolo QC</a>
   <a href="#sec-barnyard">Hybrid Barnyard</a>
 </div>
+<div class="main-layout">
+<aside class="sample-sidebar">
+__SAMPLE_SIDEBAR__
+</aside>
+<div class="main-content">
 '''.replace("__PROJECT_DIR__", html.escape(proj)))
+parts[-1] = parts[-1].replace("__SAMPLE_SIDEBAR__", sample_sidebar_links(sample_names))
 
 parts.append('<section id="sec-overview">')
 parts.append("<h2>Overview</h2>")
@@ -1654,16 +1710,24 @@ parts.append("</section>")
 
 parts.append('<section id="sec-starsolo">')
 parts.append("<h2>STARsolo QC</h2>")
-parts.append("<h3>STARsolo Key Metrics by Sample</h3>")
+parts.append('<div class="starsolo-block"><h3>STARsolo Key Metrics by Sample</h3>')
 parts.append(starsolo_summary_table(starsolo_logs))
-parts.append("<h3>Alignment Summary Bar Chart</h3>")
+parts.append("</div>")
+parts.append('<div class="starsolo-block"><h3>Alignment Summary Bar Chart</h3>')
 parts.append(alignment_summary_chart(starsolo_logs))
+parts.append("</div>")
+parts.append('<div class="starsolo-block">')
 parts.append(text_files_block("STARsolo*/<sample>/Log.final.out", starsolo_logs, max_lines=120))
+parts.append("</div>")
+parts.append('<div class="starsolo-block">')
 parts.append(image_gallery_block("STARsolo*/<sample>/*_knee_plot.png", knee_plots))
-parts.append("<h3>Barcodes.stats Summary by Sample</h3>")
+parts.append("</div>")
+parts.append('<div class="starsolo-block"><h3>Barcodes.stats Summary by Sample</h3>')
 parts.append(barcodes_stats_summary_table(barcodes_stats))
-parts.append("<h3>Summary.csv Key Metrics by Sample</h3>")
+parts.append("</div>")
+parts.append('<div class="starsolo-block"><h3>Summary.csv Key Metrics by Sample</h3>')
 parts.append(summary_csv_key_metrics_table(summary_csv))
+parts.append("</div>")
 parts.append("</section>")
 
 parts.append('<section id="sec-barnyard">')
@@ -1671,6 +1735,7 @@ parts.append("<h2>Hybrid Barnyard Plots (if applicable)</h2>")
 parts.append(image_files_block("STARsolo*/<sample>/*collision_plot.png", barnyard))
 parts.append("</section>")
 
+parts.append("</div></div>")
 parts.append("</body></html>")
 
 with open(out_path, "w") as out:
