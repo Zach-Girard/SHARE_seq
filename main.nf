@@ -2317,7 +2317,7 @@ workflow {
         .filter { sample_id, sample_type, r1, r2 -> sample_type == 'ATAC' }
         .map { sample_id, sample_type, r1, r2 -> tuple(sample_id, r1, r2) }
 
-    ch_atac_pairs.into { ch_atac_pairs_for_trigger; ch_atac_pairs_for_align }
+    def (ch_atac_pairs_for_trigger, ch_atac_pairs_for_align) = ch_atac_pairs.into(2)
 
     ch_atac_pairs_for_trigger
         .take(1)
