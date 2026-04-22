@@ -672,8 +672,6 @@ PY
 process BWA_INDEX {
     tag { params.species_model }
 
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
-
     input:
     val(dummy)
 
@@ -724,7 +722,7 @@ PY
 
     if [[ -d "\${REUSE_DIR}" && -f "\${REUSE_FP}" ]] && cmp -s current_bwa_index_fingerprint.json "\${REUSE_FP}"; then
       echo "Reusing existing BWA index: \${REUSE_DIR}"
-      ln -s "\${REUSE_DIR}" "\${indexDir}"
+      cp -R "\${REUSE_DIR}" "\${indexDir}"
       exit 0
     fi
 
