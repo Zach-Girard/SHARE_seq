@@ -678,7 +678,7 @@ process BWA_INDEX {
     val(dummy)
 
     output:
-    tuple val(prefixName), path("BWA_index_*"), emit: bwa_index
+    path "BWA_index_*", emit: bwa_index
 
     script:
     def proj = projectDir
@@ -2331,10 +2331,12 @@ workflow {
 
     BWA_INDEX(ch_bwa_index_trigger)
 
+    def bwaPrefixName = (params.species_model == 'mouse') ? 'mm39_bwa' : (params.species_model == 'hybrid' ? 'hybrid_bwa' : 'hg38_bwa')
+
     ch_atac_pairs_for_align
         .combine(BWA_INDEX.out.bwa_index)
-        .map { sample_id, r1, r2, prefix_name, bwa_index_dir ->
-            tuple(sample_id, r1, r2, prefix_name, bwa_index_dir)
+        .map { sample_id, r1, r2, bwa_index_dir ->
+            tuple(sample_id, r1, r2, bwaPrefixName, bwa_index_dir)
         }
         .set { ch_atac_bwa_input }
 
