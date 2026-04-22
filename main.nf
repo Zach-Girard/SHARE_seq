@@ -687,6 +687,7 @@ process BWA_INDEX {
     def prefixName = (species == 'mouse') ? 'mm39_bwa' : (species == 'hybrid' ? 'hybrid_bwa' : 'hg38_bwa')
     """
     set -euo pipefail
+    command -v bwa >/dev/null 2>&1 || { echo "ERROR: bwa not found in PATH. Install bwa in environment.yml / activate env."; exit 127; }
 
     case "${species}" in
       mouse)  genomeFasta="${proj}/${genomes}/GRCm39/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz"
@@ -757,6 +758,8 @@ process BWA_ALIGN_ATAC {
 
     """
     set -euo pipefail
+    command -v bwa >/dev/null 2>&1 || { echo "ERROR: bwa not found in PATH. Install bwa in environment.yml / activate env."; exit 127; }
+    command -v samtools >/dev/null 2>&1 || { echo "ERROR: samtools not found in PATH. Install samtools in environment.yml / activate env."; exit 127; }
 
     mkdir -p ATAC/${sample_id}
     BWA_PREFIX="${bwa_index_dir}/${prefix_name}"

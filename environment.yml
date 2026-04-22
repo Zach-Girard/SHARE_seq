@@ -13,6 +13,7 @@ dependencies:
   - fastp
   - fastqc
   - star=2.7.11b
+  - bwa
   - cutadapt
   - tqdm
   - samtools
