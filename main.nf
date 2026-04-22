@@ -669,6 +669,131 @@ PY
     """
 }
 
+process BWA_INDEX {
+    tag { params.species_model }
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    val(dummy)
+
+    output:
+    tuple val(prefixName), path("BWA_index_*"), emit: bwa_index
+
+    script:
+    def proj = projectDir
+    def genomes = params.genomes_dir
+    def species = params.species_model
+    def prefixName = (species == 'mouse') ? 'mm39_bwa' : (species == 'hybrid' ? 'hybrid_bwa' : 'hg38_bwa')
+    """
+    set -euo pipefail
+
+    case "${species}" in
+      mouse)  genomeFasta="${proj}/${genomes}/GRCm39/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz"
+              indexDir="BWA_index_mouse"
+              prefixName="mm39_bwa" ;;
+      hybrid) genomeFasta="${proj}/${genomes}/hybrid/hybrid_human_mouse.fa.gz"
+              indexDir="BWA_index_hybrid"
+              prefixName="hybrid_bwa" ;;
+      *)      genomeFasta="${proj}/${genomes}/GRCh38/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
+              indexDir="BWA_index_human"
+              prefixName="hg38_bwa" ;;
+    esac
+
+    python - "\${genomeFasta}" "${species}" > current_bwa_index_fingerprint.json <<'PY'
+import json
+import os
+import sys
+
+genome, species = sys.argv[1:3]
+st = os.stat(genome)
+fp = {
+    "species_model": species,
+    "genome_fasta": {
+        "path": os.path.realpath(genome),
+        "size": st.st_size,
+        "mtime": int(st.st_mtime),
+    }
+}
+print(json.dumps(fp, sort_keys=True))
+PY
+
+    REUSE_DIR="${proj}/\${indexDir}"
+    REUSE_FP="\${REUSE_DIR}/.bwa_index_fingerprint.json"
+
+    if [[ -d "\${REUSE_DIR}" && -f "\${REUSE_FP}" ]] && cmp -s current_bwa_index_fingerprint.json "\${REUSE_FP}"; then
+      echo "Reusing existing BWA index: \${REUSE_DIR}"
+      ln -s "\${REUSE_DIR}" "\${indexDir}"
+      exit 0
+    fi
+
+    mkdir -p "\${indexDir}"
+    if [[ "\${genomeFasta}" == *.gz ]]; then
+      gzip -dc "\${genomeFasta}" > genome.fa
+    else
+      ln -sf "\${genomeFasta}" genome.fa
+    fi
+
+    bwa index -p "\${indexDir}/\${prefixName}" genome.fa
+    cp current_bwa_index_fingerprint.json "\${indexDir}/.bwa_index_fingerprint.json"
+
+    TMP_REUSE_DIR="\${REUSE_DIR}.tmp"
+    rm -rf "\${TMP_REUSE_DIR}" "\${REUSE_DIR}"
+    cp -R "\${indexDir}" "\${TMP_REUSE_DIR}"
+    mv "\${TMP_REUSE_DIR}" "\${REUSE_DIR}"
+    """
+}
+
+process BWA_ALIGN_ATAC {
+    tag { sample_id }
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    tuple val(sample_id), path(r1_fastq), path(r2_fastq), val(prefix_name), path(bwa_index_dir)
+
+    output:
+    path "ATAC/${sample_id}/", emit: atac_align_out
+
+    """
+    set -euo pipefail
+
+    mkdir -p ATAC/${sample_id}
+    BWA_PREFIX="${bwa_index_dir}/${prefix_name}"
+
+    bwa mem -t ${task.cpus} -C "\${BWA_PREFIX}" "${r1_fastq}" "${r2_fastq}" \
+      | samtools view -@ ${task.cpus} -b -q 30 -F 4 - \
+      > ATAC/${sample_id}/${sample_id}.q30.mapped.bam
+
+    samtools sort -@ ${task.cpus} -n \
+      -o ATAC/${sample_id}/${sample_id}.q30.namesort.bam \
+      ATAC/${sample_id}/${sample_id}.q30.mapped.bam
+
+    samtools fixmate -@ ${task.cpus} -m \
+      ATAC/${sample_id}/${sample_id}.q30.namesort.bam \
+      ATAC/${sample_id}/${sample_id}.q30.fixmate.bam
+
+    samtools sort -@ ${task.cpus} \
+      -o ATAC/${sample_id}/${sample_id}.q30.possort.bam \
+      ATAC/${sample_id}/${sample_id}.q30.fixmate.bam
+
+    samtools markdup -@ ${task.cpus} -r \
+      ATAC/${sample_id}/${sample_id}.q30.possort.bam \
+      ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam
+
+    samtools index -@ ${task.cpus} ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam
+    samtools flagstat ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam > ATAC/${sample_id}/${sample_id}.flagstat.txt
+    samtools idxstats ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam > ATAC/${sample_id}/${sample_id}.idxstats.txt
+    samtools stats ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam > ATAC/${sample_id}/${sample_id}.stats.txt
+
+    rm -f \
+      ATAC/${sample_id}/${sample_id}.q30.mapped.bam \
+      ATAC/${sample_id}/${sample_id}.q30.namesort.bam \
+      ATAC/${sample_id}/${sample_id}.q30.fixmate.bam \
+      ATAC/${sample_id}/${sample_id}.q30.possort.bam
+    """
+}
+
 process STARSOLO_SINGLE {
     tag { sample_id }
 
@@ -1076,6 +1201,8 @@ def sample_from_report_path(rel_path):
     bits = rel_path.split("/")
     if len(bits) >= 3 and bits[0] in ("STARsolo", "STARsolo_paired"):
         return bits[1]
+    if len(bits) >= 3 and bits[0] == "ATAC":
+        return bits[1]
     return None
 
 def parse_starsolo_log_metrics(rel_path):
@@ -1417,6 +1544,63 @@ def summary_csv_key_metrics_table(paths):
         cells.append("<tr>" + "".join(row_html) + "</tr>")
     return "<table>" + "".join(cells) + "</table>"
 
+def parse_flagstat_metrics(rel_path):
+    out = {
+        "in_total": "",
+        "mapped_pct": "",
+        "properly_paired_pct": "",
+        "duplicates_pct": "",
+    }
+    abs_path = os.path.join(proj, rel_path)
+    if not os.path.isfile(abs_path):
+        return out
+    try:
+        with open(abs_path, "r", errors="replace") as fh:
+            for line in fh:
+                s = line.strip()
+                if " in total" in s and "+" in s:
+                    out["in_total"] = s.split("+", 1)[0].strip()
+                elif " mapped (" in s:
+                    m = re.search(r'\\(([^)]*%)', s)
+                    out["mapped_pct"] = m.group(1) if m else ""
+                elif " properly paired (" in s:
+                    m = re.search(r'\\(([^)]*%)', s)
+                    out["properly_paired_pct"] = m.group(1) if m else ""
+                elif " duplicates" in s and "(" in s:
+                    m = re.search(r'\\(([^)]*%)', s)
+                    out["duplicates_pct"] = m.group(1) if m else ""
+    except Exception:
+        return out
+    return out
+
+def atac_flagstat_summary_table(paths):
+    if not paths:
+        return "<p><em>No ATAC flagstat files found.</em></p>"
+    rows = []
+    for p in sorted(paths):
+        sample = sample_from_report_path(p) or os.path.basename(os.path.dirname(p))
+        m = parse_flagstat_metrics(p)
+        rows.append([
+            sample,
+            m["in_total"],
+            m["mapped_pct"],
+            m["properly_paired_pct"],
+            m["duplicates_pct"],
+        ])
+    cells = []
+    cells.append(
+        "<tr>"
+        "<th>Sample</th>"
+        "<th>Total reads (flagstat)</th>"
+        "<th>Mapped %</th>"
+        "<th>Properly paired %</th>"
+        "<th>Duplicates %</th>"
+        "</tr>"
+    )
+    for row in rows:
+        cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in row) + "</tr>")
+    return "<table>" + "".join(cells) + "</table>"
+
 demux_total = rel_list("demux/*.total_number_reads.tsv")
 demux_stats = sorted(set(
     rel_list("demux/SHARE-seq.demultiplex.stats.tsv")
@@ -1438,8 +1622,11 @@ knee_plots = sorted(set(
 barcodes_stats = rel_list("STARsolo/*/Solo.out/Barcodes.stats") + rel_list("STARsolo_paired/*/Solo.out/Barcodes.stats")
 summary_csv = rel_list("STARsolo/*/Solo.out/GeneFull/Summary.csv") + rel_list("STARsolo_paired/*/Solo.out/GeneFull/Summary.csv")
 barnyard = rel_list("STARsolo/*/*collision_plot.png") + rel_list("STARsolo_paired/*/*collision_plot.png")
+atac_flagstat = rel_list("ATAC/*/*.flagstat.txt")
+atac_idxstats = rel_list("ATAC/*/*.idxstats.txt")
+atac_stats = rel_list("ATAC/*/*.stats.txt")
 sample_names = sorted(set(
-    [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard) if sample_from_report_path(p)]
+    [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard + atac_flagstat + atac_idxstats + atac_stats) if sample_from_report_path(p)]
     + list(load_demux_sample_names(demux_stats))
 ))
 starsolo_by_sample = starsolo_metrics_by_sample(starsolo_logs)
@@ -1710,6 +1897,7 @@ parts.append('''<!doctype html>
   <a href="#sec-overview">Overview</a>
   <a href="#sec-demux">Demultiplexing</a>
   <a href="#sec-fastqc">FastQC (Demultiplexed)</a>
+  <a href="#sec-atac">ATAC QC</a>
   <a href="#sec-starsolo">STARsolo QC</a>
   <a href="#sec-barnyard">Hybrid Barnyard</a>
 </div>
@@ -1744,6 +1932,22 @@ parts.append("</section>")
 parts.append('<section id="sec-fastqc">')
 parts.append("<h2>FastQC (Demultiplexed)</h2>")
 parts.append(links_block("fastqc_demux/<sample>/*_fastqc.html", fastqc_html))
+parts.append("</section>")
+
+parts.append('<section id="sec-atac">')
+parts.append("<h2>ATAC QC</h2>")
+parts.append('<div class="starsolo-block"><h3>ATAC Alignment Summary (flagstat)</h3>')
+parts.append(atac_flagstat_summary_table(atac_flagstat))
+parts.append("</div>")
+parts.append('<div class="starsolo-block"><h3>ATAC flagstat</h3>')
+parts.append(text_files_block("ATAC/<sample>/*.flagstat.txt", atac_flagstat, max_lines=80))
+parts.append("</div>")
+parts.append('<div class="starsolo-block"><h3>ATAC idxstats</h3>')
+parts.append(text_files_block("ATAC/<sample>/*.idxstats.txt", atac_idxstats, max_lines=80))
+parts.append("</div>")
+parts.append('<div class="starsolo-block"><h3>ATAC stats</h3>')
+parts.append(links_block("ATAC/<sample>/*.stats.txt", atac_stats))
+parts.append("</div>")
 parts.append("</section>")
 
 parts.append('<section id="sec-starsolo">')
@@ -1782,11 +1986,20 @@ def sample_from_starsolo_path(rel_path):
         return bits[1]
     return None
 
+def sample_from_atac_path(rel_path):
+    bits = rel_path.split("/")
+    if len(bits) >= 3 and bits[0] == "ATAC":
+        return bits[1]
+    return None
+
 all_sample_candidates = set()
-for p in starsolo_logs + knee_plots + barcodes_stats + summary_csv + barnyard:
+for p in starsolo_logs + knee_plots + barcodes_stats + summary_csv + barnyard + atac_flagstat + atac_idxstats + atac_stats:
     s = sample_from_starsolo_path(p)
     if s:
         all_sample_candidates.add(s)
+    a = sample_from_atac_path(p)
+    if a:
+        all_sample_candidates.add(a)
 all_sample_candidates.update(load_demux_sample_names(demux_stats))
 
 for sample in sorted(all_sample_candidates):
@@ -1799,6 +2012,9 @@ for sample in sorted(all_sample_candidates):
     sample_barcodes = [p for p in barcodes_stats if sample_from_starsolo_path(p) == sample]
     sample_summary = [p for p in summary_csv if sample_from_starsolo_path(p) == sample]
     sample_barnyard = [p for p in barnyard if sample_from_starsolo_path(p) == sample]
+    sample_atac_flagstat = [p for p in atac_flagstat if sample_from_atac_path(p) == sample]
+    sample_atac_idxstats = [p for p in atac_idxstats if sample_from_atac_path(p) == sample]
+    sample_atac_stats = [p for p in atac_stats if sample_from_atac_path(p) == sample]
 
     def sample_image_block(title, paths):
         if not paths:
@@ -1873,6 +2089,11 @@ for sample in sorted(all_sample_candidates):
 ''')
     sample_parts.append("<h2>Demultiplexing (this sample)</h2>")
     sample_parts.append(demux_stats_html_for_sample(demux_stats, sample))
+    if sample_atac_flagstat or sample_atac_idxstats or sample_atac_stats:
+        sample_parts.append("<h2>ATAC QC (this sample)</h2>")
+        sample_parts.append(text_files_block("ATAC flagstat", sample_atac_flagstat, max_lines=120))
+        sample_parts.append(text_files_block("ATAC idxstats", sample_atac_idxstats, max_lines=120))
+        sample_parts.append(links_block("ATAC stats", sample_atac_stats))
     sample_parts.append(text_files_block("Log.final.out", sample_logs, max_lines=120))
     sample_parts.append(sample_image_block("Knee plots", sample_knee))
     sample_parts.append(text_files_block("Barcodes.stats", sample_barcodes, max_lines=120))
@@ -2090,6 +2311,29 @@ workflow {
     }
 
     FASTQC_DEMUX(ch_input_fastq)
+
+    // ATAC branch: align matched R1/R2 with BWA MEM, then MAPQ filter + duplicate removal.
+    def ch_atac_pairs = ch_matched_pairs_typed
+        .filter { sample_id, sample_type, r1, r2 -> sample_type == 'ATAC' }
+        .map { sample_id, sample_type, r1, r2 -> tuple(sample_id, r1, r2) }
+
+    ch_atac_pairs.into { ch_atac_pairs_for_trigger; ch_atac_pairs_for_align }
+
+    ch_atac_pairs_for_trigger
+        .take(1)
+        .map { 1 }
+        .set { ch_bwa_index_trigger }
+
+    BWA_INDEX(ch_bwa_index_trigger)
+
+    ch_atac_pairs_for_align
+        .combine(BWA_INDEX.out.bwa_index)
+        .map { sample_id, r1, r2, prefix_name, bwa_index_dir ->
+            tuple(sample_id, r1, r2, prefix_name, bwa_index_dir)
+        }
+        .set { ch_atac_bwa_input }
+
+    BWA_ALIGN_ATAC(ch_atac_bwa_input)
 
     // Only RNA samples continue through the full workflow.
     def ch_rna_pairs = ch_matched_pairs_typed
