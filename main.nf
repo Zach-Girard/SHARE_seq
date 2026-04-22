@@ -2313,11 +2313,13 @@ workflow {
     FASTQC_DEMUX(ch_input_fastq)
 
     // ATAC branch: align matched R1/R2 with BWA MEM, then MAPQ filter + duplicate removal.
-    def ch_atac_pairs = ch_matched_pairs_typed
+    def ch_atac_pairs_for_trigger = ch_matched_pairs_typed
         .filter { sample_id, sample_type, r1, r2 -> sample_type == 'ATAC' }
         .map { sample_id, sample_type, r1, r2 -> tuple(sample_id, r1, r2) }
 
-    def (ch_atac_pairs_for_trigger, ch_atac_pairs_for_align) = ch_atac_pairs.into(2)
+    def ch_atac_pairs_for_align = ch_matched_pairs_typed
+        .filter { sample_id, sample_type, r1, r2 -> sample_type == 'ATAC' }
+        .map { sample_id, sample_type, r1, r2 -> tuple(sample_id, r1, r2) }
 
     ch_atac_pairs_for_trigger
         .take(1)
