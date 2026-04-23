@@ -766,6 +766,11 @@ process BWA_ALIGN_ATAC {
       | samtools view -@ ${task.cpus} -b -q 30 -F 4 - \
       > ATAC/${sample_id}/${sample_id}.q30.mapped.bam
 
+    # Pre-dedup snapshot (after MAPQ filter, before duplicate removal).
+    samtools flagstat ATAC/${sample_id}/${sample_id}.q30.mapped.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.flagstat.txt
+    samtools idxstats ATAC/${sample_id}/${sample_id}.q30.mapped.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.idxstats.txt
+    samtools stats ATAC/${sample_id}/${sample_id}.q30.mapped.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.stats.txt
+
     samtools sort -@ ${task.cpus} -n \
       -o ATAC/${sample_id}/${sample_id}.q30.namesort.bam \
       ATAC/${sample_id}/${sample_id}.q30.mapped.bam
@@ -783,9 +788,9 @@ process BWA_ALIGN_ATAC {
       ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam
 
     samtools index -@ ${task.cpus} ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam
-    samtools flagstat ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam > ATAC/${sample_id}/${sample_id}.flagstat.txt
-    samtools idxstats ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam > ATAC/${sample_id}/${sample_id}.idxstats.txt
-    samtools stats ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam > ATAC/${sample_id}/${sample_id}.stats.txt
+    samtools flagstat ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam > ATAC/${sample_id}/${sample_id}.q30.rmdup.flagstat.txt
+    samtools idxstats ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam > ATAC/${sample_id}/${sample_id}.q30.rmdup.idxstats.txt
+    samtools stats ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam > ATAC/${sample_id}/${sample_id}.q30.rmdup.stats.txt
 
     rm -f \
       ATAC/${sample_id}/${sample_id}.q30.mapped.bam \
@@ -1551,6 +1556,8 @@ def parse_flagstat_metrics(rel_path):
         "mapped_pct": "",
         "properly_paired_pct": "",
         "duplicates_pct": "",
+        "singletons_pct": "",
+        "mate_diff_chr_count": "",
     }
     abs_path = os.path.join(proj, rel_path)
     if not os.path.isfile(abs_path):
@@ -1570,37 +1577,113 @@ def parse_flagstat_metrics(rel_path):
                 elif " duplicates" in s and "(" in s:
                     m = re.search(r'\\(([^)]*%)', s)
                     out["duplicates_pct"] = m.group(1) if m else ""
+                elif " singletons (" in s:
+                    m = re.search(r'\\(([^)]*%)', s)
+                    out["singletons_pct"] = m.group(1) if m else ""
+                elif " with mate mapped to a different chr" in s and "(" not in s and "+" in s:
+                    out["mate_diff_chr_count"] = s.split("+", 1)[0].strip()
     except Exception:
         return out
     return out
 
-def atac_flagstat_summary_table(paths):
-    if not paths:
-        return "<p><em>No ATAC flagstat files found.</em></p>"
+def parse_idxstats_metrics(rel_path):
+    out = {
+        "total_mapped": 0,
+        "mt_mapped": 0,
+        "autosomal_mapped": 0,
+        "x_mapped": 0,
+        "y_mapped": 0,
+    }
+    abs_path = os.path.join(proj, rel_path)
+    if not os.path.isfile(abs_path):
+        return out
+    try:
+        with open(abs_path, "r", errors="replace") as fh:
+            for line in fh:
+                cols = line.rstrip("\\n").split("\\t")
+                if len(cols) < 3:
+                    continue
+                chrom = cols[0].strip()
+                try:
+                    mapped = int(cols[2])
+                except Exception:
+                    continue
+                out["total_mapped"] += mapped
+                c = chrom.upper()
+                if c in ("MT", "CHRM"):
+                    out["mt_mapped"] += mapped
+                elif c == "X" or c == "CHRX":
+                    out["x_mapped"] += mapped
+                elif c == "Y" or c == "CHRY":
+                    out["y_mapped"] += mapped
+                elif re.fullmatch(r'(CHR)?([1-9]|1[0-9]|2[0-2])', c):
+                    out["autosomal_mapped"] += mapped
+    except Exception:
+        return out
+    return out
+
+def _fmt_pct(v):
+    try:
+        return f"{float(v):.2f}%"
+    except Exception:
+        return ""
+
+def atac_alignment_summary_table(flagstat_paths, idxstats_paths):
+    if not flagstat_paths and not idxstats_paths:
+        return "<p><em>No ATAC alignment metrics found.</em></p>"
+    flag_by_sample = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in flagstat_paths }
+    idx_by_sample = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in idxstats_paths }
+    samples = sorted(set(list(flag_by_sample.keys()) + list(idx_by_sample.keys())))
     rows = []
-    for p in sorted(paths):
-        sample = sample_from_report_path(p) or os.path.basename(os.path.dirname(p))
-        m = parse_flagstat_metrics(p)
+    for sample in samples:
+        f = parse_flagstat_metrics(flag_by_sample[sample]) if sample in flag_by_sample else {}
+        i = parse_idxstats_metrics(idx_by_sample[sample]) if sample in idx_by_sample else {}
+        total_mapped = i.get("total_mapped", 0)
+        mt_frac = (100.0 * i.get("mt_mapped", 0) / total_mapped) if total_mapped > 0 else 0.0
         rows.append([
             sample,
-            m["in_total"],
-            m["mapped_pct"],
-            m["properly_paired_pct"],
-            m["duplicates_pct"],
+            f.get("in_total", ""),
+            f.get("properly_paired_pct", ""),
+            f.get("singletons_pct", ""),
+            f.get("mate_diff_chr_count", ""),
+            _fmt_pct(mt_frac),
+            f"{i.get('autosomal_mapped', 0):,}",
+            f"{i.get('x_mapped', 0):,}",
+            f"{i.get('y_mapped', 0):,}",
         ])
     cells = []
     cells.append(
         "<tr>"
         "<th>Sample</th>"
         "<th>Total reads (flagstat)</th>"
-        "<th>Mapped %</th>"
         "<th>Properly paired %</th>"
-        "<th>Duplicates %</th>"
+        "<th>Singleton %</th>"
+        "<th>Mate on different chr</th>"
+        "<th>Mitochondrial fraction</th>"
+        "<th>Autosomal mapped</th>"
+        "<th>X mapped</th>"
+        "<th>Y mapped</th>"
         "</tr>"
     )
     for row in rows:
         cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in row) + "</tr>")
     return "<table>" + "".join(cells) + "</table>"
+
+def atac_sample_metric_cards(sample, flagstat_paths, idxstats_paths):
+    flag = parse_flagstat_metrics(flagstat_paths[0]) if flagstat_paths else {}
+    idx = parse_idxstats_metrics(idxstats_paths[0]) if idxstats_paths else {}
+    total_mapped = idx.get("total_mapped", 0)
+    mt_frac = (100.0 * idx.get("mt_mapped", 0) / total_mapped) if total_mapped > 0 else 0.0
+    cards = []
+    cards.append('<div class="kpi-grid">')
+    cards.append(f'<div class="kpi-card"><div class="kpi-label">Sample</div><div class="kpi-value">{html.escape(sample)}</div></div>')
+    cards.append(f'<div class="kpi-card"><div class="kpi-label">Total reads</div><div class="kpi-value">{html.escape(flag.get("in_total", "N/A"))}</div></div>')
+    cards.append(f'<div class="kpi-card"><div class="kpi-label">Properly paired</div><div class="kpi-value">{html.escape(flag.get("properly_paired_pct", "N/A"))}</div></div>')
+    cards.append(f'<div class="kpi-card"><div class="kpi-label">Singletons</div><div class="kpi-value">{html.escape(flag.get("singletons_pct", "N/A"))}</div></div>')
+    cards.append(f'<div class="kpi-card"><div class="kpi-label">Mate diff chr</div><div class="kpi-value">{html.escape(flag.get("mate_diff_chr_count", "N/A"))}</div></div>')
+    cards.append(f'<div class="kpi-card"><div class="kpi-label">Mitochondrial fraction</div><div class="kpi-value">{_fmt_pct(mt_frac)}</div></div>')
+    cards.append('</div>')
+    return "".join(cards)
 
 demux_total = rel_list("demux/*.total_number_reads.tsv")
 demux_stats = sorted(set(
@@ -1623,11 +1706,14 @@ knee_plots = sorted(set(
 barcodes_stats = rel_list("STARsolo/*/Solo.out/Barcodes.stats") + rel_list("STARsolo_paired/*/Solo.out/Barcodes.stats")
 summary_csv = rel_list("STARsolo/*/Solo.out/GeneFull/Summary.csv") + rel_list("STARsolo_paired/*/Solo.out/GeneFull/Summary.csv")
 barnyard = rel_list("STARsolo/*/*collision_plot.png") + rel_list("STARsolo_paired/*/*collision_plot.png")
-atac_flagstat = rel_list("ATAC/*/*.flagstat.txt")
-atac_idxstats = rel_list("ATAC/*/*.idxstats.txt")
-atac_stats = rel_list("ATAC/*/*.stats.txt")
+atac_flagstat_rmdup = rel_list("ATAC/*/*.q30.rmdup.flagstat.txt")
+atac_idxstats_rmdup = rel_list("ATAC/*/*.q30.rmdup.idxstats.txt")
+atac_stats_rmdup = rel_list("ATAC/*/*.q30.rmdup.stats.txt")
+atac_flagstat_prededup = rel_list("ATAC/*/*.q30.mapped.flagstat.txt")
+atac_idxstats_prededup = rel_list("ATAC/*/*.q30.mapped.idxstats.txt")
+atac_stats_prededup = rel_list("ATAC/*/*.q30.mapped.stats.txt")
 sample_names = sorted(set(
-    [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard + atac_flagstat + atac_idxstats + atac_stats) if sample_from_report_path(p)]
+    [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup) if sample_from_report_path(p)]
     + list(load_demux_sample_names(demux_stats))
 ))
 starsolo_by_sample = starsolo_metrics_by_sample(starsolo_logs)
@@ -1937,17 +2023,21 @@ parts.append("</section>")
 
 parts.append('<section id="sec-atac">')
 parts.append("<h2>ATAC QC</h2>")
-parts.append('<div class="starsolo-block"><h3>ATAC Alignment Summary (flagstat)</h3>')
-parts.append(atac_flagstat_summary_table(atac_flagstat))
+parts.append('<div class="starsolo-block"><h3>ATAC Alignment Summary (post-dedup)</h3>')
+parts.append(atac_alignment_summary_table(atac_flagstat_rmdup, atac_idxstats_rmdup))
 parts.append("</div>")
-parts.append('<div class="starsolo-block"><h3>ATAC flagstat</h3>')
-parts.append(text_files_block("ATAC/<sample>/*.flagstat.txt", atac_flagstat, max_lines=80))
+parts.append('<div class="starsolo-block"><h3>ATAC Pre-dedup Snapshot (MAPQ>=30)</h3>')
+parts.append(atac_alignment_summary_table(atac_flagstat_prededup, atac_idxstats_prededup))
 parts.append("</div>")
-parts.append('<div class="starsolo-block"><h3>ATAC idxstats</h3>')
-parts.append(text_files_block("ATAC/<sample>/*.idxstats.txt", atac_idxstats, max_lines=80))
+parts.append('<div class="starsolo-block"><h3>ATAC post-dedup flagstat</h3>')
+parts.append(text_files_block("ATAC/<sample>/*.q30.rmdup.flagstat.txt", atac_flagstat_rmdup, max_lines=80))
 parts.append("</div>")
-parts.append('<div class="starsolo-block"><h3>ATAC stats</h3>')
-parts.append(links_block("ATAC/<sample>/*.stats.txt", atac_stats))
+parts.append('<div class="starsolo-block"><h3>ATAC post-dedup idxstats</h3>')
+parts.append(text_files_block("ATAC/<sample>/*.q30.rmdup.idxstats.txt", atac_idxstats_rmdup, max_lines=80))
+parts.append("</div>")
+parts.append('<div class="starsolo-block"><h3>ATAC stats files</h3>')
+parts.append(links_block("ATAC/<sample>/*.q30.rmdup.stats.txt", atac_stats_rmdup))
+parts.append(links_block("ATAC/<sample>/*.q30.mapped.stats.txt", atac_stats_prededup))
 parts.append("</div>")
 parts.append("</section>")
 
@@ -1994,7 +2084,7 @@ def sample_from_atac_path(rel_path):
     return None
 
 all_sample_candidates = set()
-for p in starsolo_logs + knee_plots + barcodes_stats + summary_csv + barnyard + atac_flagstat + atac_idxstats + atac_stats:
+for p in starsolo_logs + knee_plots + barcodes_stats + summary_csv + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup:
     s = sample_from_starsolo_path(p)
     if s:
         all_sample_candidates.add(s)
@@ -2013,9 +2103,12 @@ for sample in sorted(all_sample_candidates):
     sample_barcodes = [p for p in barcodes_stats if sample_from_starsolo_path(p) == sample]
     sample_summary = [p for p in summary_csv if sample_from_starsolo_path(p) == sample]
     sample_barnyard = [p for p in barnyard if sample_from_starsolo_path(p) == sample]
-    sample_atac_flagstat = [p for p in atac_flagstat if sample_from_atac_path(p) == sample]
-    sample_atac_idxstats = [p for p in atac_idxstats if sample_from_atac_path(p) == sample]
-    sample_atac_stats = [p for p in atac_stats if sample_from_atac_path(p) == sample]
+    sample_atac_flagstat_rmdup = [p for p in atac_flagstat_rmdup if sample_from_atac_path(p) == sample]
+    sample_atac_idxstats_rmdup = [p for p in atac_idxstats_rmdup if sample_from_atac_path(p) == sample]
+    sample_atac_stats_rmdup = [p for p in atac_stats_rmdup if sample_from_atac_path(p) == sample]
+    sample_atac_flagstat_prededup = [p for p in atac_flagstat_prededup if sample_from_atac_path(p) == sample]
+    sample_atac_idxstats_prededup = [p for p in atac_idxstats_prededup if sample_from_atac_path(p) == sample]
+    sample_atac_stats_prededup = [p for p in atac_stats_prededup if sample_from_atac_path(p) == sample]
 
     def sample_image_block(title, paths):
         if not paths:
@@ -2090,11 +2183,18 @@ for sample in sorted(all_sample_candidates):
 ''')
     sample_parts.append("<h2>Demultiplexing (this sample)</h2>")
     sample_parts.append(demux_stats_html_for_sample(demux_stats, sample))
-    if sample_atac_flagstat or sample_atac_idxstats or sample_atac_stats:
+    if sample_atac_flagstat_rmdup or sample_atac_idxstats_rmdup or sample_atac_stats_rmdup or sample_atac_flagstat_prededup or sample_atac_idxstats_prededup or sample_atac_stats_prededup:
         sample_parts.append("<h2>ATAC QC (this sample)</h2>")
-        sample_parts.append(text_files_block("ATAC flagstat", sample_atac_flagstat, max_lines=120))
-        sample_parts.append(text_files_block("ATAC idxstats", sample_atac_idxstats, max_lines=120))
-        sample_parts.append(links_block("ATAC stats", sample_atac_stats))
+        sample_parts.append(atac_sample_metric_cards(sample, sample_atac_flagstat_rmdup, sample_atac_idxstats_rmdup))
+        sample_parts.append("<h3>Post-dedup flagstat</h3>")
+        sample_parts.append(text_files_block("ATAC post-dedup flagstat", sample_atac_flagstat_rmdup, max_lines=120))
+        sample_parts.append("<h3>Post-dedup idxstats</h3>")
+        sample_parts.append(text_files_block("ATAC post-dedup idxstats", sample_atac_idxstats_rmdup, max_lines=120))
+        sample_parts.append(links_block("ATAC post-dedup stats", sample_atac_stats_rmdup))
+        sample_parts.append("<h3>Pre-dedup snapshot (MAPQ>=30)</h3>")
+        sample_parts.append(text_files_block("ATAC pre-dedup flagstat", sample_atac_flagstat_prededup, max_lines=120))
+        sample_parts.append(text_files_block("ATAC pre-dedup idxstats", sample_atac_idxstats_prededup, max_lines=120))
+        sample_parts.append(links_block("ATAC pre-dedup stats", sample_atac_stats_prededup))
     sample_parts.append(text_files_block("Log.final.out", sample_logs, max_lines=120))
     sample_parts.append(sample_image_block("Knee plots", sample_knee))
     sample_parts.append(text_files_block("Barcodes.stats", sample_barcodes, max_lines=120))
