@@ -766,11 +766,6 @@ process BWA_ALIGN_ATAC {
       | samtools view -@ ${task.cpus} -b -q 30 -F 4 - \
       > ATAC/${sample_id}/${sample_id}.q30.mapped.bam
 
-    # Pre-dedup snapshot (after MAPQ filter, before duplicate removal).
-    samtools flagstat ATAC/${sample_id}/${sample_id}.q30.mapped.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.flagstat.txt
-    samtools idxstats ATAC/${sample_id}/${sample_id}.q30.mapped.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.idxstats.txt
-    samtools stats ATAC/${sample_id}/${sample_id}.q30.mapped.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.stats.txt
-
     samtools sort -@ ${task.cpus} -n \
       -o ATAC/${sample_id}/${sample_id}.q30.namesort.bam \
       ATAC/${sample_id}/${sample_id}.q30.mapped.bam
@@ -782,6 +777,12 @@ process BWA_ALIGN_ATAC {
     samtools sort -@ ${task.cpus} \
       -o ATAC/${sample_id}/${sample_id}.q30.possort.bam \
       ATAC/${sample_id}/${sample_id}.q30.fixmate.bam
+
+    # Pre-dedup snapshot (after MAPQ filter, before duplicate removal), from coordinate-sorted BAM.
+    samtools index -@ ${task.cpus} ATAC/${sample_id}/${sample_id}.q30.possort.bam
+    samtools flagstat ATAC/${sample_id}/${sample_id}.q30.possort.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.flagstat.txt
+    samtools idxstats ATAC/${sample_id}/${sample_id}.q30.possort.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.idxstats.txt
+    samtools stats ATAC/${sample_id}/${sample_id}.q30.possort.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.stats.txt
 
     samtools markdup -@ ${task.cpus} -r \
       ATAC/${sample_id}/${sample_id}.q30.possort.bam \
@@ -796,7 +797,8 @@ process BWA_ALIGN_ATAC {
       ATAC/${sample_id}/${sample_id}.q30.mapped.bam \
       ATAC/${sample_id}/${sample_id}.q30.namesort.bam \
       ATAC/${sample_id}/${sample_id}.q30.fixmate.bam \
-      ATAC/${sample_id}/${sample_id}.q30.possort.bam
+      ATAC/${sample_id}/${sample_id}.q30.possort.bam \
+      ATAC/${sample_id}/${sample_id}.q30.possort.bam.bai
     """
 }
 
