@@ -2184,6 +2184,11 @@ for sample in sorted(all_sample_candidates):
     sample_atac_stats_prededup = [p for p in atac_stats_prededup if sample_from_atac_path(p) == sample]
     has_atac = bool(sample_atac_flagstat_rmdup or sample_atac_idxstats_rmdup or sample_atac_stats_rmdup or sample_atac_flagstat_prededup or sample_atac_idxstats_prededup or sample_atac_stats_prededup)
     has_rna = bool(sample_logs or sample_knee or sample_barcodes or sample_summary or sample_barnyard)
+    sample_tabs = [("sec-demux", "Demultiplexing")]
+    if has_atac:
+        sample_tabs.append(("sec-atac", "ATAC QC"))
+    if has_rna:
+        sample_tabs.append(("sec-rna", "RNA QC"))
 
     def sample_image_block(title, paths):
         if not paths:
@@ -2212,6 +2217,36 @@ for sample in sorted(all_sample_candidates):
             return f"<h3>{html.escape(title)}</h3><p><em>No readable files found.</em></p>"
         return f"<h3>{html.escape(title)}</h3><ul>{''.join(items)}</ul>"
 
+    def atac_pre_post_table(sample):
+        pre_flag = parse_flagstat_metrics(sample_atac_flagstat_prededup[0]) if sample_atac_flagstat_prededup else {}
+        pre_idx = parse_idxstats_metrics(sample_atac_idxstats_prededup[0]) if sample_atac_idxstats_prededup else {}
+        post_flag = parse_flagstat_metrics(sample_atac_flagstat_rmdup[0]) if sample_atac_flagstat_rmdup else {}
+        post_idx = parse_idxstats_metrics(sample_atac_idxstats_rmdup[0]) if sample_atac_idxstats_rmdup else {}
+
+        pre_total = _to_int(pre_flag.get("in_total", ""))
+        post_total = _to_int(post_flag.get("in_total", ""))
+        retained_pct = (100.0 * post_total / pre_total) if (pre_total and post_total is not None and pre_total > 0) else None
+        removed_pct = (100.0 - retained_pct) if retained_pct is not None else None
+        pre_mt = (100.0 * pre_idx.get("mt_mapped", 0) / pre_idx.get("total_mapped", 1)) if pre_idx.get("total_mapped", 0) > 0 else 0.0
+        post_mt = (100.0 * post_idx.get("mt_mapped", 0) / post_idx.get("total_mapped", 1)) if post_idx.get("total_mapped", 0) > 0 else 0.0
+
+        rows = [
+            ("Total reads", pre_flag.get("in_total", ""), post_flag.get("in_total", "")),
+            ("Properly paired %", pre_flag.get("properly_paired_pct", ""), post_flag.get("properly_paired_pct", "")),
+            ("Singleton %", pre_flag.get("singletons_pct", ""), post_flag.get("singletons_pct", "")),
+            ("Mate on different chr", pre_flag.get("mate_diff_chr_count", ""), post_flag.get("mate_diff_chr_count", "")),
+            ("Mitochondrial fraction", _fmt_pct(pre_mt), _fmt_pct(post_mt)),
+            ("Autosomal mapped", f"{pre_idx.get('autosomal_mapped', 0):,}", f"{post_idx.get('autosomal_mapped', 0):,}"),
+            ("X mapped", f"{pre_idx.get('x_mapped', 0):,}", f"{post_idx.get('x_mapped', 0):,}"),
+            ("Y mapped", f"{pre_idx.get('y_mapped', 0):,}", f"{post_idx.get('y_mapped', 0):,}"),
+            ("Reads retained", "", _fmt_pct(retained_pct) if retained_pct is not None else ""),
+            ("Reads removed", "", _fmt_pct(removed_pct) if removed_pct is not None else ""),
+        ]
+        cells = ['<tr><th>Metric</th><th>Pre-dedup (.q30.mapped)</th><th>Post-dedup (.q30.rmdup)</th></tr>']
+        for m, pre_v, post_v in rows:
+            cells.append(f"<tr><td>{html.escape(str(m))}</td><td>{html.escape(str(pre_v))}</td><td>{html.escape(str(post_v))}</td></tr>")
+        return "<table>" + "".join(cells) + "</table>"
+
     sample_parts = []
     sample_parts.append(f'''<!doctype html>
 <html>
@@ -2229,6 +2264,7 @@ for sample in sorted(all_sample_candidates):
       line-height: 1.55;
       padding: 0 12px;
       background: #ffffff;
+      scroll-padding-top: 78px;
     }}
     h1, h2, h3 {{
       color: #000000;
@@ -2264,32 +2300,96 @@ for sample in sorted(all_sample_candidates):
     }}
     th {{ background: #ffffff; font-weight: 700; text-align: left; color: #000000; }}
     tr:nth-child(even) td {{ background: #ffffff; }}
+    .top-banner {{
+      background: #d11947;
+      color: #ffffff;
+      border-radius: 10px;
+      padding: 12px 14px 12px 14px;
+      margin: 0 0 14px 0;
+      box-shadow: 0 2px 6px rgba(141, 0, 52, 0.22);
+    }}
+    .top-banner h1, .top-banner p, .top-banner code {{ color: #ffffff; }}
+    .top-banner code {{
+      background: rgba(255, 255, 255, 0.14);
+      border: 1px solid rgba(255, 255, 255, 0.45);
+    }}
+    section {{
+      padding: 10px 14px 8px 14px;
+      margin: 8px 0 14px 0;
+      background: #ffffff;
+      border: 1px solid #dfe1df;
+      border-radius: 10px;
+      scroll-margin-top: 90px;
+    }}
+    .tabs-wrap {{
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      background: #d11947;
+      border-radius: 0 0 8px 8px;
+      padding: 8px 0 6px 0;
+      margin-bottom: 14px;
+      box-shadow: 0 2px 4px rgba(141, 0, 52, 0.18);
+    }}
+    .tabs {{
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin: 0 6px;
+    }}
+    .tabs a {{
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      border-radius: 8px;
+      padding: 6px 10px;
+      background: rgba(255, 255, 255, 0.14);
+    }}
+    .tabs a:hover {{
+      background: rgba(255, 255, 255, 0.26);
+      border-color: #ffffff;
+    }}
   </style>
 </head>
 <body>
+<div class="top-banner">
 <h1>SHARE-seq QC Report: {html.escape(sample)}</h1>
 <p>Project path: <code>{html.escape(proj)}</code></p>
+</div>
 ''')
-    sample_parts.append("<h2>Demultiplexing (this sample)</h2>")
+    sample_parts.append('<div class="tabs-wrap"><div class="tabs">')
+    for sec_id, sec_label in sample_tabs:
+        sample_parts.append(f'<a href="#{html.escape(sec_id)}">{html.escape(sec_label)}</a>')
+    sample_parts.append("</div></div>")
+    sample_parts.append('<section id="sec-demux">')
+    sample_parts.append("<h2>Demultiplexing</h2>")
     sample_parts.append(demux_stats_html_for_sample(demux_stats, sample))
+    sample_parts.append("</section>")
     if has_atac:
-        sample_parts.append("<h2>ATAC QC (this sample)</h2>")
-        sample_parts.append(atac_sample_metric_cards(sample, sample_atac_flagstat_rmdup, sample_atac_idxstats_rmdup))
-        sample_parts.append("<h3>Post-dedup flagstat</h3>")
-        sample_parts.append(text_files_block("ATAC post-dedup flagstat", sample_atac_flagstat_rmdup, max_lines=120))
-        sample_parts.append("<h3>Post-dedup idxstats</h3>")
-        sample_parts.append(text_files_block("ATAC post-dedup idxstats", sample_atac_idxstats_rmdup, max_lines=120))
-        sample_parts.append(sample_links_block("ATAC post-dedup stats", sample_atac_stats_rmdup))
-        sample_parts.append("<h3>Pre-dedup snapshot (MAPQ>=30)</h3>")
-        sample_parts.append(text_files_block("ATAC pre-dedup flagstat", sample_atac_flagstat_prededup, max_lines=120))
-        sample_parts.append(text_files_block("ATAC pre-dedup idxstats", sample_atac_idxstats_prededup, max_lines=120))
-        sample_parts.append(sample_links_block("ATAC pre-dedup stats", sample_atac_stats_prededup))
+        sample_parts.append('<section id="sec-atac">')
+        sample_parts.append("<h2>ATAC QC</h2>")
+        sample_parts.append(atac_pre_post_table(sample))
+        sample_parts.append("<h3>Pre-dedup files (.q30.mapped)</h3>")
+        sample_parts.append(sample_links_block("flagstat", sample_atac_flagstat_prededup))
+        sample_parts.append(sample_links_block("idxstats", sample_atac_idxstats_prededup))
+        sample_parts.append(sample_links_block("stats", sample_atac_stats_prededup))
+        sample_parts.append("<h3>Post-dedup files (.q30.rmdup)</h3>")
+        sample_parts.append(sample_links_block("flagstat", sample_atac_flagstat_rmdup))
+        sample_parts.append(sample_links_block("idxstats", sample_atac_idxstats_rmdup))
+        sample_parts.append(sample_links_block("stats", sample_atac_stats_rmdup))
+        sample_parts.append("</section>")
     if has_rna:
+        sample_parts.append('<section id="sec-rna">')
+        sample_parts.append("<h2>RNA QC</h2>")
         sample_parts.append(text_files_block("Log.final.out", sample_logs, max_lines=120))
         sample_parts.append(sample_image_block("Knee plots", sample_knee))
         sample_parts.append(text_files_block("Barcodes.stats", sample_barcodes, max_lines=120))
         sample_parts.append(table_files_block("GeneFull Summary.csv", sample_summary, max_rows=20))
         sample_parts.append(sample_image_block("Barnyard plots (if hybrid)", sample_barnyard))
+        sample_parts.append("</section>")
     sample_parts.append("</body></html>")
 
     with open(os.path.join(sample_root, "index.html"), "w") as sf:
