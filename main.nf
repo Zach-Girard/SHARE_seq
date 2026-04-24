@@ -2217,11 +2217,28 @@ for sample in sorted(all_sample_candidates):
             return f"<h3>{html.escape(title)}</h3><p><em>No readable files found.</em></p>"
         return f"<h3>{html.escape(title)}</h3><ul>{''.join(items)}</ul>"
 
+    def prefer_path(paths, must_contain):
+        if not paths:
+            return None
+        preferred = [p for p in paths if must_contain in p]
+        pool = preferred if preferred else paths
+        return sorted(pool)[0] if pool else None
+
+    def filter_paths(paths, must_contain):
+        if not paths:
+            return []
+        return sorted([p for p in paths if must_contain in p])
+
     def atac_pre_post_table(sample):
-        pre_flag = parse_flagstat_metrics(sample_atac_flagstat_prededup[0]) if sample_atac_flagstat_prededup else {}
-        pre_idx = parse_idxstats_metrics(sample_atac_idxstats_prededup[0]) if sample_atac_idxstats_prededup else {}
-        post_flag = parse_flagstat_metrics(sample_atac_flagstat_rmdup[0]) if sample_atac_flagstat_rmdup else {}
-        post_idx = parse_idxstats_metrics(sample_atac_idxstats_rmdup[0]) if sample_atac_idxstats_rmdup else {}
+        pre_flag_path = prefer_path(sample_atac_flagstat_prededup, ".q30.mapped.flagstat.txt")
+        pre_idx_path = prefer_path(sample_atac_idxstats_prededup, ".q30.mapped.idxstats.txt")
+        post_flag_path = prefer_path(sample_atac_flagstat_rmdup, ".q30.rmdup.flagstat.txt")
+        post_idx_path = prefer_path(sample_atac_idxstats_rmdup, ".q30.rmdup.idxstats.txt")
+
+        pre_flag = parse_flagstat_metrics(pre_flag_path) if pre_flag_path else {}
+        pre_idx = parse_idxstats_metrics(pre_idx_path) if pre_idx_path else {}
+        post_flag = parse_flagstat_metrics(post_flag_path) if post_flag_path else {}
+        post_idx = parse_idxstats_metrics(post_idx_path) if post_idx_path else {}
 
         pre_total = _to_int(pre_flag.get("in_total", ""))
         post_total = _to_int(post_flag.get("in_total", ""))
@@ -2369,17 +2386,23 @@ for sample in sorted(all_sample_candidates):
     sample_parts.append(demux_stats_html_for_sample(demux_stats, sample))
     sample_parts.append("</section>")
     if has_atac:
+        pre_flag_links = filter_paths(sample_atac_flagstat_prededup, ".q30.mapped.flagstat.txt")
+        pre_idx_links = filter_paths(sample_atac_idxstats_prededup, ".q30.mapped.idxstats.txt")
+        pre_stats_links = filter_paths(sample_atac_stats_prededup, ".q30.mapped.stats.txt")
+        post_flag_links = filter_paths(sample_atac_flagstat_rmdup, ".q30.rmdup.flagstat.txt")
+        post_idx_links = filter_paths(sample_atac_idxstats_rmdup, ".q30.rmdup.idxstats.txt")
+        post_stats_links = filter_paths(sample_atac_stats_rmdup, ".q30.rmdup.stats.txt")
         sample_parts.append('<section id="sec-atac">')
         sample_parts.append("<h2>ATAC QC</h2>")
         sample_parts.append(atac_pre_post_table(sample))
         sample_parts.append("<h3>Pre-dedup files (.q30.mapped)</h3>")
-        sample_parts.append(sample_links_block("flagstat", sample_atac_flagstat_prededup))
-        sample_parts.append(sample_links_block("idxstats", sample_atac_idxstats_prededup))
-        sample_parts.append(sample_links_block("stats", sample_atac_stats_prededup))
+        sample_parts.append(sample_links_block("flagstat", pre_flag_links))
+        sample_parts.append(sample_links_block("idxstats", pre_idx_links))
+        sample_parts.append(sample_links_block("stats", pre_stats_links))
         sample_parts.append("<h3>Post-dedup files (.q30.rmdup)</h3>")
-        sample_parts.append(sample_links_block("flagstat", sample_atac_flagstat_rmdup))
-        sample_parts.append(sample_links_block("idxstats", sample_atac_idxstats_rmdup))
-        sample_parts.append(sample_links_block("stats", sample_atac_stats_rmdup))
+        sample_parts.append(sample_links_block("flagstat", post_flag_links))
+        sample_parts.append(sample_links_block("idxstats", post_idx_links))
+        sample_parts.append(sample_links_block("stats", post_stats_links))
         sample_parts.append("</section>")
     if has_rna:
         sample_parts.append('<section id="sec-rna">')
