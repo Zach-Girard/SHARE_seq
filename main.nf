@@ -1630,6 +1630,12 @@ def _fmt_pct(v):
     except Exception:
         return ""
 
+def _to_int(s):
+    try:
+        return int(str(s).replace(",", "").strip())
+    except Exception:
+        return None
+
 def atac_alignment_summary_table(flagstat_paths, idxstats_paths):
     if not flagstat_paths and not idxstats_paths:
         return "<p><em>No ATAC alignment metrics found.</em></p>"
@@ -1665,6 +1671,63 @@ def atac_alignment_summary_table(flagstat_paths, idxstats_paths):
         "<th>Autosomal mapped</th>"
         "<th>X mapped</th>"
         "<th>Y mapped</th>"
+        "</tr>"
+    )
+    for row in rows:
+        cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in row) + "</tr>")
+    return "<table>" + "".join(cells) + "</table>"
+
+def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, flagstat_rmdup_paths, idxstats_rmdup_paths):
+    samples = sorted(set(
+        [sample_from_report_path(p) or os.path.basename(os.path.dirname(p)) for p in (flagstat_prededup_paths + idxstats_prededup_paths + flagstat_rmdup_paths + idxstats_rmdup_paths)]
+    ))
+    if not samples:
+        return "<p><em>No ATAC alignment metrics found.</em></p>"
+
+    pre_flag = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in flagstat_prededup_paths }
+    pre_idx = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in idxstats_prededup_paths }
+    post_flag = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in flagstat_rmdup_paths }
+    post_idx = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in idxstats_rmdup_paths }
+
+    rows = []
+    for s in samples:
+        pf = parse_flagstat_metrics(pre_flag[s]) if s in pre_flag else {}
+        pi = parse_idxstats_metrics(pre_idx[s]) if s in pre_idx else {}
+        rf = parse_flagstat_metrics(post_flag[s]) if s in post_flag else {}
+        ri = parse_idxstats_metrics(post_idx[s]) if s in post_idx else {}
+
+        pre_total = _to_int(pf.get("in_total", ""))
+        post_total = _to_int(rf.get("in_total", ""))
+        retained_pct = (100.0 * post_total / pre_total) if (pre_total and post_total is not None and pre_total > 0) else None
+        removed_pct = (100.0 - retained_pct) if retained_pct is not None else None
+
+        pre_mt = (100.0 * pi.get("mt_mapped", 0) / pi.get("total_mapped", 1)) if pi.get("total_mapped", 0) > 0 else 0.0
+        post_mt = (100.0 * ri.get("mt_mapped", 0) / ri.get("total_mapped", 1)) if ri.get("total_mapped", 0) > 0 else 0.0
+
+        rows.append([
+            s,
+            pf.get("in_total", ""),
+            pf.get("properly_paired_pct", ""),
+            _fmt_pct(pre_mt),
+            rf.get("in_total", ""),
+            rf.get("properly_paired_pct", ""),
+            _fmt_pct(post_mt),
+            _fmt_pct(retained_pct) if retained_pct is not None else "",
+            _fmt_pct(removed_pct) if removed_pct is not None else "",
+        ])
+
+    cells = []
+    cells.append(
+        "<tr>"
+        "<th>Sample</th>"
+        "<th>Reads pre-dedup</th>"
+        "<th>Properly paired % pre</th>"
+        "<th>MT % pre</th>"
+        "<th>Reads post-dedup</th>"
+        "<th>Properly paired % post</th>"
+        "<th>MT % post</th>"
+        "<th>Reads retained</th>"
+        "<th>Reads removed</th>"
         "</tr>"
     )
     for row in rows:
@@ -2034,6 +2097,15 @@ parts.append("</section>")
 
 parts.append('<section id="sec-atac">')
 parts.append("<h2>ATAC QC</h2>")
+parts.append(
+    "<p><strong>What these files mean:</strong> "
+    "<code>.q30.mapped</code> metrics are captured after MAPQ>=30 filtering and before duplicate removal. "
+    "<code>.q30.rmdup</code> metrics are captured after duplicate removal. "
+    "Use the difference to estimate duplicate burden and retained unique signal.</p>"
+)
+parts.append('<div class="starsolo-block"><h3>ATAC Key Summary by Sample</h3>')
+parts.append(atac_key_summary_table(atac_flagstat_prededup, atac_idxstats_prededup, atac_flagstat_rmdup, atac_idxstats_rmdup))
+parts.append("</div>")
 parts.append('<div class="starsolo-block"><h3>ATAC Alignment Summary (post-dedup)</h3>')
 parts.append(atac_alignment_summary_table(atac_flagstat_rmdup, atac_idxstats_rmdup))
 parts.append("</div>")
