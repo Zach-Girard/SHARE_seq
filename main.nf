@@ -1708,9 +1708,18 @@ knee_plots = sorted(set(
 barcodes_stats = rel_list("STARsolo/*/Solo.out/Barcodes.stats") + rel_list("STARsolo_paired/*/Solo.out/Barcodes.stats")
 summary_csv = rel_list("STARsolo/*/Solo.out/GeneFull/Summary.csv") + rel_list("STARsolo_paired/*/Solo.out/GeneFull/Summary.csv")
 barnyard = rel_list("STARsolo/*/*collision_plot.png") + rel_list("STARsolo_paired/*/*collision_plot.png")
-atac_flagstat_rmdup = rel_list("ATAC/*/*.q30.rmdup.flagstat.txt")
-atac_idxstats_rmdup = rel_list("ATAC/*/*.q30.rmdup.idxstats.txt")
-atac_stats_rmdup = rel_list("ATAC/*/*.q30.rmdup.stats.txt")
+atac_flagstat_rmdup = sorted(set(
+    rel_list("ATAC/*/*.q30.rmdup.flagstat.txt") +
+    rel_list("ATAC/*/*.flagstat.txt")
+))
+atac_idxstats_rmdup = sorted(set(
+    rel_list("ATAC/*/*.q30.rmdup.idxstats.txt") +
+    rel_list("ATAC/*/*.idxstats.txt")
+))
+atac_stats_rmdup = sorted(set(
+    rel_list("ATAC/*/*.q30.rmdup.stats.txt") +
+    rel_list("ATAC/*/*.stats.txt")
+))
 atac_flagstat_prededup = rel_list("ATAC/*/*.q30.mapped.flagstat.txt")
 atac_idxstats_prededup = rel_list("ATAC/*/*.q30.mapped.idxstats.txt")
 atac_stats_prededup = rel_list("ATAC/*/*.q30.mapped.stats.txt")
@@ -2111,6 +2120,8 @@ for sample in sorted(all_sample_candidates):
     sample_atac_flagstat_prededup = [p for p in atac_flagstat_prededup if sample_from_atac_path(p) == sample]
     sample_atac_idxstats_prededup = [p for p in atac_idxstats_prededup if sample_from_atac_path(p) == sample]
     sample_atac_stats_prededup = [p for p in atac_stats_prededup if sample_from_atac_path(p) == sample]
+    has_atac = bool(sample_atac_flagstat_rmdup or sample_atac_idxstats_rmdup or sample_atac_stats_rmdup or sample_atac_flagstat_prededup or sample_atac_idxstats_prededup or sample_atac_stats_prededup)
+    has_rna = bool(sample_logs or sample_knee or sample_barcodes or sample_summary or sample_barnyard)
 
     def sample_image_block(title, paths):
         if not paths:
@@ -2185,7 +2196,7 @@ for sample in sorted(all_sample_candidates):
 ''')
     sample_parts.append("<h2>Demultiplexing (this sample)</h2>")
     sample_parts.append(demux_stats_html_for_sample(demux_stats, sample))
-    if sample_atac_flagstat_rmdup or sample_atac_idxstats_rmdup or sample_atac_stats_rmdup or sample_atac_flagstat_prededup or sample_atac_idxstats_prededup or sample_atac_stats_prededup:
+    if has_atac:
         sample_parts.append("<h2>ATAC QC (this sample)</h2>")
         sample_parts.append(atac_sample_metric_cards(sample, sample_atac_flagstat_rmdup, sample_atac_idxstats_rmdup))
         sample_parts.append("<h3>Post-dedup flagstat</h3>")
@@ -2197,11 +2208,12 @@ for sample in sorted(all_sample_candidates):
         sample_parts.append(text_files_block("ATAC pre-dedup flagstat", sample_atac_flagstat_prededup, max_lines=120))
         sample_parts.append(text_files_block("ATAC pre-dedup idxstats", sample_atac_idxstats_prededup, max_lines=120))
         sample_parts.append(links_block("ATAC pre-dedup stats", sample_atac_stats_prededup))
-    sample_parts.append(text_files_block("Log.final.out", sample_logs, max_lines=120))
-    sample_parts.append(sample_image_block("Knee plots", sample_knee))
-    sample_parts.append(text_files_block("Barcodes.stats", sample_barcodes, max_lines=120))
-    sample_parts.append(table_files_block("GeneFull Summary.csv", sample_summary, max_rows=20))
-    sample_parts.append(sample_image_block("Barnyard plots (if hybrid)", sample_barnyard))
+    if has_rna:
+        sample_parts.append(text_files_block("Log.final.out", sample_logs, max_lines=120))
+        sample_parts.append(sample_image_block("Knee plots", sample_knee))
+        sample_parts.append(text_files_block("Barcodes.stats", sample_barcodes, max_lines=120))
+        sample_parts.append(table_files_block("GeneFull Summary.csv", sample_summary, max_rows=20))
+        sample_parts.append(sample_image_block("Barnyard plots (if hybrid)", sample_barnyard))
     sample_parts.append("</body></html>")
 
     with open(os.path.join(sample_root, "index.html"), "w") as sf:
