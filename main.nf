@@ -2112,16 +2112,6 @@ parts.append("</div>")
 parts.append('<div class="starsolo-block"><h3>ATAC Pre-dedup Snapshot (MAPQ>=30)</h3>')
 parts.append(atac_alignment_summary_table(atac_flagstat_prededup, atac_idxstats_prededup))
 parts.append("</div>")
-parts.append('<div class="starsolo-block"><h3>ATAC post-dedup flagstat</h3>')
-parts.append(text_files_block("ATAC/<sample>/*.q30.rmdup.flagstat.txt", atac_flagstat_rmdup, max_lines=80))
-parts.append("</div>")
-parts.append('<div class="starsolo-block"><h3>ATAC post-dedup idxstats</h3>')
-parts.append(text_files_block("ATAC/<sample>/*.q30.rmdup.idxstats.txt", atac_idxstats_rmdup, max_lines=80))
-parts.append("</div>")
-parts.append('<div class="starsolo-block"><h3>ATAC stats files</h3>')
-parts.append(links_block("ATAC/<sample>/*.q30.rmdup.stats.txt", atac_stats_rmdup))
-parts.append(links_block("ATAC/<sample>/*.q30.mapped.stats.txt", atac_stats_prededup))
-parts.append("</div>")
 parts.append("</section>")
 
 parts.append('<section id="sec-starsolo">')
@@ -2208,6 +2198,20 @@ for sample in sorted(all_sample_candidates):
             chunks.append(f'<img src="{html.escape(rel_asset)}" alt="{html.escape(p)}" style="max-width: 1200px; width: 100%; border: 1px solid #ddd; margin-bottom: 14px;" />')
         return "".join(chunks)
 
+    def sample_links_block(title, paths):
+        if not paths:
+            return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
+        items = []
+        for p in paths:
+            asset = stage_asset_in(p, sample_assets)
+            if asset is None:
+                continue
+            rel_asset = os.path.relpath(asset, sample_root)
+            items.append(f'<li><a href="{html.escape(rel_asset)}">{html.escape(p)}</a></li>')
+        if not items:
+            return f"<h3>{html.escape(title)}</h3><p><em>No readable files found.</em></p>"
+        return f"<h3>{html.escape(title)}</h3><ul>{''.join(items)}</ul>"
+
     sample_parts = []
     sample_parts.append(f'''<!doctype html>
 <html>
@@ -2275,11 +2279,11 @@ for sample in sorted(all_sample_candidates):
         sample_parts.append(text_files_block("ATAC post-dedup flagstat", sample_atac_flagstat_rmdup, max_lines=120))
         sample_parts.append("<h3>Post-dedup idxstats</h3>")
         sample_parts.append(text_files_block("ATAC post-dedup idxstats", sample_atac_idxstats_rmdup, max_lines=120))
-        sample_parts.append(links_block("ATAC post-dedup stats", sample_atac_stats_rmdup))
+        sample_parts.append(sample_links_block("ATAC post-dedup stats", sample_atac_stats_rmdup))
         sample_parts.append("<h3>Pre-dedup snapshot (MAPQ>=30)</h3>")
         sample_parts.append(text_files_block("ATAC pre-dedup flagstat", sample_atac_flagstat_prededup, max_lines=120))
         sample_parts.append(text_files_block("ATAC pre-dedup idxstats", sample_atac_idxstats_prededup, max_lines=120))
-        sample_parts.append(links_block("ATAC pre-dedup stats", sample_atac_stats_prededup))
+        sample_parts.append(sample_links_block("ATAC pre-dedup stats", sample_atac_stats_prededup))
     if has_rna:
         sample_parts.append(text_files_block("Log.final.out", sample_logs, max_lines=120))
         sample_parts.append(sample_image_block("Knee plots", sample_knee))
