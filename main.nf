@@ -155,8 +155,11 @@ process SPLIT_UNDETERMINED_FASTQ {
     module load gcc
     command -v ${params.split_fastq_bin} >/dev/null 2>&1 || [ -x "${params.split_fastq_bin}" ] || { echo "ERROR: splitFastq binary not found/executable: ${params.split_fastq_bin}" >&2; exit 1; }
     mkdir -p split_r1 split_r2
-    ${params.split_fastq_bin} -n ${params.split_reads} -i ${r1_undetermined} -o split_r1/Split_${r1stem}
-    ${params.split_fastq_bin} -n ${params.split_reads} -i ${r2_undetermined} -o split_r2/Split_${r2stem}
+    SPLIT_BIN="${params.split_fastq_bin}"
+    R1_IN="$PWD/${r1_undetermined}"
+    R2_IN="$PWD/${r2_undetermined}"
+    ( cd split_r1 && "\${SPLIT_BIN}" -n ${params.split_reads} -i "\${R1_IN}" -o Split_${r1stem} )
+    ( cd split_r2 && "\${SPLIT_BIN}" -n ${params.split_reads} -i "\${R2_IN}" -o Split_${r2stem} )
     # splitFastq may emit plain .fastq (not .gz); normalize to .fastq.gz for demultiplex.py.
     for f in split_r1/*.fastq split_r2/*.fastq; do
       [ -e "\$f" ] || continue
