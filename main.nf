@@ -146,7 +146,7 @@ process SPLIT_UNDETERMINED_FASTQ {
     def r2stem = r2_undetermined.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, '')
     """
     set -Eeuo pipefail
-    trap 'ec=$?; echo "ERROR: SPLIT_UNDETERMINED_FASTQ failed at line ${LINENO}: ${BASH_COMMAND} (exit=${ec})" >&2; exit ${ec}' ERR
+    trap 'ec=\$?; echo "ERROR: SPLIT_UNDETERMINED_FASTQ failed at line \${LINENO}: \${BASH_COMMAND} (exit=\${ec})" >&2; exit \${ec}' ERR
     set -x
     # Ensure environment modules are available in non-login batch shells.
     if ! command -v module >/dev/null 2>&1; then
