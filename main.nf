@@ -2766,6 +2766,7 @@ workflow {
         KNEE_PLOT(ch_starsolo_for_hybrid_qc)
 
         def ch_report_trigger_single = KNEE_PLOT.out.knee_plot
+            .mix(BWA_ALIGN_ATAC.out.atac_align_out)
         if( params.species_model == 'hybrid' ) {
             BARNYARD_PLOT(ch_starsolo_for_hybrid_qc)
             HYBRID_SPLIT_SPECIES(ch_starsolo_for_hybrid_qc)
@@ -2816,6 +2817,7 @@ workflow {
         KNEE_PLOT(ch_starsolo_paired_for_qc)
 
         def ch_report_trigger_paired = KNEE_PLOT.out.knee_plot
+            .mix(BWA_ALIGN_ATAC.out.atac_align_out)
         if( params.species_model == 'hybrid' ) {
             BARNYARD_PLOT(ch_starsolo_paired_for_qc)
             HYBRID_SPLIT_SPECIES(ch_starsolo_paired_for_qc)
