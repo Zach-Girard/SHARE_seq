@@ -146,7 +146,14 @@ process SPLIT_UNDETERMINED_FASTQ {
     def r2stem = r2_undetermined.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, '')
     """
     set -euo pipefail
+    # Ensure environment modules are available in non-login batch shells.
+    if ! command -v module >/dev/null 2>&1; then
+      [ -f /etc/profile.d/modules.sh ] && source /etc/profile.d/modules.sh
+      [ -f /usr/share/Modules/init/bash ] && source /usr/share/Modules/init/bash
+    fi
+    command -v module >/dev/null 2>&1 || { echo "ERROR: Environment modules system unavailable on node" >&2; exit 1; }
     module load gcc
+    command -v ${params.split_fastq_bin} >/dev/null 2>&1 || [ -x "${params.split_fastq_bin}" ] || { echo "ERROR: splitFastq binary not found/executable: ${params.split_fastq_bin}" >&2; exit 1; }
     mkdir -p split_r1 split_r2
     ${params.split_fastq_bin} -n ${params.split_reads} -i ${r1_undetermined} -o split_r1/Split_${r1stem}
     ${params.split_fastq_bin} -n ${params.split_reads} -i ${r2_undetermined} -o split_r2/Split_${r2stem}
