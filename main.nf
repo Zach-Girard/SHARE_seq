@@ -145,25 +145,11 @@ process SPLIT_UNDETERMINED_FASTQ {
     def r1stem = r1_undetermined.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, '')
     def r2stem = r2_undetermined.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, '')
     """
-    set -Eeuo pipefail
-    trap 'ec=\$?; echo "ERROR: SPLIT_UNDETERMINED_FASTQ failed at line \${LINENO}: \${BASH_COMMAND} (exit=\${ec})" >&2; exit \${ec}' ERR
-    set -x
-    # Ensure environment modules are available in non-login batch shells.
-    if ! command -v module >/dev/null 2>&1; then
-      [ -f /etc/profile.d/modules.sh ] && source /etc/profile.d/modules.sh
-      [ -f /usr/share/Modules/init/bash ] && source /usr/share/Modules/init/bash
-    fi
-    command -v module >/dev/null 2>&1 || { echo "ERROR: Environment modules system unavailable on node" >&2; exit 1; }
+    set -euo pipefail
     module load gcc
-    command -v ${params.split_fastq_bin} >/dev/null 2>&1 || [ -x "${params.split_fastq_bin}" ] || { echo "ERROR: splitFastq binary not found/executable: ${params.split_fastq_bin}" >&2; exit 1; }
-    [ -s "${r1_undetermined}" ] || { echo "ERROR: Missing/empty staged R1 input: ${r1_undetermined}" >&2; exit 1; }
-    [ -s "${r2_undetermined}" ] || { echo "ERROR: Missing/empty staged R2 input: ${r2_undetermined}" >&2; exit 1; }
     mkdir -p split_r1 split_r2
-    SPLIT_BIN="${params.split_fastq_bin}"
-    "\${SPLIT_BIN}" -n ${params.split_reads} -i "${r1_undetermined}" -o Split_${r1stem}
-    "\${SPLIT_BIN}" -n ${params.split_reads} -i "${r2_undetermined}" -o Split_${r2stem}
-    mv Split_${r1stem}*.fastq* split_r1/ 2>/dev/null || mv Split_${r1stem}* split_r1/
-    mv Split_${r2stem}*.fastq* split_r2/ 2>/dev/null || mv Split_${r2stem}* split_r2/
+    ${params.split_fastq_bin} -n ${params.split_reads} -i ${r1_undetermined} -o split_r1/Split_${r1stem}
+    ${params.split_fastq_bin} -n ${params.split_reads} -i ${r2_undetermined} -o split_r2/Split_${r2stem}
     # splitFastq may emit plain .fastq (not .gz); normalize to .fastq.gz for demultiplex.py.
     for f in split_r1/*.fastq split_r2/*.fastq; do
       [ -e "\$f" ] || continue
