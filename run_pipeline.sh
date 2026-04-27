@@ -9,7 +9,7 @@
 
 cd "$LS_SUBCWD"
 nextflow run main.nf \
-  --undetermined_r1 Undetermined_S0_R1_001.fastq.gz \
-  --undetermined_r2 Undetermined_S0_R2_001.fastq.gz \
+  --undetermined_r1 Undetermined_S0_001_R1.fastq.gz \
+  --undetermined_r2 Undetermined_S0_001_R2.fastq.gz \
   --sample_barcode_file input.tsv \
   -resume
