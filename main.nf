@@ -1837,7 +1837,7 @@ def parse_atac_cell_summary(rel_path):
             for i, line in enumerate(fh):
                 if i == 0:
                     continue
-                cols = line.rstrip("\n").split("\t", 1)
+                cols = line.rstrip("\\n").split("\\t", 1)
                 if len(cols) == 2:
                     out[cols[0].strip()] = cols[1].strip()
     except Exception:
