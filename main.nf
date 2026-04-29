@@ -2212,7 +2212,7 @@ __SAMPLE_SIDEBAR__
 parts[-1] = parts[-1].replace("__SAMPLE_SIDEBAR__", sample_sidebar_links(sample_names))
 parts[-1] = parts[-1].replace(
     "__BARNYARD_TAB__",
-    '  <a href="#sec-barnyard">Hybrid Barnyard</a>' if params.species_model == 'hybrid' else ""
+    '  <a href="#sec-barnyard">Hybrid Barnyard</a>' if species_model == 'hybrid' else ""
 )
 
 parts.append('<section id="sec-overview">')
