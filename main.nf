@@ -1668,11 +1668,38 @@ def sample_name_matches(sample, candidate):
     c = str(candidate).strip()
     if c == s:
         return True
-    tokens = [f"{s}.", f"{s}_", f"{s}-", f"/{s}/"]
-    return any(t in c for t in tokens) or (s in c)
+    s_l = s.lower()
+    c_l = c.lower()
+    if c_l == s_l:
+        return True
+
+    # MultiQC often stores full paths / filenames; compare against basename too.
+    c_base = os.path.basename(c_l)
+
+    def _norm(x):
+        y = x
+        y = y.replace(".fastq.gz", "").replace(".fq.gz", "")
+        y = y.replace(".bam", "").replace(".txt", "")
+        y = y.replace(".q30.rmdup.sorted", "").replace(".q30.rmdup", "")
+        y = y.replace(".q30.possort", "").replace(".q30.mapped", "")
+        y = y.replace(".flagstat", "").replace(".idxstats", "").replace(".stats", "")
+        return y
+
+    s_n = _norm(s_l)
+    c_n = _norm(c_l)
+    c_base_n = _norm(c_base)
+
+    # Allow exact and containment matches after normalization.
+    if s_n == c_n or s_n == c_base_n:
+        return True
+    if s_n in c_n or s_n in c_base_n:
+        return True
+    if c_n in s_n or c_base_n in s_n:
+        return True
+    return False
 
 def multiqc_rows_html_for_sample(rel_paths, sample):
-    blocks = []
+    records = []
     for rel in rel_paths:
         abs_path = os.path.join(proj, rel)
         if not os.path.isfile(abs_path):
@@ -1686,23 +1713,105 @@ def multiqc_rows_html_for_sample(rel_paths, sample):
         if not all_rows:
             continue
         header = all_rows[0]
-        body = []
         for r in all_rows[1:]:
             if not r:
                 continue
             name = r[0] if len(r) > 0 else ""
             if sample_name_matches(sample, name):
-                body.append(r)
-        if not body:
-            continue
-        cells = []
-        cells.append("<tr>" + "".join(f"<th>{html.escape(str(c))}</th>" for c in header) + "</tr>")
-        for r in body:
-            cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in r) + "</tr>")
-        blocks.append(f"<h4>{html.escape(rel)}</h4><table>{''.join(cells)}</table>")
-    if not blocks:
+                row_map = {}
+                for i, col in enumerate(header):
+                    key = str(col).strip()
+                    if not key:
+                        continue
+                    row_map[key] = r[i] if i < len(r) else ""
+                records.append({
+                    "source": rel,
+                    "sample_name": name,
+                    "row": r,
+                    "header": header,
+                    "map": row_map,
+                })
+
+    if not records:
         return "<h3>ATAC MultiQC sample metrics</h3><p><em>No MultiQC rows found for this sample.</em></p>"
-    return "<h3>ATAC MultiQC sample metrics</h3>" + "".join(blocks)
+
+    def _to_float(v):
+        try:
+            return float(str(v).replace("%", "").replace(",", "").strip())
+        except Exception:
+            return None
+
+    def _fmt_num(v):
+        f = _to_float(v)
+        if f is None:
+            return ""
+        return f"{f:.3f}".rstrip("0").rstrip(".")
+
+    def _fmt_pct_num(v):
+        f = _to_float(v)
+        if f is None:
+            return ""
+        return f"{f:.2f}%"
+
+    def _classify(name):
+        n = str(name).lower()
+        if ".q30.rmdup" in n:
+            return "post"
+        if ".q30" in n:
+            return "pre"
+        return "other"
+
+    pre = [rec for rec in records if _classify(rec["sample_name"]) == "pre"]
+    post = [rec for rec in records if _classify(rec["sample_name"]) == "post"]
+    other = [rec for rec in records if _classify(rec["sample_name"]) == "other"]
+
+    def _pick(rows):
+        for r in rows:
+            if "multiqc_general_stats" in r["source"]:
+                return r
+        return rows[0] if rows else None
+
+    pre_row = _pick(pre)
+    post_row = _pick(post)
+
+    summary_rows = []
+    if pre_row or post_row:
+        pre_m = pre_row["map"] if pre_row else {}
+        post_m = post_row["map"] if post_row else {}
+
+        pre_mapped = _to_float(pre_m.get("samtools_stats-reads_mapped", ""))
+        post_mapped = _to_float(post_m.get("samtools_stats-reads_mapped", ""))
+        retained = (100.0 * post_mapped / pre_mapped) if (pre_mapped and post_mapped is not None and pre_mapped > 0) else None
+
+        summary_rows = [
+            ("Mapped reads", _fmt_num(pre_m.get("samtools_stats-reads_mapped", "")), _fmt_num(post_m.get("samtools_stats-reads_mapped", ""))),
+            ("Mapped % (flagstat)", _fmt_pct_num(pre_m.get("samtools_flagstat-mapped_passed_pct", "")), _fmt_pct_num(post_m.get("samtools_flagstat-mapped_passed_pct", ""))),
+            ("Properly paired %", _fmt_pct_num(pre_m.get("samtools_stats-reads_properly_paired_percent", "")), _fmt_pct_num(post_m.get("samtools_stats-reads_properly_paired_percent", ""))),
+            ("Insert size avg", _fmt_num(pre_m.get("samtools_stats-insert_size_average", "")), _fmt_num(post_m.get("samtools_stats-insert_size_average", ""))),
+            ("Reads retained (post/pre)", "", _fmt_pct_num(retained) if retained is not None else ""),
+        ]
+
+    def _render_table(title, rows):
+        if not rows:
+            return f"<h4>{html.escape(title)}</h4><p><em>No rows.</em></p>"
+        header = rows[0]["header"]
+        cells = ["<tr>" + "".join(f"<th>{html.escape(str(c))}</th>" for c in header) + "</tr>"]
+        for rec in rows:
+            cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in rec["row"]) + "</tr>")
+        return f"<h4>{html.escape(title)}</h4><table>{''.join(cells)}</table>"
+
+    blocks = ['<h3>ATAC MultiQC sample metrics</h3>']
+    if summary_rows:
+        cells = ['<tr><th>Metric</th><th>Pre-dedup (.q30)</th><th>Post-dedup (.q30.rmdup)</th></tr>']
+        for m, a, b in summary_rows:
+            cells.append(f"<tr><td>{html.escape(m)}</td><td>{html.escape(a)}</td><td>{html.escape(b)}</td></tr>")
+        blocks.append("<h4>Compact MultiQC Summary</h4><table>" + "".join(cells) + "</table>")
+
+    blocks.append(_render_table("Pre-dedup MultiQC rows (.q30)", pre))
+    blocks.append(_render_table("Post-dedup MultiQC rows (.q30.rmdup)", post))
+    if other:
+        blocks.append(_render_table("Other matching MultiQC rows", other))
+    return "".join(blocks)
 
 def _fmt_pct(v):
     try:
@@ -1870,11 +1979,17 @@ atac_stats_rmdup = sorted(set(
 atac_flagstat_prededup = rel_list("ATAC/*/*.q30.mapped.flagstat.txt")
 atac_idxstats_prededup = rel_list("ATAC/*/*.q30.mapped.idxstats.txt")
 atac_stats_prededup = rel_list("ATAC/*/*.q30.mapped.stats.txt")
-atac_multiqc_report = rel_list("multiqc_atac/ATAC_MultiQC.html")
+atac_multiqc_report = sorted(set(
+    rel_list("multiqc_atac/ATAC_MultiQC.html") +
+    rel_list("ATAC_MultiQC.html")
+))
 atac_multiqc_tables = sorted(set(
     rel_list("multiqc_atac/ATAC_MultiQC_data/multiqc_general_stats.txt") +
     rel_list("multiqc_atac/ATAC_MultiQC_data/multiqc_samtools_flagstat.txt") +
-    rel_list("multiqc_atac/ATAC_MultiQC_data/multiqc_samtools_stats.txt")
+    rel_list("multiqc_atac/ATAC_MultiQC_data/multiqc_samtools_stats.txt") +
+    rel_list("ATAC_MultiQC_data/multiqc_general_stats.txt") +
+    rel_list("ATAC_MultiQC_data/multiqc_samtools_flagstat.txt") +
+    rel_list("ATAC_MultiQC_data/multiqc_samtools_stats.txt")
 ))
 sample_names = sorted(set(
     [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup) if sample_from_report_path(p)]
