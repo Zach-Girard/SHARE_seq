@@ -812,7 +812,7 @@ process MULTIQC_ATAC {
 
     output:
     path "multiqc_atac/ATAC_MultiQC.html", emit: multiqc_report
-    path "multiqc_atac/multiqc_data/*", emit: multiqc_data
+    path "multiqc_atac/multiqc_data", emit: multiqc_data
 
     """
     set -euo pipefail
