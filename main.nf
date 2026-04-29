@@ -880,7 +880,7 @@ def load_tss_positions(path):
         for raw in fh:
             if not raw or raw.startswith("#"):
                 continue
-            cols = raw.rstrip("\n").split("\t")
+            cols = raw.rstrip("\\n").split("\\t")
             if len(cols) < 9 or cols[2] != "gene":
                 continue
             chrom = cols[0]
