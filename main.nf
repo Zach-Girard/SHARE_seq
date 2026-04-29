@@ -1006,7 +1006,7 @@ process BUILD_QC_HTML {
     publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
-    val(report_trigger)
+    tuple val(report_trigger), path(knee_plot_files)
 
     output:
     path "QC_Report.html", emit: qc_html
@@ -1015,7 +1015,7 @@ process BUILD_QC_HTML {
     path "QC_Report_bundle.zip", emit: qc_bundle
 
     """
-    python3 - "${projectDir}" <<'PY'
+    python3 - "${projectDir}" ${knee_plot_files} <<'PY'
 import glob
 import html
 import os
@@ -1028,11 +1028,23 @@ import datetime
 import statistics
 
 proj = sys.argv[1]
+knee_plot_inputs = [p for p in sys.argv[2:] if os.path.isfile(p)]
 out_path = "QC_Report.html"
 assets_dir = "QC_Report_assets"
 per_sample_dir = "QC_Report"
 os.makedirs(assets_dir, exist_ok=True)
 os.makedirs(per_sample_dir, exist_ok=True)
+
+# Stage explicit knee plot inputs into projectDir so report discovery doesn't
+# depend solely on publishDir timing.
+if knee_plot_inputs:
+    knee_stage_dir = os.path.join(proj, "_knee_stage")
+    os.makedirs(knee_stage_dir, exist_ok=True)
+    for kp in knee_plot_inputs:
+        try:
+            shutil.copy2(kp, os.path.join(knee_stage_dir, os.path.basename(kp)))
+        except Exception:
+            pass
 
 def rel_list(pattern):
     return sorted([
@@ -1551,6 +1563,7 @@ def parse_summary_csv_metrics(rel_path):
 def summary_csv_key_metrics_table(paths):
     wanted_metrics = [
         "Number of Reads",
+        "Reads With Valid Barcodes",
         "Reads Mapped to Genome: Unique",
         "Estimated Number of Cells",
         "Median Reads per Cell",
@@ -1698,8 +1711,9 @@ def sample_name_matches(sample, candidate):
         return True
     return False
 
-def multiqc_rows_html_for_sample(rel_paths, sample):
-    records = []
+def multiqc_insert_size_for_sample(rel_paths, sample):
+    pre_insert = ""
+    post_insert = ""
     for rel in rel_paths:
         abs_path = os.path.join(proj, rel)
         if not os.path.isfile(abs_path):
@@ -1710,108 +1724,27 @@ def multiqc_rows_html_for_sample(rel_paths, sample):
                 all_rows = list(reader)
         except Exception:
             continue
-        if not all_rows:
+        if len(all_rows) < 2:
             continue
         header = all_rows[0]
+        try:
+            ins_idx = header.index("samtools_stats-insert_size_average")
+        except ValueError:
+            continue
         for r in all_rows[1:]:
             if not r:
                 continue
             name = r[0] if len(r) > 0 else ""
             if sample_name_matches(sample, name):
-                row_map = {}
-                for i, col in enumerate(header):
-                    key = str(col).strip()
-                    if not key:
-                        continue
-                    row_map[key] = r[i] if i < len(r) else ""
-                records.append({
-                    "source": rel,
-                    "sample_name": name,
-                    "row": r,
-                    "header": header,
-                    "map": row_map,
-                })
-
-    if not records:
-        return "<h3>ATAC MultiQC sample metrics</h3><p><em>No MultiQC rows found for this sample.</em></p>"
-
-    def _to_float(v):
-        try:
-            return float(str(v).replace("%", "").replace(",", "").strip())
-        except Exception:
-            return None
-
-    def _fmt_num(v):
-        f = _to_float(v)
-        if f is None:
-            return ""
-        return f"{f:.3f}".rstrip("0").rstrip(".")
-
-    def _fmt_pct_num(v):
-        f = _to_float(v)
-        if f is None:
-            return ""
-        return f"{f:.2f}%"
-
-    def _classify(name):
-        n = str(name).lower()
-        if ".q30.rmdup" in n:
-            return "post"
-        if ".q30" in n:
-            return "pre"
-        return "other"
-
-    pre = [rec for rec in records if _classify(rec["sample_name"]) == "pre"]
-    post = [rec for rec in records if _classify(rec["sample_name"]) == "post"]
-    other = [rec for rec in records if _classify(rec["sample_name"]) == "other"]
-
-    def _pick(rows):
-        for r in rows:
-            if "multiqc_general_stats" in r["source"]:
-                return r
-        return rows[0] if rows else None
-
-    pre_row = _pick(pre)
-    post_row = _pick(post)
-
-    summary_rows = []
-    if pre_row or post_row:
-        pre_m = pre_row["map"] if pre_row else {}
-        post_m = post_row["map"] if post_row else {}
-
-        pre_mapped = _to_float(pre_m.get("samtools_stats-reads_mapped", ""))
-        post_mapped = _to_float(post_m.get("samtools_stats-reads_mapped", ""))
-        retained = (100.0 * post_mapped / pre_mapped) if (pre_mapped and post_mapped is not None and pre_mapped > 0) else None
-
-        summary_rows = [
-            ("Mapped reads", _fmt_num(pre_m.get("samtools_stats-reads_mapped", "")), _fmt_num(post_m.get("samtools_stats-reads_mapped", ""))),
-            ("Mapped % (flagstat)", _fmt_pct_num(pre_m.get("samtools_flagstat-mapped_passed_pct", "")), _fmt_pct_num(post_m.get("samtools_flagstat-mapped_passed_pct", ""))),
-            ("Properly paired %", _fmt_pct_num(pre_m.get("samtools_stats-reads_properly_paired_percent", "")), _fmt_pct_num(post_m.get("samtools_stats-reads_properly_paired_percent", ""))),
-            ("Insert size avg", _fmt_num(pre_m.get("samtools_stats-insert_size_average", "")), _fmt_num(post_m.get("samtools_stats-insert_size_average", ""))),
-            ("Reads retained (post/pre)", "", _fmt_pct_num(retained) if retained is not None else ""),
-        ]
-
-    def _render_table(title, rows):
-        if not rows:
-            return f"<h4>{html.escape(title)}</h4><p><em>No rows.</em></p>"
-        header = rows[0]["header"]
-        cells = ["<tr>" + "".join(f"<th>{html.escape(str(c))}</th>" for c in header) + "</tr>"]
-        for rec in rows:
-            cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in rec["row"]) + "</tr>")
-        return f"<h4>{html.escape(title)}</h4><table>{''.join(cells)}</table>"
-
-    blocks = ['<h3>ATAC MultiQC sample metrics</h3>']
-    if summary_rows:
-        cells = ['<tr><th>Metric</th><th>Pre-dedup (.q30)</th><th>Post-dedup (.q30.rmdup)</th></tr>']
-        for m, a, b in summary_rows:
-            cells.append(f"<tr><td>{html.escape(m)}</td><td>{html.escape(a)}</td><td>{html.escape(b)}</td></tr>")
-        blocks.append("<h4>Compact MultiQC Summary</h4><table>" + "".join(cells) + "</table>")
-
-    blocks.append(_render_table("Pre-dedup MultiQC rows (.q30)", pre))
-    blocks.append(_render_table("Post-dedup MultiQC rows (.q30.rmdup)", post))
-    if other:
-        blocks.append(_render_table("Other matching MultiQC rows", other))
-    return "".join(blocks)
+                ins = (r[ins_idx] if ins_idx < len(r) else "").strip()
+                if not ins:
+                    continue
+                name_l = str(name).lower()
+                if ".q30.rmdup" in name_l:
+                    post_insert = ins
+                elif ".q30" in name_l:
+                    pre_insert = ins
+    return [pre_insert, post_insert]
 
 def _fmt_pct(v):
     try:
@@ -1959,7 +1892,8 @@ knee_plots = sorted(set(
     rel_list("STARsolo/*/*_knee_plot.png") +
     rel_list("STARsolo_paired/*/*_knee_plot.png") +
     rel_list_recursive("STARsolo/**/*_knee_plot.png") +
-    rel_list_recursive("STARsolo_paired/**/*_knee_plot.png")
+    rel_list_recursive("STARsolo_paired/**/*_knee_plot.png") +
+    rel_list("_knee_stage/*_knee_plot.png")
 ))
 barcodes_stats = rel_list("STARsolo/*/Solo.out/Barcodes.stats") + rel_list("STARsolo_paired/*/Solo.out/Barcodes.stats")
 summary_csv = rel_list("STARsolo/*/Solo.out/GeneFull/Summary.csv") + rel_list("STARsolo_paired/*/Solo.out/GeneFull/Summary.csv")
@@ -2264,8 +2198,8 @@ parts.append('''<!doctype html>
   <a href="#sec-demux">Demultiplexing</a>
   <a href="#sec-fastqc">FastQC (Demultiplexed)</a>
   <a href="#sec-atac">ATAC QC</a>
-  <a href="#sec-starsolo">STARsolo QC</a>
-  <a href="#sec-barnyard">Hybrid Barnyard</a>
+  <a href="#sec-starsolo">RNA QC</a>
+__BARNYARD_TAB__
 </div>
 </div>
 <div class="main-layout">
@@ -2275,6 +2209,10 @@ __SAMPLE_SIDEBAR__
 <div class="main-content">
 '''.replace("__PROJECT_DIR__", html.escape(proj)))
 parts[-1] = parts[-1].replace("__SAMPLE_SIDEBAR__", sample_sidebar_links(sample_names))
+parts[-1] = parts[-1].replace(
+    "__BARNYARD_TAB__",
+    '  <a href="#sec-barnyard">Hybrid Barnyard</a>' if params.species_model == 'hybrid' else ""
+)
 
 parts.append('<section id="sec-overview">')
 parts.append("<h2>Overview</h2>")
@@ -2311,37 +2249,26 @@ parts.append(
 parts.append('<div class="starsolo-block"><h3>ATAC Key Summary by Sample</h3>')
 parts.append(atac_key_summary_table(atac_flagstat_prededup, atac_idxstats_prededup, atac_flagstat_rmdup, atac_idxstats_rmdup))
 parts.append("</div>")
-parts.append('<div class="starsolo-block"><h3>ATAC Alignment Summary (post-dedup)</h3>')
-parts.append(atac_alignment_summary_table(atac_flagstat_rmdup, atac_idxstats_rmdup))
-parts.append("</div>")
-parts.append('<div class="starsolo-block"><h3>ATAC Pre-dedup Snapshot (MAPQ>=30)</h3>')
-parts.append(atac_alignment_summary_table(atac_flagstat_prededup, atac_idxstats_prededup))
-parts.append("</div>")
 parts.append("</section>")
 
 parts.append('<section id="sec-starsolo">')
-parts.append("<h2>STARsolo QC</h2>")
+parts.append("<h2>RNA QC</h2>")
+parts.append('<div class="starsolo-block"><h3>Summary.csv Key Metrics by Sample</h3>')
+parts.append(summary_csv_key_metrics_table(summary_csv))
+parts.append("</div>")
 parts.append('<div class="starsolo-block"><h3>Alignment Summary Bar Chart</h3>')
 parts.append(alignment_summary_chart(starsolo_logs))
 parts.append("</div>")
 parts.append('<div class="starsolo-block">')
-parts.append(text_files_block("STARsolo*/<sample>/Log.final.out", starsolo_logs, max_lines=120))
-parts.append("</div>")
-parts.append('<div class="starsolo-block">')
 parts.append(image_gallery_block("STARsolo*/<sample>/*_knee_plot.png", knee_plots))
-parts.append("</div>")
-parts.append('<div class="starsolo-block"><h3>Barcodes.stats Summary by Sample</h3>')
-parts.append(barcodes_stats_summary_table(barcodes_stats))
-parts.append("</div>")
-parts.append('<div class="starsolo-block"><h3>Summary.csv Key Metrics by Sample</h3>')
-parts.append(summary_csv_key_metrics_table(summary_csv))
 parts.append("</div>")
 parts.append("</section>")
 
-parts.append('<section id="sec-barnyard">')
-parts.append("<h2>Hybrid Barnyard Plots (if applicable)</h2>")
-parts.append(image_files_block("STARsolo*/<sample>/*collision_plot.png", barnyard))
-parts.append("</section>")
+if params.species_model == 'hybrid':
+    parts.append('<section id="sec-barnyard">')
+    parts.append("<h2>Hybrid Barnyard Plots</h2>")
+    parts.append(image_files_block("STARsolo*/<sample>/*collision_plot.png", barnyard))
+    parts.append("</section>")
 
 parts.append("</div></div>")
 parts.append("</body></html>")
@@ -2425,15 +2352,6 @@ for sample in sorted(all_sample_candidates):
             return f"<h3>{html.escape(title)}</h3><p><em>No readable files found.</em></p>"
         return f"<h3>{html.escape(title)}</h3><ul>{''.join(items)}</ul>"
 
-    def sample_text_files_block(title, paths, max_lines=240):
-        if not paths:
-            return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
-        chunks = [f"<h3>{html.escape(title)}</h3>"]
-        for p in paths:
-            chunks.append(f"<h4>{html.escape(p)}</h4>")
-            chunks.append(read_text_preview(p, max_lines=max_lines))
-        return "".join(chunks)
-
     def prefer_path(paths, must_contain):
         if not paths:
             return None
@@ -2456,6 +2374,7 @@ for sample in sorted(all_sample_candidates):
         pre_idx = parse_idxstats_metrics(pre_idx_path) if pre_idx_path else {}
         post_flag = parse_flagstat_metrics(post_flag_path) if post_flag_path else {}
         post_idx = parse_idxstats_metrics(post_idx_path) if post_idx_path else {}
+        pre_insert_avg, post_insert_avg = multiqc_insert_size_for_sample(sample_atac_multiqc_tables, sample)
 
         pre_total = _to_int(pre_flag.get("in_total", ""))
         post_total = _to_int(post_flag.get("in_total", ""))
@@ -2469,6 +2388,7 @@ for sample in sorted(all_sample_candidates):
             ("Properly paired %", pre_flag.get("properly_paired_pct", ""), post_flag.get("properly_paired_pct", "")),
             ("Singleton %", pre_flag.get("singletons_pct", ""), post_flag.get("singletons_pct", "")),
             ("Mate on different chr", pre_flag.get("mate_diff_chr_count", ""), post_flag.get("mate_diff_chr_count", "")),
+            ("Insert size avg", pre_insert_avg, post_insert_avg),
             ("Mitochondrial fraction", _fmt_pct(pre_mt), _fmt_pct(post_mt)),
             ("Autosomal mapped", f"{pre_idx.get('autosomal_mapped', 0):,}", f"{post_idx.get('autosomal_mapped', 0):,}"),
             ("X mapped", f"{pre_idx.get('x_mapped', 0):,}", f"{post_idx.get('x_mapped', 0):,}"),
@@ -2605,25 +2525,10 @@ for sample in sorted(all_sample_candidates):
     sample_parts.append(sample_links_block("FastQC HTML (trimmed)", sample_fastqc_trimmed))
     sample_parts.append("</section>")
     if has_atac:
-        pre_flag_links = filter_paths(sample_atac_flagstat_prededup, ".q30.mapped.flagstat.txt")
-        pre_idx_links = filter_paths(sample_atac_idxstats_prededup, ".q30.mapped.idxstats.txt")
-        pre_stats_links = filter_paths(sample_atac_stats_prededup, ".q30.mapped.stats.txt")
-        post_flag_links = filter_paths(sample_atac_flagstat_rmdup, ".q30.rmdup.flagstat.txt")
-        post_idx_links = filter_paths(sample_atac_idxstats_rmdup, ".q30.rmdup.idxstats.txt")
-        post_stats_links = filter_paths(sample_atac_stats_rmdup, ".q30.rmdup.stats.txt")
         sample_parts.append('<section id="sec-atac">')
         sample_parts.append("<h2>ATAC QC</h2>")
         sample_parts.append(atac_pre_post_table(sample))
         sample_parts.append(sample_links_block("ATAC MultiQC report", atac_multiqc_report))
-        sample_parts.append(multiqc_rows_html_for_sample(sample_atac_multiqc_tables, sample))
-        sample_parts.append("<h3>Pre-dedup files (.q30.mapped)</h3>")
-        sample_parts.append(sample_text_files_block("flagstat", pre_flag_links))
-        sample_parts.append(sample_text_files_block("idxstats", pre_idx_links))
-        sample_parts.append(sample_text_files_block("stats", pre_stats_links))
-        sample_parts.append("<h3>Post-dedup files (.q30.rmdup)</h3>")
-        sample_parts.append(sample_text_files_block("flagstat", post_flag_links))
-        sample_parts.append(sample_text_files_block("idxstats", post_idx_links))
-        sample_parts.append(sample_text_files_block("stats", post_stats_links))
         sample_parts.append("</section>")
     if has_rna:
         sample_parts.append('<section id="sec-rna">')
@@ -3078,7 +2983,15 @@ workflow {
         log.info "Unknown star_alignment_mode = ${params.star_alignment_mode}; skipping STARsolo alignment."
     }
 
-    ch_report_barrier.collect().map { 1 }.set { ch_build_qc_report }
+    ch_report_barrier
+        .collect()
+        .map { trigger_items ->
+            def knee_items = trigger_items.findAll { x ->
+                x != null && x.toString().endsWith("_knee_plot.png")
+            }
+            tuple(1, knee_items)
+        }
+        .set { ch_build_qc_report }
     BUILD_QC_HTML(ch_build_qc_report)
 }
 
