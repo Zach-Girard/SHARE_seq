@@ -853,7 +853,7 @@ process ESTIMATE_ATAC_CELLS {
     esac
 
     samtools view -@ ${task.cpus} -f 64 -F 2304 "\$BAM" \
-      | python3 - "${sample_id}" "${cb_whitelist}" "${gtfFile}" "${params.atac_min_frags_for_cell}" "${params.atac_min_tss_for_cell}" \
+      | python3 - "${sample_id}" "${cb_whitelist}" "\${gtfFile}" "${params.atac_min_frags_for_cell}" "${params.atac_min_tss_for_cell}" \
           "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv" \
           "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv" <<'PY'
 import sys
