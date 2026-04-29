@@ -812,7 +812,7 @@ process MULTIQC_ATAC {
 
     output:
     path "multiqc_atac/ATAC_MultiQC.html", emit: multiqc_report
-    path "multiqc_atac/multiqc_data", emit: multiqc_data
+    path "multiqc_atac/ATAC_MultiQC_data", emit: multiqc_data
 
     """
     set -euo pipefail
@@ -1872,9 +1872,9 @@ atac_idxstats_prededup = rel_list("ATAC/*/*.q30.mapped.idxstats.txt")
 atac_stats_prededup = rel_list("ATAC/*/*.q30.mapped.stats.txt")
 atac_multiqc_report = rel_list("multiqc_atac/ATAC_MultiQC.html")
 atac_multiqc_tables = sorted(set(
-    rel_list("multiqc_atac/multiqc_data/multiqc_general_stats.txt") +
-    rel_list("multiqc_atac/multiqc_data/multiqc_samtools_flagstat.txt") +
-    rel_list("multiqc_atac/multiqc_data/multiqc_samtools_stats.txt")
+    rel_list("multiqc_atac/ATAC_MultiQC_data/multiqc_general_stats.txt") +
+    rel_list("multiqc_atac/ATAC_MultiQC_data/multiqc_samtools_flagstat.txt") +
+    rel_list("multiqc_atac/ATAC_MultiQC_data/multiqc_samtools_stats.txt")
 ))
 sample_names = sorted(set(
     [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup) if sample_from_report_path(p)]
