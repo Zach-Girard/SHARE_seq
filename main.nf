@@ -38,6 +38,8 @@ params.barcodes_rc         = (params.barcodes_rc in [true, 'true'])
 // Optional adapter/quality trimming with fastp (default off).
 // R1 is trimmed normally; R2 protects the first `umi_len` bases (UMI) from any trimming.
 params.trim_reads          = (params.trim_reads in [true, 'true'])
+params.atac_min_frags_for_cell = params.atac_min_frags_for_cell ?: 1000
+params.atac_min_tss_for_cell   = params.atac_min_tss_for_cell ?: 4
 
 // Demultiplexing inputs — expected in params.raw_fastq directory
 params.raw_fastq           = params.raw_fastq           ?: 'RAW_FASTQ'
@@ -84,6 +86,8 @@ log.info "User 8bp barcode file        : ${params.barcodes_8bp_file}"
 log.info "Reverse-complement barcodes? : ${params.barcodes_rc}"
 log.info "Effective 8bp whitelist file : ${effectiveCbWhitelistPath}"
 log.info "Trim reads (fastp)           : ${params.trim_reads}"
+log.info "ATAC min frags for cell      : ${params.atac_min_frags_for_cell}"
+log.info "ATAC min TSS ratio for cell  : ${params.atac_min_tss_for_cell}"
 
 /*
  * Channel definitions
@@ -823,6 +827,161 @@ process MULTIQC_ATAC {
     """
 }
 
+process ESTIMATE_ATAC_CELLS {
+    tag { sample_id }
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    tuple val(sample_id), path(atac_dir), path(cb_whitelist)
+
+    output:
+    path "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv", emit: atac_cell_summary
+    path "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv", emit: atac_cell_counts
+
+    """
+    set -euo pipefail
+    command -v samtools >/dev/null 2>&1 || { echo "ERROR: samtools not found in PATH."; exit 127; }
+
+    BAM="${atac_dir}/${sample_id}.q30.rmdup.sorted.bam"
+    [ -f "$BAM" ] || { echo "Missing BAM: $BAM" >&2; exit 1; }
+
+    case "${params.species_model}" in
+      mouse)  gtfFile="${projectDir}/${params.gtf_dir}/Mus_musculus/Mus_musculus.GRCm39.111.gtf.gz" ;;
+      hybrid) gtfFile="${projectDir}/${params.gtf_dir}/hybrid/hybrid_human_mouse.gtf.gz" ;;
+      *)      gtfFile="${projectDir}/${params.gtf_dir}/Homo_sapiens/Homo_sapiens.GRCh38.111.gtf.gz" ;;
+    esac
+
+    samtools view -@ ${task.cpus} -f 64 -F 2304 "$BAM" \
+      | python3 - "${sample_id}" "${cb_whitelist}" "${gtfFile}" "${params.atac_min_frags_for_cell}" "${params.atac_min_tss_for_cell}" \
+          "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv" \
+          "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv" <<'PY'
+import sys
+import statistics
+import gzip
+import bisect
+
+sample_id, wl_path, gtf_path, min_frags_s, min_tss_s, out_summary, out_counts = sys.argv[1:8]
+min_frags = int(min_frags_s)
+min_tss = float(min_tss_s)
+
+valid = set()
+with open(wl_path, "r", errors="replace") as fh:
+    for line in fh:
+        s = line.strip()
+        if not s:
+            continue
+        valid.add(s.split()[0])
+
+def load_tss_positions(path):
+    opener = gzip.open if path.endswith(".gz") else open
+    out = {}
+    with opener(path, "rt", errors="replace") as fh:
+        for raw in fh:
+            if not raw or raw.startswith("#"):
+                continue
+            cols = raw.rstrip("\n").split("\t")
+            if len(cols) < 9 or cols[2] != "gene":
+                continue
+            chrom = cols[0]
+            try:
+                start = int(cols[3])
+                end = int(cols[4])
+            except Exception:
+                continue
+            strand = cols[6]
+            tss = start if strand == "+" else end
+            out.setdefault(chrom, []).append(tss)
+    for chrom in out:
+        out[chrom].sort()
+    return out
+
+def classify_tss_hit(tss_list, pos):
+    if not tss_list:
+        return (False, False)
+    i = bisect.bisect_left(tss_list, pos)
+    left = i - 1
+    right = i
+    is_tss = False
+    is_flank = False
+    while left >= 0 and (pos - tss_list[left]) <= 2000:
+        d = abs(pos - tss_list[left])
+        if d <= 100:
+            is_tss = True
+        elif 1900 <= d <= 2000:
+            is_flank = True
+        left -= 1
+    n = len(tss_list)
+    while right < n and (tss_list[right] - pos) <= 2000:
+        d = abs(pos - tss_list[right])
+        if d <= 100:
+            is_tss = True
+        elif 1900 <= d <= 2000:
+            is_flank = True
+        right += 1
+    return (is_tss, is_flank)
+
+tss_by_chrom = load_tss_positions(gtf_path)
+counts = {}
+tss_counts = {}
+flank_counts = {}
+for raw in sys.stdin:
+    cols = raw.rstrip("\\n").split("\\t")
+    if len(cols) < 12:
+        continue
+    chrom = cols[2]
+    if chrom == "*" or chrom not in tss_by_chrom:
+        continue
+    try:
+        pos = int(cols[3])
+    except Exception:
+        continue
+    cb = None
+    for tag in cols[11:]:
+        if tag.startswith("CB:Z:"):
+            cb = tag[5:]
+            break
+    if not cb:
+        continue
+    if valid and cb not in valid:
+        continue
+    counts[cb] = counts.get(cb, 0) + 1
+    is_tss, is_flank = classify_tss_hit(tss_by_chrom[chrom], pos)
+    if is_tss:
+        tss_counts[cb] = tss_counts.get(cb, 0) + 1
+    if is_flank:
+        flank_counts[cb] = flank_counts.get(cb, 0) + 1
+
+rows = []
+for bc, n in counts.items():
+    tss = tss_counts.get(bc, 0)
+    flank = flank_counts.get(bc, 0)
+    tss_ratio = (tss + 1.0) / (flank + 1.0)
+    pass_frags = n >= min_frags
+    pass_tss = tss_ratio >= min_tss
+    rows.append((bc, n, tss, flank, tss_ratio, pass_frags, pass_tss))
+
+passing_both = [r for r in rows if r[5] and r[6]]
+passing_frags_only = [r for r in rows if r[5]]
+with open(out_counts, "w") as out:
+    out.write("Barcode\\tFragments\\tTSSReads\\tFlankReads\\tTSSRatio\\tPassMinFrags\\tPassMinTSS\\tPassCell\\n")
+    for bc, n, tss, flank, tss_ratio, pass_frags, pass_tss in sorted(rows, key=lambda x: x[1], reverse=True):
+        out.write(f"{bc}\\t{n}\\t{tss}\\t{flank}\\t{tss_ratio:.6f}\\t{1 if pass_frags else 0}\\t{1 if pass_tss else 0}\\t{1 if (pass_frags and pass_tss) else 0}\\n")
+
+with open(out_summary, "w") as out:
+    out.write("Metric\\tValue\\n")
+    out.write(f"Sample\\t{sample_id}\\n")
+    out.write(f"MinFragmentsForCell\\t{min_frags}\\n")
+    out.write(f"MinTSSRatioForCell\\t{min_tss}\\n")
+    out.write(f"BarcodesWithFragments\\t{len(counts)}\\n")
+    out.write(f"EstimatedCellsMinFragsOnly\\t{len(passing_frags_only)}\\n")
+    out.write(f"EstimatedCells\\t{len(passing_both)}\\n")
+    out.write(f"MedianFragmentsPerBarcode\\t{statistics.median(counts.values()) if counts else 0}\\n")
+    out.write(f"MedianFragmentsPerEstimatedCell\\t{statistics.median([r[1] for r in passing_both]) if passing_both else 0}\\n")
+PY
+    """
+}
+
 process STARSOLO_SINGLE {
     tag { sample_id }
 
@@ -1035,17 +1194,6 @@ assets_dir = "QC_Report_assets"
 per_sample_dir = "QC_Report"
 os.makedirs(assets_dir, exist_ok=True)
 os.makedirs(per_sample_dir, exist_ok=True)
-
-# Stage explicit knee plot inputs into projectDir so report discovery doesn't
-# depend solely on publishDir timing.
-if knee_plot_inputs:
-    knee_stage_dir = os.path.join(proj, "_knee_stage")
-    os.makedirs(knee_stage_dir, exist_ok=True)
-    for kp in knee_plot_inputs:
-        try:
-            shutil.copy2(kp, os.path.join(knee_stage_dir, os.path.basename(kp)))
-        except Exception:
-            pass
 
 def rel_list(pattern):
     return sorted([
@@ -1675,6 +1823,23 @@ def parse_idxstats_metrics(rel_path):
         return out
     return out
 
+def parse_atac_cell_summary(rel_path):
+    out = {}
+    abs_path = os.path.join(proj, rel_path)
+    if not os.path.isfile(abs_path):
+        return out
+    try:
+        with open(abs_path, "r", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i == 0:
+                    continue
+                cols = line.rstrip("\n").split("\t", 1)
+                if len(cols) == 2:
+                    out[cols[0].strip()] = cols[1].strip()
+    except Exception:
+        return out
+    return out
+
 def sample_name_matches(sample, candidate):
     if not sample or not candidate:
         return False
@@ -1800,7 +1965,7 @@ def atac_alignment_summary_table(flagstat_paths, idxstats_paths):
         cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in row) + "</tr>")
     return "<table>" + "".join(cells) + "</table>"
 
-def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, flagstat_rmdup_paths, idxstats_rmdup_paths):
+def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, flagstat_rmdup_paths, idxstats_rmdup_paths, atac_cell_summary_paths):
     samples = sorted(set(
         [sample_from_report_path(p) or os.path.basename(os.path.dirname(p)) for p in (flagstat_prededup_paths + idxstats_prededup_paths + flagstat_rmdup_paths + idxstats_rmdup_paths)]
     ))
@@ -1811,6 +1976,7 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
     pre_idx = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in idxstats_prededup_paths }
     post_flag = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in flagstat_rmdup_paths }
     post_idx = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in idxstats_rmdup_paths }
+    cell_sum = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in atac_cell_summary_paths }
 
     rows = []
     for s in samples:
@@ -1818,6 +1984,7 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
         pi = parse_idxstats_metrics(pre_idx[s]) if s in pre_idx else {}
         rf = parse_flagstat_metrics(post_flag[s]) if s in post_flag else {}
         ri = parse_idxstats_metrics(post_idx[s]) if s in post_idx else {}
+        cs = parse_atac_cell_summary(cell_sum[s]) if s in cell_sum else {}
 
         pre_total = _to_int(pf.get("in_total", ""))
         post_total = _to_int(rf.get("in_total", ""))
@@ -1829,6 +1996,7 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
 
         rows.append([
             s,
+            cs.get("EstimatedCells", ""),
             pf.get("in_total", ""),
             pf.get("properly_paired_pct", ""),
             _fmt_pct(pre_mt),
@@ -1843,6 +2011,7 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
     cells.append(
         "<tr>"
         "<th>Sample</th>"
+        "<th>Estimated cells</th>"
         "<th>Reads pre-dedup</th>"
         "<th>Properly paired % pre</th>"
         "<th>MT % pre</th>"
@@ -1893,8 +2062,7 @@ knee_plots = sorted(set(
     rel_list("STARsolo/*/*_knee_plot.png") +
     rel_list("STARsolo_paired/*/*_knee_plot.png") +
     rel_list_recursive("STARsolo/**/*_knee_plot.png") +
-    rel_list_recursive("STARsolo_paired/**/*_knee_plot.png") +
-    rel_list("_knee_stage/*_knee_plot.png")
+    rel_list_recursive("STARsolo_paired/**/*_knee_plot.png")
 ))
 barcodes_stats = rel_list("STARsolo/*/Solo.out/Barcodes.stats") + rel_list("STARsolo_paired/*/Solo.out/Barcodes.stats")
 summary_csv = rel_list("STARsolo/*/Solo.out/GeneFull/Summary.csv") + rel_list("STARsolo_paired/*/Solo.out/GeneFull/Summary.csv")
@@ -1914,6 +2082,7 @@ atac_stats_rmdup = sorted(set(
 atac_flagstat_prededup = rel_list("ATAC/*/*.q30.mapped.flagstat.txt")
 atac_idxstats_prededup = rel_list("ATAC/*/*.q30.mapped.idxstats.txt")
 atac_stats_prededup = rel_list("ATAC/*/*.q30.mapped.stats.txt")
+atac_cell_summary = rel_list("ATAC/*/*.atac_cells.summary.tsv")
 atac_multiqc_report = sorted(set(
     rel_list("multiqc_atac/ATAC_MultiQC.html") +
     rel_list("ATAC_MultiQC.html")
@@ -2248,7 +2417,7 @@ parts.append(
     "Use the difference to estimate duplicate burden and retained unique signal.</p>"
 )
 parts.append('<div class="starsolo-block"><h3>ATAC Key Summary by Sample</h3>')
-parts.append(atac_key_summary_table(atac_flagstat_prededup, atac_idxstats_prededup, atac_flagstat_rmdup, atac_idxstats_rmdup))
+parts.append(atac_key_summary_table(atac_flagstat_prededup, atac_idxstats_prededup, atac_flagstat_rmdup, atac_idxstats_rmdup, atac_cell_summary))
 parts.append("</div>")
 parts.append("</section>")
 
@@ -2781,6 +2950,11 @@ workflow {
     BWA_ALIGN_ATAC(ch_atac_bwa_input)
 
     BWA_ALIGN_ATAC.out.atac_align_out
+        .map { dir -> tuple(dir.baseName, dir, cb_whitelist) }
+        .set { ch_atac_cell_estimate_input }
+    ESTIMATE_ATAC_CELLS(ch_atac_cell_estimate_input)
+
+    BWA_ALIGN_ATAC.out.atac_align_out
         .collect()
         .filter { dirs -> dirs && dirs.size() > 0 }
         .set { ch_atac_multiqc_input }
@@ -2882,6 +3056,8 @@ workflow {
         .mix(PREPEND_HEADER_BARCODES.out.r2_with_barcodes)
         .mix(STAR_INDEX.out.star_index)
         .mix(BWA_ALIGN_ATAC.out.atac_align_out)
+        .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_summary)
+        .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_counts)
         .mix(MULTIQC_ATAC.out.multiqc_report)
         .mix(MULTIQC_ATAC.out.multiqc_data)
 
