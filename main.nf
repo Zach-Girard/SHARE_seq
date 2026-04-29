@@ -853,16 +853,17 @@ process ESTIMATE_ATAC_CELLS {
       *)      gtfFile="${projectDir}/${params.gtf_dir}/Homo_sapiens/Homo_sapiens.GRCh38.111.gtf.gz" ;;
     esac
 
-    samtools view -@ ${task.cpus} -f 64 -F 2304 "\$BAM" \
-      | python3 - "${sample_id}" "${cb_whitelist}" "\${gtfFile}" "${params.atac_min_frags_for_cell}" "${params.atac_min_tss_for_cell}" \
-          "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv" \
-          "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv" <<'PY'
+    samtools view -@ ${task.cpus} -f 64 -F 2304 "\$BAM" > atac_reads.sam
+
+    python3 - "${sample_id}" "${cb_whitelist}" "\${gtfFile}" "${params.atac_min_frags_for_cell}" "${params.atac_min_tss_for_cell}" \
+        "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv" \
+        "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv" atac_reads.sam <<'PY'
 import sys
 import statistics
 import gzip
 import bisect
 
-sample_id, wl_path, gtf_path, min_frags_s, min_tss_s, out_summary, out_counts = sys.argv[1:8]
+sample_id, wl_path, gtf_path, min_frags_s, min_tss_s, out_summary, out_counts, reads_path = sys.argv[1:9]
 min_frags = int(min_frags_s)
 min_tss = float(min_tss_s)
 
@@ -926,32 +927,33 @@ tss_by_chrom = load_tss_positions(gtf_path)
 counts = {}
 tss_counts = {}
 flank_counts = {}
-for raw in sys.stdin:
-    cols = raw.rstrip("\\n").split("\\t")
-    if len(cols) < 12:
-        continue
-    chrom = cols[2]
-    if chrom == "*" or chrom not in tss_by_chrom:
-        continue
-    try:
-        pos = int(cols[3])
-    except Exception:
-        continue
-    cb = None
-    for tag in cols[11:]:
-        if tag.startswith("CB:Z:"):
-            cb = tag[5:]
-            break
-    if not cb:
-        continue
-    if valid and cb not in valid:
-        continue
-    counts[cb] = counts.get(cb, 0) + 1
-    is_tss, is_flank = classify_tss_hit(tss_by_chrom[chrom], pos)
-    if is_tss:
-        tss_counts[cb] = tss_counts.get(cb, 0) + 1
-    if is_flank:
-        flank_counts[cb] = flank_counts.get(cb, 0) + 1
+with open(reads_path, "r", errors="replace") as sam_fh:
+    for raw in sam_fh:
+        cols = raw.rstrip("\\n").split("\\t")
+        if len(cols) < 12:
+            continue
+        chrom = cols[2]
+        if chrom == "*" or chrom not in tss_by_chrom:
+            continue
+        try:
+            pos = int(cols[3])
+        except Exception:
+            continue
+        cb = None
+        for tag in cols[11:]:
+            if tag.startswith("CB:Z:"):
+                cb = tag[5:]
+                break
+        if not cb:
+            continue
+        if valid and cb not in valid:
+            continue
+        counts[cb] = counts.get(cb, 0) + 1
+        is_tss, is_flank = classify_tss_hit(tss_by_chrom[chrom], pos)
+        if is_tss:
+            tss_counts[cb] = tss_counts.get(cb, 0) + 1
+        if is_flank:
+            flank_counts[cb] = flank_counts.get(cb, 0) + 1
 
 rows = []
 for bc, n in counts.items():
@@ -980,6 +982,7 @@ with open(out_summary, "w") as out:
     out.write(f"MedianFragmentsPerBarcode\\t{statistics.median(counts.values()) if counts else 0}\\n")
     out.write(f"MedianFragmentsPerEstimatedCell\\t{statistics.median([r[1] for r in passing_both]) if passing_both else 0}\\n")
 PY
+    rm -f atac_reads.sam
     """
 }
 
