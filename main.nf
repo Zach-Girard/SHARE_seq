@@ -1029,6 +1029,7 @@ import statistics
 
 proj = sys.argv[1]
 knee_plot_inputs = [p for p in sys.argv[2:] if os.path.isfile(p)]
+species_model = "${params.species_model}"
 out_path = "QC_Report.html"
 assets_dir = "QC_Report_assets"
 per_sample_dir = "QC_Report"
@@ -2264,7 +2265,7 @@ parts.append(image_gallery_block("STARsolo*/<sample>/*_knee_plot.png", knee_plot
 parts.append("</div>")
 parts.append("</section>")
 
-if params.species_model == 'hybrid':
+if species_model == 'hybrid':
     parts.append('<section id="sec-barnyard">')
     parts.append("<h2>Hybrid Barnyard Plots</h2>")
     parts.append(image_files_block("STARsolo*/<sample>/*collision_plot.png", barnyard))
