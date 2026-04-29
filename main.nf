@@ -2569,8 +2569,8 @@ workflow {
                 error "Unequal split chunk counts for ${pair_id}: R1=${r1Sorted.size()} R2=${r2Sorted.size()}"
             }
             def chunks = []
-            for (int i = 0; i < r1Sorted.size(); i++) {
-                chunks << tuple("${pair_id}__chunk${i + 1}", r1Sorted[i], r2Sorted[i], barcodeFile)
+            r1Sorted.eachWithIndex { r1f, i ->
+                chunks << tuple("${pair_id}__chunk${i + 1}", r1f, r2Sorted[i], barcodeFile)
             }
             return chunks
         }
