@@ -1169,7 +1169,7 @@ process BUILD_QC_HTML {
     publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
-    tuple val(report_trigger), path(knee_plot_files)
+    tuple val(report_trigger), path(report_input_files)
 
     output:
     path "QC_Report.html", emit: qc_html
@@ -1178,7 +1178,7 @@ process BUILD_QC_HTML {
     path "QC_Report_bundle.zip", emit: qc_bundle
 
     """
-    python3 - "${projectDir}" ${knee_plot_files} <<'PY'
+    python3 - "${projectDir}" ${report_input_files} <<'PY'
 import glob
 import html
 import os
@@ -1191,13 +1191,31 @@ import datetime
 import statistics
 
 proj = sys.argv[1]
-knee_plot_inputs = [p for p in sys.argv[2:] if os.path.isfile(p)]
+report_input_files = [p for p in sys.argv[2:] if os.path.isfile(p)]
 species_model = "${params.species_model}"
 out_path = "QC_Report.html"
 assets_dir = "QC_Report_assets"
 per_sample_dir = "QC_Report"
 os.makedirs(assets_dir, exist_ok=True)
 os.makedirs(per_sample_dir, exist_ok=True)
+
+def hydrate_report_inputs():
+    roots = ("STARsolo", "STARsolo_paired", "ATAC", "multiqc_atac")
+    for src in report_input_files:
+        norm = os.path.normpath(src)
+        parts = norm.split(os.sep)
+        rel = None
+        for i, part in enumerate(parts):
+            if part in roots and len(parts) > i + 1:
+                rel = os.path.join(*parts[i:])
+                break
+        if rel is None:
+            continue
+        dst = os.path.join(proj, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+
+hydrate_report_inputs()
 
 def rel_list(pattern):
     return sorted([
@@ -1844,6 +1862,19 @@ def parse_atac_cell_summary(rel_path):
         return out
     return out
 
+def atac_sample_key(rel_path):
+    s = sample_from_report_path(rel_path)
+    if s:
+        return s
+    b = os.path.basename(rel_path)
+    m = re.match(r"(.+?)\.q30(?:\.rmdup)?\.(?:flagstat|idxstats|stats)\.txt$", b)
+    if m:
+        return m.group(1)
+    m2 = re.match(r"(.+?)\.atac_cells\.(?:summary|counts)\.tsv$", b)
+    if m2:
+        return m2.group(1)
+    return os.path.basename(os.path.dirname(rel_path))
+
 def sample_name_matches(sample, candidate):
     if not sample or not candidate:
         return False
@@ -1880,6 +1911,10 @@ def sample_name_matches(sample, candidate):
     if c_n in s_n or c_base_n in s_n:
         return True
     return False
+
+def sample_matches_atac_path(sample, rel_path):
+    key = atac_sample_key(rel_path)
+    return sample_name_matches(sample, key)
 
 def multiqc_insert_size_for_sample(rel_paths, sample):
     pre_insert = ""
@@ -1971,16 +2006,16 @@ def atac_alignment_summary_table(flagstat_paths, idxstats_paths):
 
 def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, flagstat_rmdup_paths, idxstats_rmdup_paths, atac_cell_summary_paths):
     samples = sorted(set(
-        [sample_from_report_path(p) or os.path.basename(os.path.dirname(p)) for p in (flagstat_prededup_paths + idxstats_prededup_paths + flagstat_rmdup_paths + idxstats_rmdup_paths)]
+        [atac_sample_key(p) for p in (flagstat_prededup_paths + idxstats_prededup_paths + flagstat_rmdup_paths + idxstats_rmdup_paths)]
     ))
     if not samples:
         return "<p><em>No ATAC alignment metrics found.</em></p>"
 
-    pre_flag = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in flagstat_prededup_paths }
-    pre_idx = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in idxstats_prededup_paths }
-    post_flag = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in flagstat_rmdup_paths }
-    post_idx = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in idxstats_rmdup_paths }
-    cell_sum = { (sample_from_report_path(p) or os.path.basename(os.path.dirname(p))): p for p in atac_cell_summary_paths }
+    pre_flag = { atac_sample_key(p): p for p in flagstat_prededup_paths }
+    pre_idx = { atac_sample_key(p): p for p in idxstats_prededup_paths }
+    post_flag = { atac_sample_key(p): p for p in flagstat_rmdup_paths }
+    post_idx = { atac_sample_key(p): p for p in idxstats_rmdup_paths }
+    cell_sum = { atac_sample_key(p): p for p in atac_cell_summary_paths }
 
     rows = []
     for s in samples:
@@ -2086,7 +2121,10 @@ atac_stats_rmdup = sorted(set(
 atac_flagstat_prededup = rel_list("ATAC/*/*.q30.mapped.flagstat.txt")
 atac_idxstats_prededup = rel_list("ATAC/*/*.q30.mapped.idxstats.txt")
 atac_stats_prededup = rel_list("ATAC/*/*.q30.mapped.stats.txt")
-atac_cell_summary = rel_list("ATAC/*/*.atac_cells.summary.tsv")
+atac_cell_summary = sorted(set(
+    rel_list("ATAC/*/*.atac_cells.summary.tsv") +
+    rel_list_recursive("ATAC/**/*.atac_cells.summary.tsv")
+))
 atac_multiqc_report = sorted(set(
     rel_list("multiqc_atac/ATAC_MultiQC.html") +
     rel_list("ATAC_MultiQC.html")
@@ -2484,12 +2522,12 @@ for sample in sorted(all_sample_candidates):
     sample_barnyard = [p for p in barnyard if sample_from_starsolo_path(p) == sample]
     sample_fastqc_demux = [p for p in fastqc_html if path_matches_sample(p, sample)]
     sample_fastqc_trimmed = [p for p in fastqc_trimmed_html if path_matches_sample(p, sample)]
-    sample_atac_flagstat_rmdup = [p for p in atac_flagstat_rmdup if sample_from_atac_path(p) == sample]
-    sample_atac_idxstats_rmdup = [p for p in atac_idxstats_rmdup if sample_from_atac_path(p) == sample]
-    sample_atac_stats_rmdup = [p for p in atac_stats_rmdup if sample_from_atac_path(p) == sample]
-    sample_atac_flagstat_prededup = [p for p in atac_flagstat_prededup if sample_from_atac_path(p) == sample]
-    sample_atac_idxstats_prededup = [p for p in atac_idxstats_prededup if sample_from_atac_path(p) == sample]
-    sample_atac_stats_prededup = [p for p in atac_stats_prededup if sample_from_atac_path(p) == sample]
+    sample_atac_flagstat_rmdup = [p for p in atac_flagstat_rmdup if sample_matches_atac_path(sample, p)]
+    sample_atac_idxstats_rmdup = [p for p in atac_idxstats_rmdup if sample_matches_atac_path(sample, p)]
+    sample_atac_stats_rmdup = [p for p in atac_stats_rmdup if sample_matches_atac_path(sample, p)]
+    sample_atac_flagstat_prededup = [p for p in atac_flagstat_prededup if sample_matches_atac_path(sample, p)]
+    sample_atac_idxstats_prededup = [p for p in atac_idxstats_prededup if sample_matches_atac_path(sample, p)]
+    sample_atac_stats_prededup = [p for p in atac_stats_prededup if sample_matches_atac_path(sample, p)]
     sample_atac_multiqc_tables = atac_multiqc_tables
     has_atac = bool(sample_atac_flagstat_rmdup or sample_atac_idxstats_rmdup or sample_atac_stats_rmdup or sample_atac_flagstat_prededup or sample_atac_idxstats_prededup or sample_atac_stats_prededup)
     has_rna = bool(sample_logs or sample_knee or sample_barcodes or sample_summary or sample_barnyard)
@@ -3167,10 +3205,10 @@ workflow {
     ch_report_barrier
         .collect()
         .map { trigger_items ->
-            def knee_items = trigger_items.findAll { x ->
-                x != null && x.toString().endsWith("_knee_plot.png")
+            def report_items = trigger_items.findAll { x ->
+                x != null && (x instanceof java.nio.file.Path || x instanceof File)
             }
-            tuple(1, knee_items)
+            tuple(1, report_items)
         }
         .set { ch_build_qc_report }
     BUILD_QC_HTML(ch_build_qc_report)
