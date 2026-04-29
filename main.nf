@@ -844,7 +844,7 @@ process ESTIMATE_ATAC_CELLS {
     command -v samtools >/dev/null 2>&1 || { echo "ERROR: samtools not found in PATH."; exit 127; }
 
     BAM="${atac_dir}/${sample_id}.q30.rmdup.sorted.bam"
-    [ -f "$BAM" ] || { echo "Missing BAM: $BAM" >&2; exit 1; }
+    [ -f "\$BAM" ] || { echo "Missing BAM: \$BAM" >&2; exit 1; }
 
     case "${params.species_model}" in
       mouse)  gtfFile="${projectDir}/${params.gtf_dir}/Mus_musculus/Mus_musculus.GRCm39.111.gtf.gz" ;;
@@ -852,7 +852,7 @@ process ESTIMATE_ATAC_CELLS {
       *)      gtfFile="${projectDir}/${params.gtf_dir}/Homo_sapiens/Homo_sapiens.GRCh38.111.gtf.gz" ;;
     esac
 
-    samtools view -@ ${task.cpus} -f 64 -F 2304 "$BAM" \
+    samtools view -@ ${task.cpus} -f 64 -F 2304 "\$BAM" \
       | python3 - "${sample_id}" "${cb_whitelist}" "${gtfFile}" "${params.atac_min_frags_for_cell}" "${params.atac_min_tss_for_cell}" \
           "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv" \
           "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv" <<'PY'
