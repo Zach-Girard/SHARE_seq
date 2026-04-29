@@ -1213,6 +1213,22 @@ def sample_from_report_path(rel_path):
         return bits[1]
     return None
 
+def path_matches_sample(rel_path, sample):
+    if not rel_path or not sample:
+        return False
+    bits = rel_path.split("/")
+    if sample in bits:
+        return True
+    base = os.path.basename(rel_path)
+    patterns = [
+        f"{sample}.",
+        f"{sample}_",
+        f"{sample}-",
+        f"{sample}R1",
+        f"{sample}R2",
+    ]
+    return any(tok in base for tok in patterns)
+
 def parse_starsolo_log_metrics(rel_path):
     wanted = [
         "Number of input reads",
@@ -1760,6 +1776,10 @@ fastqc_html = sorted(set(
     rel_list("fastqc_demux/*/fastqc_demux/*_fastqc.html") +
     rel_list("fastqc_demux/*_fastqc.html")
 ))
+fastqc_trimmed_html = sorted(set(
+    rel_list("fastqc_trimmed/*_fastqc.html") +
+    rel_list_recursive("fastqc_trimmed/**/*_fastqc.html")
+))
 
 starsolo_logs = rel_list("STARsolo/*/Log.final.out") + rel_list("STARsolo_paired/*/Log.final.out")
 knee_plots = sorted(set(
@@ -2176,6 +2196,8 @@ for sample in sorted(all_sample_candidates):
     sample_barcodes = [p for p in barcodes_stats if sample_from_starsolo_path(p) == sample]
     sample_summary = [p for p in summary_csv if sample_from_starsolo_path(p) == sample]
     sample_barnyard = [p for p in barnyard if sample_from_starsolo_path(p) == sample]
+    sample_fastqc_demux = [p for p in fastqc_html if path_matches_sample(p, sample)]
+    sample_fastqc_trimmed = [p for p in fastqc_trimmed_html if path_matches_sample(p, sample)]
     sample_atac_flagstat_rmdup = [p for p in atac_flagstat_rmdup if sample_from_atac_path(p) == sample]
     sample_atac_idxstats_rmdup = [p for p in atac_idxstats_rmdup if sample_from_atac_path(p) == sample]
     sample_atac_stats_rmdup = [p for p in atac_stats_rmdup if sample_from_atac_path(p) == sample]
@@ -2216,6 +2238,15 @@ for sample in sorted(all_sample_candidates):
         if not items:
             return f"<h3>{html.escape(title)}</h3><p><em>No readable files found.</em></p>"
         return f"<h3>{html.escape(title)}</h3><ul>{''.join(items)}</ul>"
+
+    def sample_text_files_block(title, paths, max_lines=240):
+        if not paths:
+            return f"<h3>{html.escape(title)}</h3><p><em>No files found.</em></p>"
+        chunks = [f"<h3>{html.escape(title)}</h3>"]
+        for p in paths:
+            chunks.append(f"<h4>{html.escape(p)}</h4>")
+            chunks.append(read_text_preview(p, max_lines=max_lines))
+        return "".join(chunks)
 
     def prefer_path(paths, must_contain):
         if not paths:
@@ -2384,6 +2415,8 @@ for sample in sorted(all_sample_candidates):
     sample_parts.append('<section id="sec-demux">')
     sample_parts.append("<h2>Demultiplexing</h2>")
     sample_parts.append(demux_stats_html_for_sample(demux_stats, sample))
+    sample_parts.append(sample_links_block("FastQC HTML (demultiplexed)", sample_fastqc_demux))
+    sample_parts.append(sample_links_block("FastQC HTML (trimmed)", sample_fastqc_trimmed))
     sample_parts.append("</section>")
     if has_atac:
         pre_flag_links = filter_paths(sample_atac_flagstat_prededup, ".q30.mapped.flagstat.txt")
@@ -2396,13 +2429,13 @@ for sample in sorted(all_sample_candidates):
         sample_parts.append("<h2>ATAC QC</h2>")
         sample_parts.append(atac_pre_post_table(sample))
         sample_parts.append("<h3>Pre-dedup files (.q30.mapped)</h3>")
-        sample_parts.append(sample_links_block("flagstat", pre_flag_links))
-        sample_parts.append(sample_links_block("idxstats", pre_idx_links))
-        sample_parts.append(sample_links_block("stats", pre_stats_links))
+        sample_parts.append(sample_text_files_block("flagstat", pre_flag_links))
+        sample_parts.append(sample_text_files_block("idxstats", pre_idx_links))
+        sample_parts.append(sample_text_files_block("stats", pre_stats_links))
         sample_parts.append("<h3>Post-dedup files (.q30.rmdup)</h3>")
-        sample_parts.append(sample_links_block("flagstat", post_flag_links))
-        sample_parts.append(sample_links_block("idxstats", post_idx_links))
-        sample_parts.append(sample_links_block("stats", post_stats_links))
+        sample_parts.append(sample_text_files_block("flagstat", post_flag_links))
+        sample_parts.append(sample_text_files_block("idxstats", post_idx_links))
+        sample_parts.append(sample_text_files_block("stats", post_stats_links))
         sample_parts.append("</section>")
     if has_rna:
         sample_parts.append('<section id="sec-rna">')
@@ -2693,6 +2726,8 @@ workflow {
     def ch_r2_for_barcode_prepend
     def barcode_out_dir
 
+    def ch_trim_completion = Channel.empty()
+
     if (params.trim_reads) {
         log.info "Trimming enabled: R1 via fastp; R2 with first ${params.umi_len}bp protected."
         barcode_out_dir = 'trimmed'
@@ -2711,6 +2746,7 @@ workflow {
                 .mix(TRIM_R2_PROTECTED.out.trimmed_r2)
                 .map { sample_id, fastq -> fastq }
         )
+        ch_trim_completion = FASTQC_TRIMMED.out.trimmed_reports
     } else {
         log.info "Trimming disabled: using Poly-T–extracted reads directly."
         barcode_out_dir = 'polyt_filtered'
@@ -2737,6 +2773,16 @@ workflow {
     STAR_INDEX(ch_star_index_input)
 
     // Single-end STARsolo (CB_UMI_Complex): R1 (cDNA) + withBarcodes_R2 (24bp CB + UMI + cDNA)
+    def ch_report_barrier = BUILD_DEMUX_STATS_FROM_MERGED.out.merged_stats
+        .mix(RENAME_FASTQ.out.rename_stats)
+        .mix(FASTQC_DEMUX.out.demux_reports)
+        .mix(POLYT_FILTER.out.polyt_outputs)
+        .mix(ch_trim_completion)
+        .mix(DETERMINE_READ_LENGTH.out.read_length)
+        .mix(PREPEND_HEADER_BARCODES.out.r2_with_barcodes)
+        .mix(STAR_INDEX.out.star_index)
+        .mix(BWA_ALIGN_ATAC.out.atac_align_out)
+
     if( params.star_alignment_mode == 'single' ) {
         log.info "Running single-end STARsolo alignment."
 
@@ -2765,17 +2811,19 @@ workflow {
 
         KNEE_PLOT(ch_starsolo_for_hybrid_qc)
 
-        def ch_report_trigger_single = KNEE_PLOT.out.knee_plot
-            .mix(BWA_ALIGN_ATAC.out.atac_align_out)
+        ch_report_barrier = ch_report_barrier
+            .mix(STARSOLO_SINGLE.out.starsolo_out)
+            .mix(KNEE_PLOT.out.knee_plot)
         if( params.species_model == 'hybrid' ) {
             BARNYARD_PLOT(ch_starsolo_for_hybrid_qc)
             HYBRID_SPLIT_SPECIES(ch_starsolo_for_hybrid_qc)
-            ch_report_trigger_single = ch_report_trigger_single
+            ch_report_barrier = ch_report_barrier
                 .mix(BARNYARD_PLOT.out.barnyard80)
                 .mix(BARNYARD_PLOT.out.barnyard90)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_09)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_085)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_08)
         }
-        ch_report_trigger_single.collect().map { 1 }.set { ch_build_qc_report_single }
-        BUILD_QC_HTML(ch_build_qc_report_single)
     // Paired-end STARsolo (CB_UMI_Simple): R1 (cDNA) + withBarcodes_R2 (24bp CB + UMI + cDNA).
     // Barcodes are already error-corrected by rename_fastq.py, so no barcode matching needed.
     } else if( params.star_alignment_mode == 'paired' ) {
@@ -2816,19 +2864,25 @@ workflow {
 
         KNEE_PLOT(ch_starsolo_paired_for_qc)
 
-        def ch_report_trigger_paired = KNEE_PLOT.out.knee_plot
-            .mix(BWA_ALIGN_ATAC.out.atac_align_out)
+        ch_report_barrier = ch_report_barrier
+            .mix(BUILD_PAIRED_WHITELIST.out.paired_whitelist_file)
+            .mix(STARSOLO_PAIRED.out.starsolo_paired_out)
+            .mix(KNEE_PLOT.out.knee_plot)
         if( params.species_model == 'hybrid' ) {
             BARNYARD_PLOT(ch_starsolo_paired_for_qc)
             HYBRID_SPLIT_SPECIES(ch_starsolo_paired_for_qc)
-            ch_report_trigger_paired = ch_report_trigger_paired
+            ch_report_barrier = ch_report_barrier
                 .mix(BARNYARD_PLOT.out.barnyard80)
                 .mix(BARNYARD_PLOT.out.barnyard90)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_09)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_085)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_08)
         }
-        ch_report_trigger_paired.collect().map { 1 }.set { ch_build_qc_report_paired }
-        BUILD_QC_HTML(ch_build_qc_report_paired)
     } else {
         log.info "Unknown star_alignment_mode = ${params.star_alignment_mode}; skipping STARsolo alignment."
     }
+
+    ch_report_barrier.collect().map { 1 }.set { ch_build_qc_report }
+    BUILD_QC_HTML(ch_build_qc_report)
 }
 
