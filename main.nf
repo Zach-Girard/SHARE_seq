@@ -843,6 +843,7 @@ process ESTIMATE_ATAC_CELLS {
     set -euo pipefail
     command -v samtools >/dev/null 2>&1 || { echo "ERROR: samtools not found in PATH."; exit 127; }
 
+    mkdir -p ATAC/${sample_id}
     BAM="${atac_dir}/${sample_id}.q30.rmdup.sorted.bam"
     [ -f "\$BAM" ] || { echo "Missing BAM: \$BAM" >&2; exit 1; }
 
