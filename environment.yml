@@ -12,6 +12,7 @@ dependencies:
   - pigz
   - fastp
   - fastqc
+  - multiqc
   - star=2.7.11b
   - bwa
   - cutadapt

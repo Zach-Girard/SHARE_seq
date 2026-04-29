@@ -802,6 +802,27 @@ process BWA_ALIGN_ATAC {
     """
 }
 
+process MULTIQC_ATAC {
+    tag "atac_multiqc"
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    path(atac_dirs)
+
+    output:
+    path "multiqc_atac/ATAC_MultiQC.html", emit: multiqc_report
+    path "multiqc_atac/multiqc_data/*", emit: multiqc_data
+
+    """
+    set -euo pipefail
+    command -v multiqc >/dev/null 2>&1 || { echo "ERROR: multiqc not found in PATH. Install multiqc in environment.yml / activate env."; exit 127; }
+
+    mkdir -p multiqc_atac
+    multiqc --force --outdir multiqc_atac --filename ATAC_MultiQC.html .
+    """
+}
+
 process STARSOLO_SINGLE {
     tag { sample_id }
 
@@ -1640,6 +1661,49 @@ def parse_idxstats_metrics(rel_path):
         return out
     return out
 
+def sample_name_matches(sample, candidate):
+    if not sample or not candidate:
+        return False
+    s = str(sample).strip()
+    c = str(candidate).strip()
+    if c == s:
+        return True
+    tokens = [f"{s}.", f"{s}_", f"{s}-", f"/{s}/"]
+    return any(t in c for t in tokens) or (s in c)
+
+def multiqc_rows_html_for_sample(rel_paths, sample):
+    blocks = []
+    for rel in rel_paths:
+        abs_path = os.path.join(proj, rel)
+        if not os.path.isfile(abs_path):
+            continue
+        try:
+            with open(abs_path, newline="") as fh:
+                reader = csv.reader(fh, delimiter="\t")
+                all_rows = list(reader)
+        except Exception:
+            continue
+        if not all_rows:
+            continue
+        header = all_rows[0]
+        body = []
+        for r in all_rows[1:]:
+            if not r:
+                continue
+            name = r[0] if len(r) > 0 else ""
+            if sample_name_matches(sample, name):
+                body.append(r)
+        if not body:
+            continue
+        cells = []
+        cells.append("<tr>" + "".join(f"<th>{html.escape(str(c))}</th>" for c in header) + "</tr>")
+        for r in body:
+            cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in r) + "</tr>")
+        blocks.append(f"<h4>{html.escape(rel)}</h4><table>{''.join(cells)}</table>")
+    if not blocks:
+        return "<h3>ATAC MultiQC sample metrics</h3><p><em>No MultiQC rows found for this sample.</em></p>"
+    return "<h3>ATAC MultiQC sample metrics</h3>" + "".join(blocks)
+
 def _fmt_pct(v):
     try:
         return f"{float(v):.2f}%"
@@ -1806,6 +1870,12 @@ atac_stats_rmdup = sorted(set(
 atac_flagstat_prededup = rel_list("ATAC/*/*.q30.mapped.flagstat.txt")
 atac_idxstats_prededup = rel_list("ATAC/*/*.q30.mapped.idxstats.txt")
 atac_stats_prededup = rel_list("ATAC/*/*.q30.mapped.stats.txt")
+atac_multiqc_report = rel_list("multiqc_atac/ATAC_MultiQC.html")
+atac_multiqc_tables = sorted(set(
+    rel_list("multiqc_atac/multiqc_data/multiqc_general_stats.txt") +
+    rel_list("multiqc_atac/multiqc_data/multiqc_samtools_flagstat.txt") +
+    rel_list("multiqc_atac/multiqc_data/multiqc_samtools_stats.txt")
+))
 sample_names = sorted(set(
     [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup) if sample_from_report_path(p)]
     + list(load_demux_sample_names(demux_stats))
@@ -2204,6 +2274,7 @@ for sample in sorted(all_sample_candidates):
     sample_atac_flagstat_prededup = [p for p in atac_flagstat_prededup if sample_from_atac_path(p) == sample]
     sample_atac_idxstats_prededup = [p for p in atac_idxstats_prededup if sample_from_atac_path(p) == sample]
     sample_atac_stats_prededup = [p for p in atac_stats_prededup if sample_from_atac_path(p) == sample]
+    sample_atac_multiqc_tables = atac_multiqc_tables
     has_atac = bool(sample_atac_flagstat_rmdup or sample_atac_idxstats_rmdup or sample_atac_stats_rmdup or sample_atac_flagstat_prededup or sample_atac_idxstats_prededup or sample_atac_stats_prededup)
     has_rna = bool(sample_logs or sample_knee or sample_barcodes or sample_summary or sample_barnyard)
     sample_tabs = [("sec-demux", "Demultiplexing")]
@@ -2428,6 +2499,8 @@ for sample in sorted(all_sample_candidates):
         sample_parts.append('<section id="sec-atac">')
         sample_parts.append("<h2>ATAC QC</h2>")
         sample_parts.append(atac_pre_post_table(sample))
+        sample_parts.append(sample_links_block("ATAC MultiQC report", atac_multiqc_report))
+        sample_parts.append(multiqc_rows_html_for_sample(sample_atac_multiqc_tables, sample))
         sample_parts.append("<h3>Pre-dedup files (.q30.mapped)</h3>")
         sample_parts.append(sample_text_files_block("flagstat", pre_flag_links))
         sample_parts.append(sample_text_files_block("idxstats", pre_idx_links))
@@ -2686,6 +2759,12 @@ workflow {
 
     BWA_ALIGN_ATAC(ch_atac_bwa_input)
 
+    BWA_ALIGN_ATAC.out.atac_align_out
+        .collect()
+        .filter { dirs -> dirs && dirs.size() > 0 }
+        .set { ch_atac_multiqc_input }
+    MULTIQC_ATAC(ch_atac_multiqc_input)
+
     // Only RNA samples continue through the full workflow.
     def ch_rna_pairs = ch_matched_pairs_typed
         .filter { sample_id, sample_type, r1, r2 -> sample_type == 'RNA' }
@@ -2782,6 +2861,8 @@ workflow {
         .mix(PREPEND_HEADER_BARCODES.out.r2_with_barcodes)
         .mix(STAR_INDEX.out.star_index)
         .mix(BWA_ALIGN_ATAC.out.atac_align_out)
+        .mix(MULTIQC_ATAC.out.multiqc_report)
+        .mix(MULTIQC_ATAC.out.multiqc_data)
 
     if( params.star_alignment_mode == 'single' ) {
         log.info "Running single-end STARsolo alignment."
