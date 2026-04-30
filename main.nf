@@ -1573,9 +1573,15 @@ def overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample):
     cards.append(f'<p class="meta-line"><strong>Generated:</strong> {html.escape(generated)} | <strong>Project:</strong> <code>{html.escape(proj)}</code></p>')
     return "".join(cards)
 
-def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample):
+def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, atac_cell_summary_paths):
     if not sample_names:
         return "<p><em>No samples detected.</em></p>"
+    atac_cells_by_sample = {}
+    for p in sorted(atac_cell_summary_paths):
+        s = atac_sample_key(p)
+        if not s:
+            continue
+        atac_cells_by_sample[s] = parse_atac_cell_summary(p)
     rows = []
     rows.append("<tr><th>Sample</th><th>Uniquely mapped reads %</th><th>Median Reads per Cell</th><th>Estimated Number of Cells</th><th>Sample report</th></tr>")
     for s in sample_names:
@@ -1584,6 +1590,8 @@ def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample):
         unique = sm.get("Uniquely mapped reads %", "")
         mrc = sy.get("Median Reads per Cell", "")
         enc = sy.get("Estimated Number of Cells", "")
+        if not enc:
+            enc = atac_cells_by_sample.get(s, {}).get("EstimatedCells", "")
         link = f'QC_Report/{s}/index.html'
         rows.append(
             "<tr>"
@@ -2313,9 +2321,9 @@ parts.append('''<!doctype html>
     .unique { background: #2e7d32; }
     .multi { background: #1976d2; }
     .unmapped { background: #d32f2f; }
-    .qc-good { background: #e6f4ea; color: #000000; font-weight: 700; }
-    .qc-warn { background: #fff8e1; color: #000000; font-weight: 700; }
-    .qc-bad { background: #fdecea; color: #000000; font-weight: 700; }
+    section td.qc-good { background: #e6f4ea !important; color: #000000 !important; font-weight: 700; }
+    section td.qc-warn { background: #fff8e1 !important; color: #000000 !important; font-weight: 700; }
+    section td.qc-bad { background: #fdecea !important; color: #000000 !important; font-weight: 700; }
     .kpi-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -2433,7 +2441,7 @@ parts.append('<section id="sec-overview">')
 parts.append("<h2>Overview</h2>")
 parts.append(overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample))
 parts.append("<h3>Sample Directory</h3>")
-parts.append(sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample))
+parts.append(sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, atac_cell_summary))
 parts.append("</section>")
 
 parts.append('<section id="sec-demux">')
