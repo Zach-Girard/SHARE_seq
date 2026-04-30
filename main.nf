@@ -867,13 +867,34 @@ sample_id, wl_path, gtf_path, min_frags_s, min_tss_s, out_summary, out_counts, r
 min_frags = int(min_frags_s)
 min_tss = float(min_tss_s)
 
-valid = set()
+valid_8bp = set()
 with open(wl_path, "r", errors="replace") as fh:
     for line in fh:
         s = line.strip()
         if not s:
             continue
-        valid.add(s.split()[0])
+        bc = s.split()[0]
+        if len(bc) != 8:
+            continue
+        valid_8bp.add(bc)
+
+valid_8bp_1mm = set()
+for bc in valid_8bp:
+    valid_8bp_1mm.add(bc)
+    for i in range(8):
+        for nt in "ACGTN":
+            if nt == bc[i]:
+                continue
+            valid_8bp_1mm.add(bc[:i] + nt + bc[i+1:])
+
+def is_valid_24bp(cb):
+    if len(cb) != 24:
+        return False
+    return (
+        cb[0:8] in valid_8bp_1mm
+        and cb[8:16] in valid_8bp_1mm
+        and cb[16:24] in valid_8bp_1mm
+    )
 
 def load_tss_positions(path):
     opener = gzip.open if path.endswith(".gz") else open
@@ -945,7 +966,7 @@ with open(reads_path, "r", errors="replace") as sam_fh:
         cb = qname.rsplit("_", 1)[-1].strip()
         if not cb:
             continue
-        if valid and cb not in valid:
+        if valid_8bp_1mm and not is_valid_24bp(cb):
             continue
         counts[cb] = counts.get(cb, 0) + 1
         is_tss, is_flank = classify_tss_hit(tss_by_chrom[chrom], pos)
@@ -1275,6 +1296,46 @@ def ensure_knee_plots():
                 pass
 
 ensure_knee_plots()
+
+def ensure_atac_files():
+    atac_patterns = [
+        "*.q30.rmdup.flagstat.txt",
+        "*.q30.rmdup.idxstats.txt",
+        "*.q30.rmdup.stats.txt",
+        "*.q30.mapped.flagstat.txt",
+        "*.q30.mapped.idxstats.txt",
+        "*.q30.mapped.stats.txt",
+        "*.atac_cells.summary.tsv",
+        "*.atac_cells.counts.tsv",
+    ]
+    name_patterns = [
+        re.compile(r"(.+?)\\.q30\\.(?:rmdup|mapped|possort)\\.(?:flagstat|idxstats|stats)\\.txt\$"),
+        re.compile(r"(.+?)\\.atac_cells\\.(?:summary|counts)\\.tsv\$"),
+    ]
+    seen = set()
+    for pat in atac_patterns:
+        for src in glob.glob(f"**/{pat}", recursive=True) + glob.glob(pat):
+            if not os.path.isfile(src) or src in seen:
+                continue
+            seen.add(src)
+            base = os.path.basename(src)
+            sample = None
+            for rx in name_patterns:
+                m = rx.match(base)
+                if m:
+                    sample = m.group(1)
+                    break
+            if not sample:
+                continue
+            dst_dir = os.path.join(proj, "ATAC", sample)
+            os.makedirs(dst_dir, exist_ok=True)
+            dst = os.path.join(dst_dir, base)
+            try:
+                shutil.copy2(src, dst)
+            except Exception:
+                pass
+
+ensure_atac_files()
 
 def rel_list(pattern):
     return sorted([
@@ -1934,7 +1995,7 @@ def atac_sample_key(rel_path):
     if s:
         return s
     b = os.path.basename(rel_path)
-    m = re.match(r"(.+?)\\.q30(?:\\.rmdup)?\\.(?:flagstat|idxstats|stats)\\.txt\$", b)
+    m = re.match(r"(.+?)\\.q30(?:\\.(?:rmdup|mapped|possort))?\\.(?:flagstat|idxstats|stats)\\.txt\$", b)
     if m:
         return m.group(1)
     m2 = re.match(r"(.+?)\\.atac_cells\\.(?:summary|counts)\\.tsv\$", b)
@@ -2183,18 +2244,9 @@ barnyard = sorted(set(
     p for root in active_starsolo_roots
     for p in rel_list(f"{root}/*/*collision_plot.png")
 ))
-atac_flagstat_rmdup = sorted(set(
-    rel_list("ATAC/*/*.q30.rmdup.flagstat.txt") +
-    rel_list("ATAC/*/*.flagstat.txt")
-))
-atac_idxstats_rmdup = sorted(set(
-    rel_list("ATAC/*/*.q30.rmdup.idxstats.txt") +
-    rel_list("ATAC/*/*.idxstats.txt")
-))
-atac_stats_rmdup = sorted(set(
-    rel_list("ATAC/*/*.q30.rmdup.stats.txt") +
-    rel_list("ATAC/*/*.stats.txt")
-))
+atac_flagstat_rmdup = rel_list("ATAC/*/*.q30.rmdup.flagstat.txt")
+atac_idxstats_rmdup = rel_list("ATAC/*/*.q30.rmdup.idxstats.txt")
+atac_stats_rmdup = rel_list("ATAC/*/*.q30.rmdup.stats.txt")
 atac_flagstat_prededup = rel_list("ATAC/*/*.q30.mapped.flagstat.txt")
 atac_idxstats_prededup = rel_list("ATAC/*/*.q30.mapped.idxstats.txt")
 atac_stats_prededup = rel_list("ATAC/*/*.q30.mapped.stats.txt")
