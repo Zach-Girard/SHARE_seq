@@ -1870,10 +1870,10 @@ def atac_sample_key(rel_path):
     if s:
         return s
     b = os.path.basename(rel_path)
-    m = re.match(r"(.+?)\.q30(?:\.rmdup)?\.(?:flagstat|idxstats|stats)\.txt$", b)
+    m = re.match(r"(.+?)\\.q30(?:\\.rmdup)?\\.(?:flagstat|idxstats|stats)\\.txt$", b)
     if m:
         return m.group(1)
-    m2 = re.match(r"(.+?)\.atac_cells\.(?:summary|counts)\.tsv$", b)
+    m2 = re.match(r"(.+?)\\.atac_cells\\.(?:summary|counts)\\.tsv$", b)
     if m2:
         return m2.group(1)
     return os.path.basename(os.path.dirname(rel_path))
