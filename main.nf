@@ -1178,7 +1178,7 @@ process BUILD_QC_HTML {
     path "QC_Report_bundle.zip", emit: qc_bundle
 
     """
-    python3 - "${projectDir}" ${report_input_files} <<'PY'
+    python3 - "${projectDir}" <<'PY'
 import glob
 import html
 import os
@@ -1191,7 +1191,10 @@ import datetime
 import statistics
 
 proj = sys.argv[1]
-report_input_files = [p for p in sys.argv[2:] if os.path.isfile(p)]
+report_input_files = [
+    p for p in glob.glob("**/*", recursive=True)
+    if os.path.isfile(p)
+]
 species_model = "${params.species_model}"
 out_path = "QC_Report.html"
 assets_dir = "QC_Report_assets"
@@ -3089,6 +3092,16 @@ workflow {
     STAR_INDEX(ch_star_index_input)
 
     // Single-end STARsolo (CB_UMI_Complex): R1 (cDNA) + withBarcodes_R2 (24bp CB + UMI + cDNA)
+    def ch_report_inputs = BUILD_DEMUX_STATS_FROM_MERGED.out.merged_stats
+        .mix(RENAME_FASTQ.out.rename_stats)
+        .mix(FASTQC_DEMUX.out.demux_reports)
+        .mix(ch_trim_completion)
+        .mix(BWA_ALIGN_ATAC.out.atac_align_out)
+        .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_summary)
+        .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_counts)
+        .mix(MULTIQC_ATAC.out.multiqc_report)
+        .mix(MULTIQC_ATAC.out.multiqc_data)
+
     def ch_report_barrier = BUILD_DEMUX_STATS_FROM_MERGED.out.merged_stats
         .mix(RENAME_FASTQ.out.rename_stats)
         .mix(FASTQC_DEMUX.out.demux_reports)
@@ -3134,10 +3147,19 @@ workflow {
         ch_report_barrier = ch_report_barrier
             .mix(STARSOLO_SINGLE.out.starsolo_out)
             .mix(KNEE_PLOT.out.knee_plot)
+        ch_report_inputs = ch_report_inputs
+            .mix(STARSOLO_SINGLE.out.starsolo_out)
+            .mix(KNEE_PLOT.out.knee_plot)
         if( params.species_model == 'hybrid' ) {
             BARNYARD_PLOT(ch_starsolo_for_hybrid_qc)
             HYBRID_SPLIT_SPECIES(ch_starsolo_for_hybrid_qc)
             ch_report_barrier = ch_report_barrier
+                .mix(BARNYARD_PLOT.out.barnyard80)
+                .mix(BARNYARD_PLOT.out.barnyard90)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_09)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_085)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_08)
+            ch_report_inputs = ch_report_inputs
                 .mix(BARNYARD_PLOT.out.barnyard80)
                 .mix(BARNYARD_PLOT.out.barnyard90)
                 .mix(HYBRID_SPLIT_SPECIES.out.split_09)
@@ -3188,10 +3210,19 @@ workflow {
             .mix(BUILD_PAIRED_WHITELIST.out.paired_whitelist_file)
             .mix(STARSOLO_PAIRED.out.starsolo_paired_out)
             .mix(KNEE_PLOT.out.knee_plot)
+        ch_report_inputs = ch_report_inputs
+            .mix(STARSOLO_PAIRED.out.starsolo_paired_out)
+            .mix(KNEE_PLOT.out.knee_plot)
         if( params.species_model == 'hybrid' ) {
             BARNYARD_PLOT(ch_starsolo_paired_for_qc)
             HYBRID_SPLIT_SPECIES(ch_starsolo_paired_for_qc)
             ch_report_barrier = ch_report_barrier
+                .mix(BARNYARD_PLOT.out.barnyard80)
+                .mix(BARNYARD_PLOT.out.barnyard90)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_09)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_085)
+                .mix(HYBRID_SPLIT_SPECIES.out.split_08)
+            ch_report_inputs = ch_report_inputs
                 .mix(BARNYARD_PLOT.out.barnyard80)
                 .mix(BARNYARD_PLOT.out.barnyard90)
                 .mix(HYBRID_SPLIT_SPECIES.out.split_09)
@@ -3202,14 +3233,34 @@ workflow {
         log.info "Unknown star_alignment_mode = ${params.star_alignment_mode}; skipping STARsolo alignment."
     }
 
-    ch_report_barrier
+    def ch_report_done = ch_report_barrier
         .collect()
         .map { trigger_items ->
-            def report_items = trigger_items.findAll { x ->
-                x != null && (x instanceof java.nio.file.Path || x instanceof File)
-            }
-            tuple(1, report_items)
+            tuple(1, true)
         }
+
+    def ch_report_files = ch_report_inputs
+        .flatMap { x ->
+            if (x == null) {
+                return []
+            }
+            if (x instanceof java.nio.file.Path || x instanceof File) {
+                return [x]
+            }
+            if (x instanceof List || x.getClass().isArray()) {
+                return x.findAll { it instanceof java.nio.file.Path || it instanceof File }
+            }
+            return []
+        }
+        .collect()
+        .map { files ->
+            def uniq = files.unique { it.toString() }
+            tuple(1, uniq)
+        }
+
+    ch_report_done
+        .join(ch_report_files)
+        .map { k, done, report_items -> tuple(1, report_items) }
         .set { ch_build_qc_report }
     BUILD_QC_HTML(ch_build_qc_report)
 }
