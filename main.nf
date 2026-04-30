@@ -1204,6 +1204,15 @@ os.makedirs(per_sample_dir, exist_ok=True)
 
 def hydrate_report_inputs():
     roots = ("STARsolo", "STARsolo_paired", "ATAC", "multiqc_atac")
+    sample_roots = {}
+    for src in report_input_files:
+        norm = os.path.normpath(src)
+        parts = norm.split(os.sep)
+        for i, part in enumerate(parts):
+            if part in ("STARsolo", "STARsolo_paired") and len(parts) > i + 1:
+                sample = parts[i + 1]
+                sample_roots.setdefault(sample, set()).add(part)
+                break
     for src in report_input_files:
         norm = os.path.normpath(src)
         parts = norm.split(os.sep)
@@ -1213,6 +1222,16 @@ def hydrate_report_inputs():
                 rel = os.path.join(*parts[i:])
                 break
         if rel is None:
+            base = os.path.basename(src)
+            if base.endswith("_knee_plot.png"):
+                sample = base[:-len("_knee_plot.png")]
+                candidate_roots = sorted(sample_roots.get(sample, set()))
+                if not candidate_roots:
+                    candidate_roots = ["STARsolo", "STARsolo_paired"]
+                for root in candidate_roots:
+                    dst = os.path.join(proj, root, sample, base)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
             continue
         dst = os.path.join(proj, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -2323,7 +2342,7 @@ parts.append('''<!doctype html>
     .unmapped { background: #d32f2f; }
     section td.qc-good { background: #e6f4ea !important; color: #000000 !important; font-weight: 700; }
     section td.qc-warn { background: #fff8e1 !important; color: #000000 !important; font-weight: 700; }
-    section td.qc-bad { background: #fdecea !important; color: #000000 !important; font-weight: 700; }
+    section td.qc-bad { background: #f7b8b8 !important; color: #000000 !important; font-weight: 700; }
     .kpi-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
