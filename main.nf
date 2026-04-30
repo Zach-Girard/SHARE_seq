@@ -930,7 +930,7 @@ flank_counts = {}
 with open(reads_path, "r", errors="replace") as sam_fh:
     for raw in sam_fh:
         cols = raw.rstrip("\\n").split("\\t")
-        if len(cols) < 12:
+        if len(cols) < 11:
             continue
         chrom = cols[2]
         if chrom == "*" or chrom not in tss_by_chrom:
@@ -939,11 +939,10 @@ with open(reads_path, "r", errors="replace") as sam_fh:
             pos = int(cols[3])
         except Exception:
             continue
-        cb = None
-        for tag in cols[11:]:
-            if tag.startswith("CB:Z:"):
-                cb = tag[5:]
-                break
+        qname = cols[0]
+        if "_" not in qname:
+            continue
+        cb = qname.rsplit("_", 1)[-1].strip()
         if not cb:
             continue
         if valid and cb not in valid:
