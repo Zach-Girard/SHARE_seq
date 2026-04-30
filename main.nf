@@ -1196,11 +1196,19 @@ report_input_files = [
     if os.path.isfile(p)
 ]
 species_model = "${params.species_model}"
+star_alignment_mode = "${params.star_alignment_mode}"
 out_path = "QC_Report.html"
 assets_dir = "QC_Report_assets"
 per_sample_dir = "QC_Report"
 os.makedirs(assets_dir, exist_ok=True)
 os.makedirs(per_sample_dir, exist_ok=True)
+
+if star_alignment_mode == "single":
+    active_starsolo_roots = ["STARsolo"]
+elif star_alignment_mode == "paired":
+    active_starsolo_roots = ["STARsolo_paired"]
+else:
+    active_starsolo_roots = ["STARsolo", "STARsolo_paired"]
 
 def hydrate_report_inputs():
     roots = ("STARsolo", "STARsolo_paired", "ATAC", "multiqc_atac")
@@ -1227,7 +1235,7 @@ def hydrate_report_inputs():
                 sample = base[:-len("_knee_plot.png")]
                 candidate_roots = sorted(sample_roots.get(sample, set()))
                 if not candidate_roots:
-                    candidate_roots = ["STARsolo", "STARsolo_paired"]
+                    candidate_roots = list(active_starsolo_roots)
                 for root in candidate_roots:
                     dst = os.path.join(proj, root, sample, base)
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -1238,6 +1246,36 @@ def hydrate_report_inputs():
         shutil.copy2(src, dst)
 
 hydrate_report_inputs()
+
+def ensure_knee_plots():
+    work_candidates = sorted(set(
+        glob.glob("**/*_knee_plot.png", recursive=True) +
+        glob.glob("*_knee_plot.png")
+    ))
+    work_candidates = [p for p in work_candidates if os.path.isfile(p)]
+    by_sample = {}
+    for p in work_candidates:
+        base = os.path.basename(p)
+        if not base.endswith("_knee_plot.png"):
+            continue
+        sample = base[:-len("_knee_plot.png")]
+        if sample not in by_sample:
+            by_sample[sample] = p
+        else:
+            existing = by_sample[sample]
+            if ("STARsolo" not in existing.split(os.sep)) and ("STARsolo" in p.split(os.sep)):
+                by_sample[sample] = p
+    for sample, src in by_sample.items():
+        for root in active_starsolo_roots:
+            dst_dir = os.path.join(proj, root, sample)
+            os.makedirs(dst_dir, exist_ok=True)
+            dst = os.path.join(dst_dir, f"{sample}_knee_plot.png")
+            try:
+                shutil.copy2(src, dst)
+            except Exception:
+                pass
+
+ensure_knee_plots()
 
 def rel_list(pattern):
     return sorted([
@@ -2126,16 +2164,26 @@ fastqc_trimmed_html = sorted(set(
     rel_list_recursive("fastqc_trimmed/**/*_fastqc.html")
 ))
 
-starsolo_logs = rel_list("STARsolo/*/Log.final.out") + rel_list("STARsolo_paired/*/Log.final.out")
-knee_plots = sorted(set(
-    rel_list("STARsolo/*/*_knee_plot.png") +
-    rel_list("STARsolo_paired/*/*_knee_plot.png") +
-    rel_list_recursive("STARsolo/**/*_knee_plot.png") +
-    rel_list_recursive("STARsolo_paired/**/*_knee_plot.png")
+starsolo_logs = sorted(set(
+    p for root in active_starsolo_roots
+    for p in rel_list(f"{root}/*/Log.final.out")
 ))
-barcodes_stats = rel_list("STARsolo/*/Solo.out/Barcodes.stats") + rel_list("STARsolo_paired/*/Solo.out/Barcodes.stats")
-summary_csv = rel_list("STARsolo/*/Solo.out/GeneFull/Summary.csv") + rel_list("STARsolo_paired/*/Solo.out/GeneFull/Summary.csv")
-barnyard = rel_list("STARsolo/*/*collision_plot.png") + rel_list("STARsolo_paired/*/*collision_plot.png")
+knee_plots = sorted(set(
+    p for root in active_starsolo_roots
+    for p in (rel_list(f"{root}/*/*_knee_plot.png") + rel_list_recursive(f"{root}/**/*_knee_plot.png"))
+))
+barcodes_stats = sorted(set(
+    p for root in active_starsolo_roots
+    for p in rel_list(f"{root}/*/Solo.out/Barcodes.stats")
+))
+summary_csv = sorted(set(
+    p for root in active_starsolo_roots
+    for p in rel_list(f"{root}/*/Solo.out/GeneFull/Summary.csv")
+))
+barnyard = sorted(set(
+    p for root in active_starsolo_roots
+    for p in rel_list(f"{root}/*/*collision_plot.png")
+))
 atac_flagstat_rmdup = sorted(set(
     rel_list("ATAC/*/*.q30.rmdup.flagstat.txt") +
     rel_list("ATAC/*/*.flagstat.txt")
