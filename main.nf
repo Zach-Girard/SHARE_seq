@@ -1870,10 +1870,10 @@ def atac_sample_key(rel_path):
     if s:
         return s
     b = os.path.basename(rel_path)
-    m = re.match(r"(.+?)\\.q30(?:\\.rmdup)?\\.(?:flagstat|idxstats|stats)\\.txt$", b)
+    m = re.match(r"(.+?)\\.q30(?:\\.rmdup)?\\.(?:flagstat|idxstats|stats)\\.txt\$", b)
     if m:
         return m.group(1)
-    m2 = re.match(r"(.+?)\\.atac_cells\\.(?:summary|counts)\\.tsv$", b)
+    m2 = re.match(r"(.+?)\\.atac_cells\\.(?:summary|counts)\\.tsv\$", b)
     if m2:
         return m2.group(1)
     return os.path.basename(os.path.dirname(rel_path))
@@ -2313,9 +2313,9 @@ parts.append('''<!doctype html>
     .unique { background: #2e7d32; }
     .multi { background: #1976d2; }
     .unmapped { background: #d32f2f; }
-    .qc-good { background: #e6f4ea; color: #1b5e20; font-weight: 700; }
-    .qc-warn { background: #fff8e1; color: #8a6d00; font-weight: 700; }
-    .qc-bad { background: #fdecea; color: #b71c1c; font-weight: 700; }
+    .qc-good { background: #e6f4ea; color: #000000; font-weight: 700; }
+    .qc-warn { background: #fff8e1; color: #000000; font-weight: 700; }
+    .qc-bad { background: #fdecea; color: #000000; font-weight: 700; }
     .kpi-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
