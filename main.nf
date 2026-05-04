@@ -857,6 +857,7 @@ process ESTIMATE_ATAC_CELLS {
 
     python3 - archr_input.sam archr_tagged.sam "ATAC/${sample_id}/${sample_id}.archr_tagged.stats.tsv" <<'PY'
 import sys
+import re
 
 in_sam, out_sam, stats_path = sys.argv[1:4]
 input_alignments = 0
@@ -875,17 +876,18 @@ with open(in_sam, "r", errors="replace") as inp, open(out_sam, "w") as out:
             skipped_no_barcode += 1
             continue
         qname = cols[0]
-        if "_" not in qname:
+        # Prefer the suffix after the last "_" (original SHARE-seq format),
+        # but fall back to the full QNAME and extract the last 24bp DNA token.
+        candidate = qname.rsplit("_", 1)[-1] if "_" in qname else qname
+        candidate = candidate.strip()
+        candidate = candidate.split()[0].split("/")[0]
+        matches = re.findall(r"[ACGTNacgtn]{24}", candidate)
+        if not matches:
+            matches = re.findall(r"[ACGTNacgtn]{24}", qname)
+        if not matches:
             skipped_no_barcode += 1
             continue
-        cb = qname.rsplit("_", 1)[-1].strip()
-        if not cb:
-            skipped_no_barcode += 1
-            continue
-        if len(cb) != 24 or any(base not in "ACGTNacgtn" for base in cb):
-            skipped_bad_barcode += 1
-            continue
-        cb = cb.upper()
+        cb = matches[-1].upper()
         cols = [x for x in cols if not x.startswith("CB:Z:")]
         cols.append("CB:Z:" + cb)
         out.write("\\t".join(cols) + "\\n")
@@ -971,9 +973,6 @@ counts <- data.frame(
   Barcode = barcodes,
   Fragments = fragments,
   TSSEnrichment = tss,
-  PassMinFrags = ifelse(!is.na(fragments) & fragments >= min_frags, 1, NA),
-  PassMinTSS = ifelse(!is.na(tss) & tss >= min_tss, 1, NA),
-  PassCell = 1,
   stringsAsFactors = FALSE
 )
 utils::write.table(counts, file = out_counts, sep = "\t", quote = FALSE, row.names = FALSE)
