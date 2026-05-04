@@ -842,175 +842,170 @@ process ESTIMATE_ATAC_CELLS {
     """
     set -euo pipefail
     command -v samtools >/dev/null 2>&1 || { echo "ERROR: samtools not found in PATH."; exit 127; }
+    command -v Rscript >/dev/null 2>&1 || { echo "ERROR: Rscript not found in PATH. Install r-base/r-archr in environment.yml / activate env."; exit 127; }
 
     mkdir -p ATAC/${sample_id}
     BAM="${atac_dir}/${sample_id}.q30.rmdup.sorted.bam"
     [ -f "\$BAM" ] || { echo "Missing BAM: \$BAM" >&2; exit 1; }
 
     case "${params.species_model}" in
-      mouse)  gtfFile="${projectDir}/${params.gtf_dir}/Mus_musculus/Mus_musculus.GRCm39.111.gtf.gz" ;;
-      hybrid) gtfFile="${projectDir}/${params.gtf_dir}/hybrid/hybrid_human_mouse.gtf.gz" ;;
-      *)      gtfFile="${projectDir}/${params.gtf_dir}/Homo_sapiens/Homo_sapiens.GRCh38.111.gtf.gz" ;;
+      mouse)  archrGenome="mm10" ;;
+      *)      archrGenome="hg38" ;;
     esac
 
-    samtools view -@ ${task.cpus} -f 64 -F 2304 "\$BAM" > atac_reads.sam
+    samtools view -@ ${task.cpus} -h "\$BAM" > archr_input.sam
 
-    python3 - "${sample_id}" "${cb_whitelist}" "\${gtfFile}" "${params.atac_min_frags_for_cell}" "${params.atac_min_tss_for_cell}" \
-        "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv" \
-        "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv" atac_reads.sam <<'PY'
+    python3 - archr_input.sam archr_tagged.sam "ATAC/${sample_id}/${sample_id}.archr_tagged.stats.tsv" <<'PY'
 import sys
-import statistics
-import gzip
-import bisect
 
-sample_id, wl_path, gtf_path, min_frags_s, min_tss_s, out_summary, out_counts, reads_path = sys.argv[1:9]
-min_frags = int(min_frags_s)
-min_tss = float(min_tss_s)
+in_sam, out_sam, stats_path = sys.argv[1:4]
+input_alignments = 0
+tagged_alignments = 0
+skipped_no_barcode = 0
+skipped_bad_barcode = 0
 
-valid_8bp = set()
-with open(wl_path, "r", errors="replace") as fh:
-    for line in fh:
-        s = line.strip()
-        if not s:
+with open(in_sam, "r", errors="replace") as inp, open(out_sam, "w") as out:
+    for raw in inp:
+        if raw.startswith("@"):
+            out.write(raw)
             continue
-        bc = s.split()[0]
-        if len(bc) != 8:
-            continue
-        valid_8bp.add(bc)
-
-valid_8bp_1mm = set()
-for bc in valid_8bp:
-    valid_8bp_1mm.add(bc)
-    for i in range(8):
-        for nt in "ACGTN":
-            if nt == bc[i]:
-                continue
-            valid_8bp_1mm.add(bc[:i] + nt + bc[i+1:])
-
-def is_valid_24bp(cb):
-    if len(cb) != 24:
-        return False
-    return (
-        cb[0:8] in valid_8bp_1mm
-        and cb[8:16] in valid_8bp_1mm
-        and cb[16:24] in valid_8bp_1mm
-    )
-
-def load_tss_positions(path):
-    opener = gzip.open if path.endswith(".gz") else open
-    out = {}
-    with opener(path, "rt", errors="replace") as fh:
-        for raw in fh:
-            if not raw or raw.startswith("#"):
-                continue
-            cols = raw.rstrip("\\n").split("\\t")
-            if len(cols) < 9 or cols[2] != "gene":
-                continue
-            chrom = cols[0]
-            try:
-                start = int(cols[3])
-                end = int(cols[4])
-            except Exception:
-                continue
-            strand = cols[6]
-            tss = start if strand == "+" else end
-            out.setdefault(chrom, []).append(tss)
-    for chrom in out:
-        out[chrom].sort()
-    return out
-
-def classify_tss_hit(tss_list, pos):
-    if not tss_list:
-        return (False, False)
-    i = bisect.bisect_left(tss_list, pos)
-    left = i - 1
-    right = i
-    is_tss = False
-    is_flank = False
-    while left >= 0 and (pos - tss_list[left]) <= 2000:
-        d = abs(pos - tss_list[left])
-        if d <= 100:
-            is_tss = True
-        elif 1900 <= d <= 2000:
-            is_flank = True
-        left -= 1
-    n = len(tss_list)
-    while right < n and (tss_list[right] - pos) <= 2000:
-        d = abs(pos - tss_list[right])
-        if d <= 100:
-            is_tss = True
-        elif 1900 <= d <= 2000:
-            is_flank = True
-        right += 1
-    return (is_tss, is_flank)
-
-tss_by_chrom = load_tss_positions(gtf_path)
-counts = {}
-tss_counts = {}
-flank_counts = {}
-valid_barcode_reads = 0
-tss_eligible_reads = 0
-with open(reads_path, "r", errors="replace") as sam_fh:
-    for raw in sam_fh:
+        input_alignments += 1
         cols = raw.rstrip("\\n").split("\\t")
         if len(cols) < 11:
-            continue
-        chrom = cols[2]
-        try:
-            pos = int(cols[3])
-        except Exception:
+            skipped_no_barcode += 1
             continue
         qname = cols[0]
         if "_" not in qname:
+            skipped_no_barcode += 1
             continue
         cb = qname.rsplit("_", 1)[-1].strip()
         if not cb:
+            skipped_no_barcode += 1
             continue
-        if valid_8bp_1mm and not is_valid_24bp(cb):
+        if len(cb) != 24 or any(base not in "ACGTNacgtn" for base in cb):
+            skipped_bad_barcode += 1
             continue
-        valid_barcode_reads += 1
-        counts[cb] = counts.get(cb, 0) + 1
-        if chrom == "*" or chrom not in tss_by_chrom:
-            continue
-        tss_eligible_reads += 1
-        is_tss, is_flank = classify_tss_hit(tss_by_chrom[chrom], pos)
-        if is_tss:
-            tss_counts[cb] = tss_counts.get(cb, 0) + 1
-        if is_flank:
-            flank_counts[cb] = flank_counts.get(cb, 0) + 1
+        cb = cb.upper()
+        cols = [x for x in cols if not x.startswith("CB:Z:")]
+        cols.append("CB:Z:" + cb)
+        out.write("\\t".join(cols) + "\\n")
+        tagged_alignments += 1
 
-rows = []
-for bc, n in counts.items():
-    tss = tss_counts.get(bc, 0)
-    flank = flank_counts.get(bc, 0)
-    tss_ratio = (tss + 1.0) / (flank + 1.0) if tss_eligible_reads else 0.0
-    pass_frags = n >= min_frags
-    pass_tss = tss_eligible_reads > 0 and tss_ratio >= min_tss
-    rows.append((bc, n, tss, flank, tss_ratio, pass_frags, pass_tss))
-
-passing_frags_only = [r for r in rows if r[5]]
-passing_both = [r for r in rows if r[5] and r[6]]
-with open(out_counts, "w") as out:
-    out.write("Barcode\\tFragments\\tTSSReads\\tFlankReads\\tTSSRatio\\tPassMinFrags\\tPassMinTSS\\tPassCell\\n")
-    for bc, n, tss, flank, tss_ratio, pass_frags, pass_tss in sorted(rows, key=lambda x: x[1], reverse=True):
-        out.write(f"{bc}\\t{n}\\t{tss}\\t{flank}\\t{tss_ratio:.6f}\\t{1 if pass_frags else 0}\\t{1 if pass_tss else 0}\\t{1 if pass_frags else 0}\\n")
-
-with open(out_summary, "w") as out:
+with open(stats_path, "w") as out:
     out.write("Metric\\tValue\\n")
-    out.write(f"Sample\\t{sample_id}\\n")
-    out.write(f"MinFragmentsForCell\\t{min_frags}\\n")
-    out.write(f"MinTSSRatioForCell\\t{min_tss}\\n")
-    out.write(f"BarcodesWithFragments\\t{len(counts)}\\n")
-    out.write(f"ValidBarcodeReads\\t{valid_barcode_reads}\\n")
-    out.write(f"TSSEligibleReads\\t{tss_eligible_reads}\\n")
-    out.write(f"TSSChromosomesLoaded\\t{len(tss_by_chrom)}\\n")
-    out.write(f"EstimatedCellsMinFragsOnly\\t{len(passing_frags_only)}\\n")
-    out.write(f"EstimatedCellsMinFragsMinTSS\\t{len(passing_both)}\\n")
-    out.write(f"EstimatedCells\\t{len(passing_frags_only)}\\n")
-    out.write(f"MedianFragmentsPerBarcode\\t{statistics.median(counts.values()) if counts else 0}\\n")
-    out.write(f"MedianFragmentsPerEstimatedCell\\t{statistics.median([r[1] for r in passing_both]) if passing_both else 0}\\n")
+    out.write(f"InputAlignments\\t{input_alignments}\\n")
+    out.write(f"TaggedAlignments\\t{tagged_alignments}\\n")
+    out.write(f"SkippedNoBarcode\\t{skipped_no_barcode}\\n")
+    out.write(f"SkippedBadBarcode\\t{skipped_bad_barcode}\\n")
 PY
-    rm -f atac_reads.sam
+
+    samtools view -@ ${task.cpus} -b archr_tagged.sam \\
+      | samtools sort -@ ${task.cpus} -o ATAC/${sample_id}/${sample_id}.archr_tagged.sorted.bam -
+    samtools index -@ ${task.cpus} ATAC/${sample_id}/${sample_id}.archr_tagged.sorted.bam
+
+    Rscript - "${sample_id}" "ATAC/${sample_id}/${sample_id}.archr_tagged.sorted.bam" \\
+        "${params.atac_min_frags_for_cell}" "${params.atac_min_tss_for_cell}" "\${archrGenome}" "${task.cpus}" \\
+        "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv" \\
+        "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv" <<'RSCRIPT'
+suppressPackageStartupMessages(library(ArchR))
+
+args <- commandArgs(trailingOnly = TRUE)
+sample_id <- args[[1]]
+bam_path <- args[[2]]
+min_frags <- as.numeric(args[[3]])
+min_tss <- as.numeric(args[[4]])
+archr_genome <- args[[5]]
+threads <- as.integer(args[[6]])
+out_summary <- args[[7]]
+out_counts <- args[[8]]
+
+addArchRLocking(locking = TRUE)
+addArchRThreads(threads = threads)
+addArchRGenome(archr_genome)
+
+inputFiles <- bam_path
+names(inputFiles) <- sample_id
+
+arrow_files <- createArrowFiles(
+  inputFiles = inputFiles,
+  sampleNames = names(inputFiles),
+  minFrags = min_frags,
+  minTSS = min_tss,
+  addTileMat = TRUE,
+  addGeneScoreMat = TRUE,
+  bcTag = "CB",
+  force = TRUE
+)
+
+proj <- ArchRProject(
+  ArrowFiles = arrow_files,
+  outputDirectory = paste0(sample_id, "_ArchR"),
+  copyArrows = TRUE
+)
+
+cell_col <- as.data.frame(getCellColData(proj))
+pick_col <- function(candidates) {
+  for (candidate in candidates) {
+    if (candidate %in% colnames(cell_col)) {
+      return(candidate)
+    }
+  }
+  return(NA_character_)
+}
+
+frag_col <- pick_col(c("nFrags", "NFrags", "nfrags"))
+tss_col <- pick_col(c("TSSEnrichment", "TSS.enrichment", "TSSRatio"))
+cell_names <- rownames(cell_col)
+barcodes <- sub("^.*#", "", cell_names)
+fragments <- if (!is.na(frag_col)) cell_col[[frag_col]] else rep(NA_real_, nrow(cell_col))
+tss <- if (!is.na(tss_col)) cell_col[[tss_col]] else rep(NA_real_, nrow(cell_col))
+
+counts <- data.frame(
+  Barcode = barcodes,
+  Fragments = fragments,
+  TSSEnrichment = tss,
+  PassMinFrags = ifelse(!is.na(fragments) & fragments >= min_frags, 1, NA),
+  PassMinTSS = ifelse(!is.na(tss) & tss >= min_tss, 1, NA),
+  PassCell = 1,
+  stringsAsFactors = FALSE
+)
+utils::write.table(counts, file = out_counts, sep = "\t", quote = FALSE, row.names = FALSE)
+
+estimated_cells <- nrow(cell_col)
+median_fragments <- if (length(fragments) && any(!is.na(fragments))) stats::median(fragments, na.rm = TRUE) else 0
+median_tss <- if (length(tss) && any(!is.na(tss))) stats::median(tss, na.rm = TRUE) else 0
+
+summary <- data.frame(
+  Metric = c(
+    "Sample",
+    "Method",
+    "ArchRGenome",
+    "MinFragmentsForCell",
+    "MinTSSRatioForCell",
+    "EstimatedCells",
+    "EstimatedCellsMinFragsMinTSS",
+    "MedianFragmentsPerEstimatedCell",
+    "MedianTSSEnrichmentPerEstimatedCell",
+    "ArchRArrowFile"
+  ),
+  Value = c(
+    sample_id,
+    "ArchR createArrowFiles",
+    archr_genome,
+    min_frags,
+    min_tss,
+    estimated_cells,
+    estimated_cells,
+    median_fragments,
+    median_tss,
+    paste(arrow_files, collapse = ",")
+  ),
+  stringsAsFactors = FALSE
+)
+utils::write.table(summary, file = out_summary, sep = "\t", quote = FALSE, row.names = FALSE)
+RSCRIPT
+
+    rm -f archr_input.sam archr_tagged.sam
     """
 }
 

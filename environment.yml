@@ -18,6 +18,8 @@ dependencies:
   - cutadapt
   - tqdm
   - samtools
+  - r-base
+  - r-archr
   - bedtools
   - matplotlib
   - pandas
