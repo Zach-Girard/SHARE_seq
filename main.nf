@@ -908,12 +908,6 @@ PY
         "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv" \\
         "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv" <<'RSCRIPT'
 suppressPackageStartupMessages(library(ArchR))
-if (archr_genome == "hg38" && !requireNamespace("BSgenome.Hsapiens.UCSC.hg38", quietly = TRUE)) {
-  stop("Missing package BSgenome.Hsapiens.UCSC.hg38. Install via conda dependency bioconductor-bsgenome.hsapiens.ucsc.hg38.")
-}
-if (archr_genome == "mm10" && !requireNamespace("BSgenome.Mmusculus.UCSC.mm10", quietly = TRUE)) {
-  stop("Missing package BSgenome.Mmusculus.UCSC.mm10. Install via conda dependency bioconductor-bsgenome.mmusculus.ucsc.mm10.")
-}
 
 args <- commandArgs(trailingOnly = TRUE)
 sample_id <- args[[1]]
@@ -924,6 +918,13 @@ archr_genome <- args[[5]]
 threads <- as.integer(args[[6]])
 out_summary <- args[[7]]
 out_counts <- args[[8]]
+
+if (archr_genome == "hg38" && !requireNamespace("BSgenome.Hsapiens.UCSC.hg38", quietly = TRUE)) {
+  stop("Missing package BSgenome.Hsapiens.UCSC.hg38. Install via conda dependency bioconductor-bsgenome.hsapiens.ucsc.hg38.")
+}
+if (archr_genome == "mm10" && !requireNamespace("BSgenome.Mmusculus.UCSC.mm10", quietly = TRUE)) {
+  stop("Missing package BSgenome.Mmusculus.UCSC.mm10. Install via conda dependency bioconductor-bsgenome.mmusculus.ucsc.mm10.")
+}
 
 addArchRLocking(locking = TRUE)
 addArchRThreads(threads = threads)
