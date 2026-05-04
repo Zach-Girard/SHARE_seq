@@ -948,14 +948,14 @@ tss_by_chrom = load_tss_positions(gtf_path)
 counts = {}
 tss_counts = {}
 flank_counts = {}
+valid_barcode_reads = 0
+tss_eligible_reads = 0
 with open(reads_path, "r", errors="replace") as sam_fh:
     for raw in sam_fh:
         cols = raw.rstrip("\\n").split("\\t")
         if len(cols) < 11:
             continue
         chrom = cols[2]
-        if chrom == "*" or chrom not in tss_by_chrom:
-            continue
         try:
             pos = int(cols[3])
         except Exception:
@@ -968,7 +968,11 @@ with open(reads_path, "r", errors="replace") as sam_fh:
             continue
         if valid_8bp_1mm and not is_valid_24bp(cb):
             continue
+        valid_barcode_reads += 1
         counts[cb] = counts.get(cb, 0) + 1
+        if chrom == "*" or chrom not in tss_by_chrom:
+            continue
+        tss_eligible_reads += 1
         is_tss, is_flank = classify_tss_hit(tss_by_chrom[chrom], pos)
         if is_tss:
             tss_counts[cb] = tss_counts.get(cb, 0) + 1
@@ -979,17 +983,17 @@ rows = []
 for bc, n in counts.items():
     tss = tss_counts.get(bc, 0)
     flank = flank_counts.get(bc, 0)
-    tss_ratio = (tss + 1.0) / (flank + 1.0)
+    tss_ratio = (tss + 1.0) / (flank + 1.0) if tss_eligible_reads else 0.0
     pass_frags = n >= min_frags
-    pass_tss = tss_ratio >= min_tss
+    pass_tss = tss_eligible_reads > 0 and tss_ratio >= min_tss
     rows.append((bc, n, tss, flank, tss_ratio, pass_frags, pass_tss))
 
-passing_both = [r for r in rows if r[5] and r[6]]
 passing_frags_only = [r for r in rows if r[5]]
+passing_both = [r for r in rows if r[5] and r[6]]
 with open(out_counts, "w") as out:
     out.write("Barcode\\tFragments\\tTSSReads\\tFlankReads\\tTSSRatio\\tPassMinFrags\\tPassMinTSS\\tPassCell\\n")
     for bc, n, tss, flank, tss_ratio, pass_frags, pass_tss in sorted(rows, key=lambda x: x[1], reverse=True):
-        out.write(f"{bc}\\t{n}\\t{tss}\\t{flank}\\t{tss_ratio:.6f}\\t{1 if pass_frags else 0}\\t{1 if pass_tss else 0}\\t{1 if (pass_frags and pass_tss) else 0}\\n")
+        out.write(f"{bc}\\t{n}\\t{tss}\\t{flank}\\t{tss_ratio:.6f}\\t{1 if pass_frags else 0}\\t{1 if pass_tss else 0}\\t{1 if pass_frags else 0}\\n")
 
 with open(out_summary, "w") as out:
     out.write("Metric\\tValue\\n")
@@ -997,8 +1001,12 @@ with open(out_summary, "w") as out:
     out.write(f"MinFragmentsForCell\\t{min_frags}\\n")
     out.write(f"MinTSSRatioForCell\\t{min_tss}\\n")
     out.write(f"BarcodesWithFragments\\t{len(counts)}\\n")
+    out.write(f"ValidBarcodeReads\\t{valid_barcode_reads}\\n")
+    out.write(f"TSSEligibleReads\\t{tss_eligible_reads}\\n")
+    out.write(f"TSSChromosomesLoaded\\t{len(tss_by_chrom)}\\n")
     out.write(f"EstimatedCellsMinFragsOnly\\t{len(passing_frags_only)}\\n")
-    out.write(f"EstimatedCells\\t{len(passing_both)}\\n")
+    out.write(f"EstimatedCellsMinFragsMinTSS\\t{len(passing_both)}\\n")
+    out.write(f"EstimatedCells\\t{len(passing_frags_only)}\\n")
     out.write(f"MedianFragmentsPerBarcode\\t{statistics.median(counts.values()) if counts else 0}\\n")
     out.write(f"MedianFragmentsPerEstimatedCell\\t{statistics.median([r[1] for r in passing_both]) if passing_both else 0}\\n")
 PY
@@ -2164,6 +2172,7 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
         rows.append([
             s,
             cs.get("EstimatedCells", ""),
+            cs.get("EstimatedCellsMinFragsMinTSS", ""),
             pf.get("in_total", ""),
             pf.get("properly_paired_pct", ""),
             _fmt_pct(pre_mt),
@@ -2179,6 +2188,7 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
         "<tr>"
         "<th>Sample</th>"
         "<th>Estimated cells</th>"
+        "<th>Estimated cells + minTSS</th>"
         "<th>Reads pre-dedup</th>"
         "<th>Properly paired % pre</th>"
         "<th>MT % pre</th>"
