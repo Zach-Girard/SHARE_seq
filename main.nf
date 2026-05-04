@@ -770,9 +770,50 @@ process BWA_ALIGN_ATAC {
       | samtools view -@ ${task.cpus} -b -q 30 -F 4 - \
       > ATAC/${sample_id}/${sample_id}.q30.mapped.bam
 
+    # Add CB:Z:<24bp_barcode> from QNAME so duplicate removal is barcode-aware.
+    samtools view -@ ${task.cpus} -h ATAC/${sample_id}/${sample_id}.q30.mapped.bam \
+      | python3 -c 'import re,sys
+pat=re.compile(r"[ACGTNacgtn]{24}")
+for raw in sys.stdin:
+    if raw.startswith("@"):
+        sys.stdout.write(raw); continue
+    cols=raw.rstrip("\\n").split("\\t")
+    if len(cols)<11:
+        continue
+    qname=cols[0]
+    candidate=qname.rsplit("_",1)[-1] if "_" in qname else qname
+    candidate=candidate.strip().split()[0].split("/")[0]
+    matches=pat.findall(candidate) or pat.findall(qname)
+    if not matches:
+        continue
+    cb=matches[-1].upper()
+    cols=[x for x in cols if not x.startswith("CB:Z:")]
+    cols.append("CB:Z:"+cb)
+    sys.stdout.write("\\t".join(cols)+"\\n")
+' \
+      | samtools view -@ ${task.cpus} -b -o ATAC/${sample_id}/${sample_id}.q30.mapped.cbtag.bam -
+
+    total_alignments=\$(samtools view -@ ${task.cpus} -c ATAC/${sample_id}/${sample_id}.q30.mapped.bam)
+    cbtag_alignments=\$(samtools view -@ ${task.cpus} -c ATAC/${sample_id}/${sample_id}.q30.mapped.cbtag.bam)
+    missing_cb_alignments=\$(( total_alignments - cbtag_alignments ))
+    cbtag_pct=\$(python3 - "\${total_alignments}" "\${cbtag_alignments}" <<'PY'
+import sys
+total = float(sys.argv[1])
+kept = float(sys.argv[2])
+print(f"{(100.0*kept/total):.4f}" if total > 0 else "0.0000")
+PY
+    )
+    {
+      echo -e "Metric\tValue"
+      echo -e "TotalAlignments\t\${total_alignments}"
+      echo -e "CBTaggedAlignments\t\${cbtag_alignments}"
+      echo -e "MissingCBAlignments\t\${missing_cb_alignments}"
+      echo -e "CBTaggedPct\t\${cbtag_pct}"
+    } > ATAC/${sample_id}/${sample_id}.cbtag_qc.tsv
+
     samtools sort -@ ${task.cpus} -n \
       -o ATAC/${sample_id}/${sample_id}.q30.namesort.bam \
-      ATAC/${sample_id}/${sample_id}.q30.mapped.bam
+      ATAC/${sample_id}/${sample_id}.q30.mapped.cbtag.bam
 
     samtools fixmate -@ ${task.cpus} -m \
       ATAC/${sample_id}/${sample_id}.q30.namesort.bam \
@@ -788,7 +829,7 @@ process BWA_ALIGN_ATAC {
     samtools idxstats ATAC/${sample_id}/${sample_id}.q30.possort.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.idxstats.txt
     samtools stats ATAC/${sample_id}/${sample_id}.q30.possort.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.stats.txt
 
-    samtools markdup -@ ${task.cpus} -r \
+    samtools markdup -@ ${task.cpus} -r --barcode-tag CB \
       ATAC/${sample_id}/${sample_id}.q30.possort.bam \
       ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam
 
@@ -799,6 +840,7 @@ process BWA_ALIGN_ATAC {
 
     rm -f \
       ATAC/${sample_id}/${sample_id}.q30.mapped.bam \
+      ATAC/${sample_id}/${sample_id}.q30.mapped.cbtag.bam \
       ATAC/${sample_id}/${sample_id}.q30.namesort.bam \
       ATAC/${sample_id}/${sample_id}.q30.fixmate.bam \
       ATAC/${sample_id}/${sample_id}.q30.possort.bam \
@@ -965,10 +1007,20 @@ pick_col <- function(candidates) {
 
 frag_col <- pick_col(c("nFrags", "NFrags", "nfrags"))
 tss_col <- pick_col(c("TSSEnrichment", "TSS.enrichment", "TSSRatio"))
+reads_in_tss_col <- pick_col(c("ReadsInTSS", "readsInTSS"))
+reads_in_prom_col <- pick_col(c("ReadsInPromoter", "readsInPromoter", "ReadsInPromoters"))
+prom_ratio_col <- pick_col(c("PromoterRatio", "promoterRatio", "FRIP.Promoter", "FRIP_Promoter"))
+reads_in_black_col <- pick_col(c("ReadsInBlacklist", "readsInBlacklist"))
+black_ratio_col <- pick_col(c("BlacklistRatio", "blacklistRatio", "FRIP.Blacklist", "FRIP_Blacklist"))
 cell_names <- rownames(cell_col)
 barcodes <- sub("^.*#", "", cell_names)
 fragments <- if (!is.na(frag_col)) cell_col[[frag_col]] else rep(NA_real_, nrow(cell_col))
 tss <- if (!is.na(tss_col)) cell_col[[tss_col]] else rep(NA_real_, nrow(cell_col))
+reads_in_tss <- if (!is.na(reads_in_tss_col)) cell_col[[reads_in_tss_col]] else rep(NA_real_, nrow(cell_col))
+reads_in_prom <- if (!is.na(reads_in_prom_col)) cell_col[[reads_in_prom_col]] else rep(NA_real_, nrow(cell_col))
+prom_ratio <- if (!is.na(prom_ratio_col)) cell_col[[prom_ratio_col]] else rep(NA_real_, nrow(cell_col))
+reads_in_black <- if (!is.na(reads_in_black_col)) cell_col[[reads_in_black_col]] else rep(NA_real_, nrow(cell_col))
+black_ratio <- if (!is.na(black_ratio_col)) cell_col[[black_ratio_col]] else rep(NA_real_, nrow(cell_col))
 
 counts <- data.frame(
   Barcode = barcodes,
@@ -981,6 +1033,11 @@ utils::write.table(counts, file = out_counts, sep = "\t", quote = FALSE, row.nam
 estimated_cells <- nrow(cell_col)
 median_fragments <- if (length(fragments) && any(!is.na(fragments))) stats::median(fragments, na.rm = TRUE) else 0
 median_tss <- if (length(tss) && any(!is.na(tss))) stats::median(tss, na.rm = TRUE) else 0
+median_reads_in_tss <- if (length(reads_in_tss) && any(!is.na(reads_in_tss))) stats::median(reads_in_tss, na.rm = TRUE) else 0
+median_reads_in_prom <- if (length(reads_in_prom) && any(!is.na(reads_in_prom))) stats::median(reads_in_prom, na.rm = TRUE) else 0
+median_prom_ratio <- if (length(prom_ratio) && any(!is.na(prom_ratio))) stats::median(prom_ratio, na.rm = TRUE) else 0
+median_reads_in_black <- if (length(reads_in_black) && any(!is.na(reads_in_black))) stats::median(reads_in_black, na.rm = TRUE) else 0
+median_black_ratio <- if (length(black_ratio) && any(!is.na(black_ratio))) stats::median(black_ratio, na.rm = TRUE) else 0
 
 summary <- data.frame(
   Metric = c(
@@ -990,9 +1047,13 @@ summary <- data.frame(
     "MinFragmentsForCell",
     "MinTSSRatioForCell",
     "EstimatedCells",
-    "EstimatedCellsMinFragsMinTSS",
     "MedianFragmentsPerEstimatedCell",
     "MedianTSSEnrichmentPerEstimatedCell",
+    "MedianReadsInTSSPerEstimatedCell",
+    "MedianReadsInPromoterPerEstimatedCell",
+    "MedianPromoterRatioPerEstimatedCell",
+    "MedianReadsInBlacklistPerEstimatedCell",
+    "MedianBlacklistRatioPerEstimatedCell",
     "ArchRArrowFile"
   ),
   Value = c(
@@ -1002,9 +1063,13 @@ summary <- data.frame(
     min_frags,
     min_tss,
     estimated_cells,
-    estimated_cells,
     median_fragments,
     median_tss,
+    median_reads_in_tss,
+    median_reads_in_prom,
+    median_prom_ratio,
+    median_reads_in_black,
+    median_black_ratio,
     paste(arrow_files, collapse = ",")
   ),
   stringsAsFactors = FALSE
@@ -2000,6 +2065,9 @@ def parse_atac_cell_summary(rel_path):
         return out
     return out
 
+def parse_qc_metric_tsv(rel_path):
+    return parse_atac_cell_summary(rel_path)
+
 def atac_sample_key(rel_path):
     s = sample_from_report_path(rel_path)
     if s:
@@ -2142,7 +2210,7 @@ def atac_alignment_summary_table(flagstat_paths, idxstats_paths):
         cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in row) + "</tr>")
     return "<table>" + "".join(cells) + "</table>"
 
-def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, flagstat_rmdup_paths, idxstats_rmdup_paths, atac_cell_summary_paths):
+def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, flagstat_rmdup_paths, idxstats_rmdup_paths, atac_cell_summary_paths, atac_cbtag_qc_paths):
     samples = sorted(set(
         [atac_sample_key(p) for p in (flagstat_prededup_paths + idxstats_prededup_paths + flagstat_rmdup_paths + idxstats_rmdup_paths)]
     ))
@@ -2154,6 +2222,7 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
     post_flag = { atac_sample_key(p): p for p in flagstat_rmdup_paths }
     post_idx = { atac_sample_key(p): p for p in idxstats_rmdup_paths }
     cell_sum = { atac_sample_key(p): p for p in atac_cell_summary_paths }
+    cbtag_qc = { atac_sample_key(p): p for p in atac_cbtag_qc_paths }
 
     rows = []
     for s in samples:
@@ -2162,6 +2231,7 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
         rf = parse_flagstat_metrics(post_flag[s]) if s in post_flag else {}
         ri = parse_idxstats_metrics(post_idx[s]) if s in post_idx else {}
         cs = parse_atac_cell_summary(cell_sum[s]) if s in cell_sum else {}
+        cq = parse_qc_metric_tsv(cbtag_qc[s]) if s in cbtag_qc else {}
 
         pre_total = _to_int(pf.get("in_total", ""))
         post_total = _to_int(rf.get("in_total", ""))
@@ -2174,15 +2244,14 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
         rows.append([
             s,
             cs.get("EstimatedCells", ""),
-            cs.get("EstimatedCellsMinFragsMinTSS", ""),
+            cs.get("MedianFragmentsPerEstimatedCell", ""),
+            cs.get("MedianTSSEnrichmentPerEstimatedCell", ""),
+            cq.get("CBTaggedPct", ""),
             pf.get("in_total", ""),
-            pf.get("properly_paired_pct", ""),
             _fmt_pct(pre_mt),
             rf.get("in_total", ""),
-            rf.get("properly_paired_pct", ""),
             _fmt_pct(post_mt),
             _fmt_pct(retained_pct) if retained_pct is not None else "",
-            _fmt_pct(removed_pct) if removed_pct is not None else "",
         ])
 
     cells = []
@@ -2190,15 +2259,14 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
         "<tr>"
         "<th>Sample</th>"
         "<th>Estimated cells</th>"
-        "<th>Estimated cells + minTSS</th>"
+        "<th>Median nFrags</th>"
+        "<th>medianTSS</th>"
+        "<th>CB-tagged %</th>"
         "<th>Reads pre-dedup</th>"
-        "<th>Properly paired % pre</th>"
         "<th>MT % pre</th>"
         "<th>Reads post-dedup</th>"
-        "<th>Properly paired % post</th>"
         "<th>MT % post</th>"
         "<th>Reads retained</th>"
-        "<th>Reads removed</th>"
         "</tr>"
     )
     for row in rows:
@@ -2262,6 +2330,7 @@ atac_stats_rmdup = rel_list("ATAC/*/*.q30.rmdup.stats.txt")
 atac_flagstat_prededup = rel_list("ATAC/*/*.q30.mapped.flagstat.txt")
 atac_idxstats_prededup = rel_list("ATAC/*/*.q30.mapped.idxstats.txt")
 atac_stats_prededup = rel_list("ATAC/*/*.q30.mapped.stats.txt")
+atac_cbtag_qc = rel_list("ATAC/*/*.cbtag_qc.tsv")
 atac_cell_summary = sorted(set(
     rel_list("ATAC/*/*.atac_cells.summary.tsv") +
     rel_list_recursive("ATAC/**/*.atac_cells.summary.tsv")
@@ -2279,7 +2348,7 @@ atac_multiqc_tables = sorted(set(
     rel_list("ATAC_MultiQC_data/multiqc_samtools_stats.txt")
 ))
 sample_names = sorted(set(
-    [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup) if sample_from_report_path(p)]
+    [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup + atac_cbtag_qc) if sample_from_report_path(p)]
     + list(load_demux_sample_names(demux_stats))
 ))
 starsolo_by_sample = starsolo_metrics_by_sample(starsolo_logs)
@@ -2600,7 +2669,7 @@ parts.append(
     "Use the difference to estimate duplicate burden and retained unique signal.</p>"
 )
 parts.append('<div class="starsolo-block"><h3>ATAC Key Summary by Sample</h3>')
-parts.append(atac_key_summary_table(atac_flagstat_prededup, atac_idxstats_prededup, atac_flagstat_rmdup, atac_idxstats_rmdup, atac_cell_summary))
+parts.append(atac_key_summary_table(atac_flagstat_prededup, atac_idxstats_prededup, atac_flagstat_rmdup, atac_idxstats_rmdup, atac_cell_summary, atac_cbtag_qc))
 parts.append("</div>")
 parts.append("</section>")
 
@@ -2642,7 +2711,7 @@ def sample_from_atac_path(rel_path):
     return None
 
 all_sample_candidates = set()
-for p in starsolo_logs + knee_plots + barcodes_stats + summary_csv + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup:
+for p in starsolo_logs + knee_plots + barcodes_stats + summary_csv + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup + atac_cbtag_qc:
     s = sample_from_starsolo_path(p)
     if s:
         all_sample_candidates.add(s)
@@ -2669,8 +2738,10 @@ for sample in sorted(all_sample_candidates):
     sample_atac_flagstat_prededup = [p for p in atac_flagstat_prededup if sample_matches_atac_path(sample, p)]
     sample_atac_idxstats_prededup = [p for p in atac_idxstats_prededup if sample_matches_atac_path(sample, p)]
     sample_atac_stats_prededup = [p for p in atac_stats_prededup if sample_matches_atac_path(sample, p)]
+    sample_atac_cbtag_qc = [p for p in atac_cbtag_qc if sample_matches_atac_path(sample, p)]
+    sample_atac_cells = [p for p in atac_cell_summary if sample_matches_atac_path(sample, p)]
     sample_atac_multiqc_tables = atac_multiqc_tables
-    has_atac = bool(sample_atac_flagstat_rmdup or sample_atac_idxstats_rmdup or sample_atac_stats_rmdup or sample_atac_flagstat_prededup or sample_atac_idxstats_prededup or sample_atac_stats_prededup)
+    has_atac = bool(sample_atac_flagstat_rmdup or sample_atac_idxstats_rmdup or sample_atac_stats_rmdup or sample_atac_flagstat_prededup or sample_atac_idxstats_prededup or sample_atac_stats_prededup or sample_atac_cbtag_qc)
     has_rna = bool(sample_logs or sample_knee or sample_barcodes or sample_summary or sample_barnyard)
     sample_tabs = [("sec-demux", "Demultiplexing")]
     if has_atac:
@@ -2728,6 +2799,8 @@ for sample in sorted(all_sample_candidates):
         post_flag = parse_flagstat_metrics(post_flag_path) if post_flag_path else {}
         post_idx = parse_idxstats_metrics(post_idx_path) if post_idx_path else {}
         pre_insert_avg, post_insert_avg = multiqc_insert_size_for_sample(sample_atac_multiqc_tables, sample)
+        cs = parse_atac_cell_summary(sample_atac_cells[0]) if sample_atac_cells else {}
+        cq = parse_qc_metric_tsv(sample_atac_cbtag_qc[0]) if sample_atac_cbtag_qc else {}
 
         pre_total = _to_int(pre_flag.get("in_total", ""))
         post_total = _to_int(post_flag.get("in_total", ""))
@@ -2737,6 +2810,16 @@ for sample in sorted(all_sample_candidates):
         post_mt = (100.0 * post_idx.get("mt_mapped", 0) / post_idx.get("total_mapped", 1)) if post_idx.get("total_mapped", 0) > 0 else 0.0
 
         rows = [
+            ("Estimated cells", cs.get("EstimatedCells", ""), ""),
+            ("Median nFrags (ArchR)", cs.get("MedianFragmentsPerEstimatedCell", ""), ""),
+            ("ReadsInTSS (ArchR)", cs.get("MedianReadsInTSSPerEstimatedCell", ""), ""),
+            ("CB-tagged alignments %", cq.get("CBTaggedPct", ""), ""),
+            ("CB-tagged alignments", cq.get("CBTaggedAlignments", ""), ""),
+            ("Missing CB alignments", cq.get("MissingCBAlignments", ""), ""),
+            ("ReadsInPromoter (ArchR)", cs.get("MedianReadsInPromoterPerEstimatedCell", ""), ""),
+            ("PromoterRatio (ArchR)", cs.get("MedianPromoterRatioPerEstimatedCell", ""), ""),
+            ("ReadsInBlacklist (ArchR)", cs.get("MedianReadsInBlacklistPerEstimatedCell", ""), ""),
+            ("BlacklistRatio (ArchR)", cs.get("MedianBlacklistRatioPerEstimatedCell", ""), ""),
             ("Total reads", pre_flag.get("in_total", ""), post_flag.get("in_total", "")),
             ("Properly paired %", pre_flag.get("properly_paired_pct", ""), post_flag.get("properly_paired_pct", "")),
             ("Singleton %", pre_flag.get("singletons_pct", ""), post_flag.get("singletons_pct", "")),

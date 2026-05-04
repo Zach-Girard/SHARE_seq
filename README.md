@@ -23,7 +23,7 @@ End-to-end SHARE-seq processing from raw FASTQs to STARsolo quantification and Q
 
 - **Read structure after demux**: R1 = cDNA, R2 = UMI + PolyT + cDNA. The 24bp cell barcode (3×8bp round barcodes validated by `rename_fastq.py`) is in the read header.
 - **Sample-type routing**: `sample_barcode_file` column 1 is sample ID and column 3 is sample type (`RNA` or `ATAC`). RNA samples continue through Poly-T/STARsolo; ATAC samples go through a dedicated BWA branch.
-- **ATAC branch**: `BWA_INDEX` builds a species-specific BWA index once and reuses it across runs using a genome fingerprint. `BWA_ALIGN_ATAC` runs `bwa mem -C`, keeps mapped reads with `MAPQ >= 30`, removes duplicates (`samtools markdup -r`), and writes per-sample BAM + QC metrics (`flagstat`, `idxstats`, `stats`) under `ATAC/<sample>/`.
+- **ATAC branch**: `BWA_INDEX` builds a species-specific BWA index once and reuses it across runs using a genome fingerprint. `BWA_ALIGN_ATAC` runs `bwa mem -C`, keeps mapped reads with `MAPQ >= 30`, adds `CB:Z` tags from QNAME, performs barcode-aware duplicate removal (`samtools markdup --barcode-tag CB -r`), and writes per-sample BAM + QC metrics (`flagstat`, `idxstats`, `stats`) under `ATAC/<sample>/`.
 - **Poly-T filtering** is always run. R2 is the anchor (cutadapt matches UMI + PolyT pattern); R1 (cDNA) is synced. Reads are split into `extracted` and `noPolyT` buckets.
 - **Trimming** (`trim_reads = true`) runs fastp on Poly-T–extracted R1 (standard) and R2 (first `umi_len` bases protected). Read-dropping filters are disabled to keep R1/R2 in sync. When trimming is off (default), Poly-T–extracted reads flow directly to barcode prepend.
 - **Barcode prepend** extracts the 24bp cell barcode from R2's read header and prepends it to R2's sequence. The `withBarcodes_*` output is written to `trimmed/<sample>/` when trimming is enabled, or `polyt_filtered/<sample>/` when disabled.
@@ -101,9 +101,82 @@ This will place the human and mouse GTFs under `GTF/Homo_sapiens/` and `GTF/Mus_
 - ATAC samples then run through `BWA_INDEX`/`BWA_ALIGN_ATAC` and write outputs to `ATAC/<sample>/`:
   - `<sample>.q30.rmdup.sorted.bam`
   - `<sample>.q30.rmdup.sorted.bam.bai`
-  - `<sample>.flagstat.txt`
-  - `<sample>.idxstats.txt`
-  - `<sample>.stats.txt`
+  - `<sample>.q30.mapped.flagstat.txt`
+  - `<sample>.q30.mapped.idxstats.txt`
+  - `<sample>.q30.mapped.stats.txt`
+  - `<sample>.q30.rmdup.flagstat.txt`
+  - `<sample>.q30.rmdup.idxstats.txt`
+  - `<sample>.q30.rmdup.stats.txt`
+  - `<sample>.cbtag_qc.tsv` (CB-tagging QC: total alignments, tagged alignments, missing-CB alignments, tagged %)
+
+### ATAC branch details (alignment, deduplication, QC, cell estimation)
+
+This section documents the ATAC-specific logic in detail.
+
+#### 1) Alignment and MAPQ filtering
+
+- Input: demultiplexed `matched` R1/R2 FASTQs for samples labeled `ATAC` in `sample_barcode_file` column 3.
+- `BWA_ALIGN_ATAC` runs:
+  - `bwa mem -C` against the selected genome index (`human`, `mouse`, or `hybrid`)
+  - `samtools view -q 30 -F 4` to retain mapped alignments with `MAPQ >= 30`
+- Intermediate mapped BAM:
+  - `ATAC/<sample>/<sample>.q30.mapped.bam`
+
+#### 2) Barcode tagging before deduplication
+
+- After alignment, the pipeline adds `CB:Z:<24bp_barcode>` tags to alignments before duplicate removal.
+- The barcode is extracted from read QNAME (SHARE-seq header convention; fallback regex search for a 24bp `[ACGTN]{24}` token).
+- This enables barcode-aware duplicate removal in the next step.
+- Tagging QC is written to:
+  - `ATAC/<sample>/<sample>.cbtag_qc.tsv`
+
+#### 3) Barcode-aware deduplication strategy
+
+- The pipeline uses:
+  - `samtools sort -n` -> `samtools fixmate -m` -> coordinate sort -> `samtools markdup --barcode-tag CB -r`
+- Duplicate identity is determined by standard paired-end alignment geometry (position/orientation/mate information) **within each barcode group** (`CB`), instead of collapsing identical coordinates across all cells.
+- This is the intended strategy for single-cell ATAC to avoid over-collapsing fragments from different cells that share coordinates.
+
+#### 4) Pre/post dedup ATAC QC metrics
+
+- Pre-dedup metrics (on `.q30.mapped`):
+  - `flagstat`, `idxstats`, `stats`
+- Post-dedup metrics (on `.q30.rmdup`):
+  - `flagstat`, `idxstats`, `stats`
+- Combined and per-sample HTML report sections use these files to show:
+  - reads pre/post dedup
+  - mitochondrial fraction pre/post
+  - retained reads %
+  - insert-size summaries (via ATAC MultiQC where available)
+
+#### 5) ArchR-based ATAC cell estimation
+
+- `ESTIMATE_ATAC_CELLS` uses the post-dedup BAM:
+  - `ATAC/<sample>/<sample>.q30.rmdup.sorted.bam`
+- It creates an ArchR-ready tagged BAM for Arrow creation:
+  - `ATAC/<sample>/<sample>.archr_tagged.sorted.bam`
+- ArchR flow:
+  - `addArchRGenome(...)`
+  - `createArrowFiles(minFrags = atac_min_frags_for_cell, minTSS = atac_min_tss_for_cell, bcTag = "CB")`
+  - `ArchRProject(...)`
+- Summary/count outputs:
+  - `ATAC/<sample>/<sample>.atac_cells.summary.tsv`
+  - `ATAC/<sample>/<sample>.atac_cells.counts.tsv`
+  - `ATAC/<sample>/<sample>.archr_tagged.stats.tsv`
+
+#### 6) ATAC metrics surfaced in reports
+
+- Combined report (`ATAC Key Summary by Sample`) includes:
+  - estimated cells (ArchR)
+  - median nFrags
+  - median TSS enrichment
+  - CB-tagged %
+  - pre/post read and mt metrics
+- Per-sample ATAC report includes:
+  - pre/post dedup comparison table
+  - ArchR summary metrics
+  - CB-tagging QC rows
+  - link to global ATAC MultiQC report
 - **Dependencies**: Script dependencies come from `environment.yml` (no local `utils.py` required).
 
 ### Barcode configuration
