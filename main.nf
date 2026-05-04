@@ -2273,22 +2273,6 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
         cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in row) + "</tr>")
     return "<table>" + "".join(cells) + "</table>"
 
-def atac_sample_metric_cards(sample, flagstat_paths, idxstats_paths):
-    flag = parse_flagstat_metrics(flagstat_paths[0]) if flagstat_paths else {}
-    idx = parse_idxstats_metrics(idxstats_paths[0]) if idxstats_paths else {}
-    total_mapped = idx.get("total_mapped", 0)
-    mt_frac = (100.0 * idx.get("mt_mapped", 0) / total_mapped) if total_mapped > 0 else 0.0
-    cards = []
-    cards.append('<div class="kpi-grid">')
-    cards.append(f'<div class="kpi-card"><div class="kpi-label">Sample</div><div class="kpi-value">{html.escape(sample)}</div></div>')
-    cards.append(f'<div class="kpi-card"><div class="kpi-label">Total reads</div><div class="kpi-value">{html.escape(flag.get("in_total", "N/A"))}</div></div>')
-    cards.append(f'<div class="kpi-card"><div class="kpi-label">Properly paired</div><div class="kpi-value">{html.escape(flag.get("properly_paired_pct", "N/A"))}</div></div>')
-    cards.append(f'<div class="kpi-card"><div class="kpi-label">Singletons</div><div class="kpi-value">{html.escape(flag.get("singletons_pct", "N/A"))}</div></div>')
-    cards.append(f'<div class="kpi-card"><div class="kpi-label">Mate diff chr</div><div class="kpi-value">{html.escape(flag.get("mate_diff_chr_count", "N/A"))}</div></div>')
-    cards.append(f'<div class="kpi-card"><div class="kpi-label">Mitochondrial fraction</div><div class="kpi-value">{_fmt_pct(mt_frac)}</div></div>')
-    cards.append('</div>')
-    return "".join(cards)
-
 demux_total = rel_list("demux/*.total_number_reads.tsv")
 demux_stats = sorted(set(
     rel_list("demux/SHARE-seq.demultiplex.stats.tsv")
