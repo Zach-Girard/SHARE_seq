@@ -14,3 +14,4 @@ Genomes/*
 GTF/*
 !GTF/download_gtf.sh
 QC_Report*
+ATAC_C1200/*

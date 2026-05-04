@@ -838,6 +838,7 @@ process ESTIMATE_ATAC_CELLS {
     output:
     path "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv", emit: atac_cell_summary
     path "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv", emit: atac_cell_counts
+    path "ATAC/${sample_id}/${sample_id}.archr_tagged.stats.tsv", emit: archr_tagged_stats
 
     """
     set -euo pipefail
@@ -3236,6 +3237,7 @@ workflow {
         .mix(BWA_ALIGN_ATAC.out.atac_align_out)
         .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_summary)
         .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_counts)
+        .mix(ESTIMATE_ATAC_CELLS.out.archr_tagged_stats)
         .mix(MULTIQC_ATAC.out.multiqc_report)
         .mix(MULTIQC_ATAC.out.multiqc_data)
 
@@ -3250,6 +3252,7 @@ workflow {
         .mix(BWA_ALIGN_ATAC.out.atac_align_out)
         .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_summary)
         .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_counts)
+        .mix(ESTIMATE_ATAC_CELLS.out.archr_tagged_stats)
         .mix(MULTIQC_ATAC.out.multiqc_report)
         .mix(MULTIQC_ATAC.out.multiqc_data)
 
