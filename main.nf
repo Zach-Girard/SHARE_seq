@@ -820,17 +820,17 @@ PY
       ATAC/${sample_id}/${sample_id}.q30.fixmate.bam
 
     samtools sort -@ ${task.cpus} \
-      -o ATAC/${sample_id}/${sample_id}.q30.possort.bam \
+      -o ATAC/${sample_id}/${sample_id}.q30.mapped.sorted.bam \
       ATAC/${sample_id}/${sample_id}.q30.fixmate.bam
 
     # Pre-dedup snapshot (after MAPQ filter, before duplicate removal), from coordinate-sorted BAM.
-    samtools index -@ ${task.cpus} ATAC/${sample_id}/${sample_id}.q30.possort.bam
-    samtools flagstat ATAC/${sample_id}/${sample_id}.q30.possort.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.flagstat.txt
-    samtools idxstats ATAC/${sample_id}/${sample_id}.q30.possort.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.idxstats.txt
-    samtools stats ATAC/${sample_id}/${sample_id}.q30.possort.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.stats.txt
+    samtools index -@ ${task.cpus} ATAC/${sample_id}/${sample_id}.q30.mapped.sorted.bam
+    samtools flagstat ATAC/${sample_id}/${sample_id}.q30.mapped.sorted.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.flagstat.txt
+    samtools idxstats ATAC/${sample_id}/${sample_id}.q30.mapped.sorted.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.idxstats.txt
+    samtools stats ATAC/${sample_id}/${sample_id}.q30.mapped.sorted.bam > ATAC/${sample_id}/${sample_id}.q30.mapped.stats.txt
 
     samtools markdup -@ ${task.cpus} -r --barcode-tag CB \
-      ATAC/${sample_id}/${sample_id}.q30.possort.bam \
+      ATAC/${sample_id}/${sample_id}.q30.mapped.sorted.bam \
       ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam
 
     samtools index -@ ${task.cpus} ATAC/${sample_id}/${sample_id}.q30.rmdup.sorted.bam
@@ -843,8 +843,7 @@ PY
       ATAC/${sample_id}/${sample_id}.q30.mapped.cbtag.bam \
       ATAC/${sample_id}/${sample_id}.q30.namesort.bam \
       ATAC/${sample_id}/${sample_id}.q30.fixmate.bam \
-      ATAC/${sample_id}/${sample_id}.q30.possort.bam \
-      ATAC/${sample_id}/${sample_id}.q30.possort.bam.bai
+      ATAC/${sample_id}/${sample_id}.q30.mapped.sorted.bai
     """
 }
 
@@ -888,67 +887,23 @@ process ESTIMATE_ATAC_CELLS {
     command -v Rscript >/dev/null 2>&1 || { echo "ERROR: Rscript not found in PATH. Install r-base/r-archr in environment.yml / activate env."; exit 127; }
 
     mkdir -p ATAC/${sample_id}
-    BAM="${atac_dir}/${sample_id}.q30.rmdup.sorted.bam"
-    [ -f "\$BAM" ] || { echo "Missing BAM: \$BAM" >&2; exit 1; }
+    BAM_POST="${atac_dir}/${sample_id}.q30.rmdup.sorted.bam"
+    BAM_PRE="${atac_dir}/${sample_id}.q30.mapped.sorted.bam"
+    [ -f "\$BAM_POST" ] || { echo "Missing post-dedup BAM: \$BAM_POST" >&2; exit 1; }
+    [ -f "\$BAM_PRE" ] || { echo "Missing pre-dedup BAM: \$BAM_PRE" >&2; exit 1; }
 
     case "${params.species_model}" in
       mouse)  archrGenome="mm10" ;;
       *)      archrGenome="hg38" ;;
     esac
 
-    samtools view -@ ${task.cpus} -h "\$BAM" > archr_input.sam
+    {
+      echo -e "Metric\tValue"
+      echo -e "InputAlignmentsPreDedup\t\$(samtools view -@ ${task.cpus} -c \"\$BAM_PRE\")"
+      echo -e "InputAlignmentsPostDedup\t\$(samtools view -@ ${task.cpus} -c \"\$BAM_POST\")"
+    } > ATAC/${sample_id}/${sample_id}.archr_tagged.stats.tsv
 
-    python3 - archr_input.sam archr_tagged.sam "ATAC/${sample_id}/${sample_id}.archr_tagged.stats.tsv" <<'PY'
-import sys
-import re
-
-in_sam, out_sam, stats_path = sys.argv[1:4]
-input_alignments = 0
-tagged_alignments = 0
-skipped_no_barcode = 0
-skipped_bad_barcode = 0
-
-with open(in_sam, "r", errors="replace") as inp, open(out_sam, "w") as out:
-    for raw in inp:
-        if raw.startswith("@"):
-            out.write(raw)
-            continue
-        input_alignments += 1
-        cols = raw.rstrip("\\n").split("\\t")
-        if len(cols) < 11:
-            skipped_no_barcode += 1
-            continue
-        qname = cols[0]
-        # Prefer the suffix after the last "_" (original SHARE-seq format),
-        # but fall back to the full QNAME and extract the last 24bp DNA token.
-        candidate = qname.rsplit("_", 1)[-1] if "_" in qname else qname
-        candidate = candidate.strip()
-        candidate = candidate.split()[0].split("/")[0]
-        matches = re.findall(r"[ACGTNacgtn]{24}", candidate)
-        if not matches:
-            matches = re.findall(r"[ACGTNacgtn]{24}", qname)
-        if not matches:
-            skipped_no_barcode += 1
-            continue
-        cb = matches[-1].upper()
-        cols = [x for x in cols if not x.startswith("CB:Z:")]
-        cols.append("CB:Z:" + cb)
-        out.write("\\t".join(cols) + "\\n")
-        tagged_alignments += 1
-
-with open(stats_path, "w") as out:
-    out.write("Metric\\tValue\\n")
-    out.write(f"InputAlignments\\t{input_alignments}\\n")
-    out.write(f"TaggedAlignments\\t{tagged_alignments}\\n")
-    out.write(f"SkippedNoBarcode\\t{skipped_no_barcode}\\n")
-    out.write(f"SkippedBadBarcode\\t{skipped_bad_barcode}\\n")
-PY
-
-    samtools view -@ ${task.cpus} -b archr_tagged.sam \\
-      | samtools sort -@ ${task.cpus} -o ATAC/${sample_id}/${sample_id}.archr_tagged.sorted.bam -
-    samtools index -@ ${task.cpus} ATAC/${sample_id}/${sample_id}.archr_tagged.sorted.bam
-
-    Rscript - "${sample_id}" "ATAC/${sample_id}/${sample_id}.archr_tagged.sorted.bam" \\
+    Rscript - "${sample_id}" "\$BAM_PRE" "\$BAM_POST" \\
         "${params.atac_min_frags_for_cell}" "${params.atac_min_tss_for_cell}" "\${archrGenome}" "${task.cpus}" \\
         "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv" \\
         "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv" <<'RSCRIPT'
@@ -956,13 +911,14 @@ suppressPackageStartupMessages(library(ArchR))
 
 args <- commandArgs(trailingOnly = TRUE)
 sample_id <- args[[1]]
-bam_path <- args[[2]]
-min_frags <- as.numeric(args[[3]])
-min_tss <- as.numeric(args[[4]])
-archr_genome <- args[[5]]
-threads <- as.integer(args[[6]])
-out_summary <- args[[7]]
-out_counts <- args[[8]]
+bam_pre <- args[[2]]
+bam_post <- args[[3]]
+min_frags <- as.numeric(args[[4]])
+min_tss <- as.numeric(args[[5]])
+archr_genome <- args[[6]]
+threads <- as.integer(args[[7]])
+out_summary <- args[[8]]
+out_counts <- args[[9]]
 
 if (archr_genome == "hg38" && !requireNamespace("BSgenome.Hsapiens.UCSC.hg38", quietly = TRUE)) {
   stop("Missing package BSgenome.Hsapiens.UCSC.hg38. Install via conda dependency bioconductor-bsgenome.hsapiens.ucsc.hg38.")
@@ -975,27 +931,30 @@ addArchRLocking(locking = TRUE)
 addArchRThreads(threads = threads)
 addArchRGenome(archr_genome)
 
-inputFiles <- bam_path
-names(inputFiles) <- sample_id
+run_archr <- function(sample_name, bam_path, out_dir) {
+  inputFiles <- bam_path
+  names(inputFiles) <- sample_name
+  arrow_files <- createArrowFiles(
+    inputFiles = inputFiles,
+    sampleNames = names(inputFiles),
+    minFrags = min_frags,
+    minTSS = min_tss,
+    addTileMat = TRUE,
+    addGeneScoreMat = TRUE,
+    bcTag = "CB",
+    force = TRUE
+  )
+  proj <- ArchRProject(
+    ArrowFiles = arrow_files,
+    outputDirectory = out_dir,
+    copyArrows = TRUE
+  )
+  list(arrow_files = arrow_files, cell_col = as.data.frame(getCellColData(proj)))
+}
 
-arrow_files <- createArrowFiles(
-  inputFiles = inputFiles,
-  sampleNames = names(inputFiles),
-  minFrags = min_frags,
-  minTSS = min_tss,
-  addTileMat = TRUE,
-  addGeneScoreMat = TRUE,
-  bcTag = "CB",
-  force = TRUE
-)
-
-proj <- ArchRProject(
-  ArrowFiles = arrow_files,
-  outputDirectory = paste0(sample_id, "_ArchR"),
-  copyArrows = TRUE
-)
-
-cell_col <- as.data.frame(getCellColData(proj))
+pre_res <- run_archr(sample_id, bam_pre, paste0(sample_id, "_ArchR_preDedup"))
+post_res <- run_archr(sample_id, bam_post, paste0(sample_id, "_ArchR_postDedup"))
+cell_col <- post_res$cell_col
 pick_col <- function(candidates) {
   for (candidate in candidates) {
     if (candidate %in% colnames(cell_col)) {
@@ -1046,6 +1005,7 @@ summary <- data.frame(
     "ArchRGenome",
     "MinFragmentsForCell",
     "MinTSSRatioForCell",
+    "EstimatedCellsPreDedup",
     "EstimatedCells",
     "MedianFragmentsPerEstimatedCell",
     "MedianTSSEnrichmentPerEstimatedCell",
@@ -1054,7 +1014,8 @@ summary <- data.frame(
     "MedianPromoterRatioPerEstimatedCell",
     "MedianReadsInBlacklistPerEstimatedCell",
     "MedianBlacklistRatioPerEstimatedCell",
-    "ArchRArrowFile"
+    "ArchRArrowFilePreDedup",
+    "ArchRArrowFilePostDedup"
   ),
   Value = c(
     sample_id,
@@ -1062,6 +1023,7 @@ summary <- data.frame(
     archr_genome,
     min_frags,
     min_tss,
+    nrow(pre_res$cell_col),
     estimated_cells,
     median_fragments,
     median_tss,
@@ -1070,14 +1032,13 @@ summary <- data.frame(
     median_prom_ratio,
     median_reads_in_black,
     median_black_ratio,
-    paste(arrow_files, collapse = ",")
+    paste(pre_res$arrow_files, collapse = ","),
+    paste(post_res$arrow_files, collapse = ",")
   ),
   stringsAsFactors = FALSE
 )
 utils::write.table(summary, file = out_summary, sep = "\t", quote = FALSE, row.names = FALSE)
 RSCRIPT
-
-    rm -f archr_input.sam archr_tagged.sam
     """
 }
 
@@ -2243,6 +2204,7 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
 
         rows.append([
             s,
+            cs.get("EstimatedCellsPreDedup", ""),
             cs.get("EstimatedCells", ""),
             cs.get("MedianFragmentsPerEstimatedCell", ""),
             cs.get("MedianTSSEnrichmentPerEstimatedCell", ""),
@@ -2258,6 +2220,7 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
     cells.append(
         "<tr>"
         "<th>Sample</th>"
+        "<th>Estimated cells pre-dedup</th>"
         "<th>Estimated cells</th>"
         "<th>Median nFrags</th>"
         "<th>medianTSS</th>"
@@ -2794,6 +2757,7 @@ for sample in sorted(all_sample_candidates):
         post_mt = (100.0 * post_idx.get("mt_mapped", 0) / post_idx.get("total_mapped", 1)) if post_idx.get("total_mapped", 0) > 0 else 0.0
 
         rows = [
+            ("Estimated cells pre-dedup", cs.get("EstimatedCellsPreDedup", ""), ""),
             ("Estimated cells", cs.get("EstimatedCells", ""), ""),
             ("Median nFrags (ArchR)", cs.get("MedianFragmentsPerEstimatedCell", ""), ""),
             ("ReadsInTSS (ArchR)", cs.get("MedianReadsInTSSPerEstimatedCell", ""), ""),
