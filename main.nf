@@ -954,7 +954,7 @@ run_archr <- function(sample_name, bam_path, out_dir) {
 
 pre_res <- run_archr(sample_id, bam_pre, paste0(sample_id, "_ArchR_preDedup"))
 post_res <- run_archr(sample_id, bam_post, paste0(sample_id, "_ArchR_postDedup"))
-cell_col <- post_res$cell_col
+cell_col <- post_res\$cell_col
 pick_col <- function(candidates) {
   for (candidate in candidates) {
     if (candidate %in% colnames(cell_col)) {
@@ -1023,7 +1023,7 @@ summary <- data.frame(
     archr_genome,
     min_frags,
     min_tss,
-    nrow(pre_res$cell_col),
+    nrow(pre_res\$cell_col),
     estimated_cells,
     median_fragments,
     median_tss,
@@ -1032,8 +1032,8 @@ summary <- data.frame(
     median_prom_ratio,
     median_reads_in_black,
     median_black_ratio,
-    paste(pre_res$arrow_files, collapse = ","),
-    paste(post_res$arrow_files, collapse = ",")
+    paste(pre_res\$arrow_files, collapse = ","),
+    paste(post_res\$arrow_files, collapse = ",")
   ),
   stringsAsFactors = FALSE
 )
