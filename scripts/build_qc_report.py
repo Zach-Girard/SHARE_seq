@@ -1554,8 +1554,7 @@ for sample in sorted(all_sample_candidates):
         post_mt = (100.0 * post_idx.get("mt_mapped", 0) / post_idx.get("total_mapped", 1)) if post_idx.get("total_mapped", 0) > 0 else 0.0
 
         rows = [
-            ("Estimated cells pre-dedup", cs.get("EstimatedCellsPreDedup", ""), ""),
-            ("Estimated cells", cs.get("EstimatedCells", ""), ""),
+            ("Estimated cells (ArchR)", cs.get("EstimatedCellsPreDedup", ""), cs.get("EstimatedCells", "")),
             ("Median nFrags (ArchR)", cs.get("MedianFragmentsPerEstimatedCellPreDedup", ""), cs.get("MedianFragmentsPerEstimatedCell", "")),
             ("Median TSS enrichment (ArchR)", cs.get("MedianTSSEnrichmentPerEstimatedCellPreDedup", ""), cs.get("MedianTSSEnrichmentPerEstimatedCell", "")),
             ("ReadsInTSS (ArchR)", cs.get("MedianReadsInTSSPerEstimatedCellPreDedup", ""), cs.get("MedianReadsInTSSPerEstimatedCell", "")),
