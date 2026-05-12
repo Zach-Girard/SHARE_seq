@@ -954,7 +954,56 @@ run_archr <- function(sample_name, bam_path, out_dir) {
 
 pre_res <- run_archr(sample_id, bam_pre, paste0(sample_id, "_ArchR_preDedup"))
 post_res <- run_archr(sample_id, bam_post, paste0(sample_id, "_ArchR_postDedup"))
-cell_col <- post_res\$cell_col
+
+summarize_archr_cell_col <- function(cell_col) {
+  pick_col <- function(candidates) {
+    for (candidate in candidates) {
+      if (candidate %in% colnames(cell_col)) {
+        return(candidate)
+      }
+    }
+    NA_character_
+  }
+  n <- nrow(cell_col)
+  if (n == 0) {
+    return(list(
+      median_fragments = 0,
+      median_tss = 0,
+      median_reads_in_tss = 0,
+      median_reads_in_prom = 0,
+      median_prom_ratio = 0,
+      median_reads_in_black = 0,
+      median_black_ratio = 0
+    ))
+  }
+  frag_col <- pick_col(c("nFrags", "NFrags", "nfrags"))
+  tss_col <- pick_col(c("TSSEnrichment", "TSS.enrichment", "TSSRatio"))
+  reads_in_tss_col <- pick_col(c("ReadsInTSS", "readsInTSS"))
+  reads_in_prom_col <- pick_col(c("ReadsInPromoter", "readsInPromoter", "ReadsInPromoters"))
+  prom_ratio_col <- pick_col(c("PromoterRatio", "promoterRatio", "FRIP.Promoter", "FRIP_Promoter"))
+  reads_in_black_col <- pick_col(c("ReadsInBlacklist", "readsInBlacklist"))
+  black_ratio_col <- pick_col(c("BlacklistRatio", "blacklistRatio", "FRIP.Blacklist", "FRIP_Blacklist"))
+  fragments <- if (!is.na(frag_col)) cell_col[[frag_col]] else rep(NA_real_, n)
+  tss <- if (!is.na(tss_col)) cell_col[[tss_col]] else rep(NA_real_, n)
+  reads_in_tss <- if (!is.na(reads_in_tss_col)) cell_col[[reads_in_tss_col]] else rep(NA_real_, n)
+  reads_in_prom <- if (!is.na(reads_in_prom_col)) cell_col[[reads_in_prom_col]] else rep(NA_real_, n)
+  prom_ratio <- if (!is.na(prom_ratio_col)) cell_col[[prom_ratio_col]] else rep(NA_real_, n)
+  reads_in_black <- if (!is.na(reads_in_black_col)) cell_col[[reads_in_black_col]] else rep(NA_real_, n)
+  black_ratio <- if (!is.na(black_ratio_col)) cell_col[[black_ratio_col]] else rep(NA_real_, n)
+  list(
+    median_fragments = if (length(fragments) && any(!is.na(fragments))) stats::median(fragments, na.rm = TRUE) else 0,
+    median_tss = if (length(tss) && any(!is.na(tss))) stats::median(tss, na.rm = TRUE) else 0,
+    median_reads_in_tss = if (length(reads_in_tss) && any(!is.na(reads_in_tss))) stats::median(reads_in_tss, na.rm = TRUE) else 0,
+    median_reads_in_prom = if (length(reads_in_prom) && any(!is.na(reads_in_prom))) stats::median(reads_in_prom, na.rm = TRUE) else 0,
+    median_prom_ratio = if (length(prom_ratio) && any(!is.na(prom_ratio))) stats::median(prom_ratio, na.rm = TRUE) else 0,
+    median_reads_in_black = if (length(reads_in_black) && any(!is.na(reads_in_black))) stats::median(reads_in_black, na.rm = TRUE) else 0,
+    median_black_ratio = if (length(black_ratio) && any(!is.na(black_ratio))) stats::median(black_ratio, na.rm = TRUE) else 0
+  )
+}
+
+pre_m <- summarize_archr_cell_col(pre_res[["cell_col"]])
+post_m <- summarize_archr_cell_col(post_res[["cell_col"]])
+cell_col <- post_res[["cell_col"]]
 pick_col <- function(candidates) {
   for (candidate in candidates) {
     if (candidate %in% colnames(cell_col)) {
@@ -966,20 +1015,10 @@ pick_col <- function(candidates) {
 
 frag_col <- pick_col(c("nFrags", "NFrags", "nfrags"))
 tss_col <- pick_col(c("TSSEnrichment", "TSS.enrichment", "TSSRatio"))
-reads_in_tss_col <- pick_col(c("ReadsInTSS", "readsInTSS"))
-reads_in_prom_col <- pick_col(c("ReadsInPromoter", "readsInPromoter", "ReadsInPromoters"))
-prom_ratio_col <- pick_col(c("PromoterRatio", "promoterRatio", "FRIP.Promoter", "FRIP_Promoter"))
-reads_in_black_col <- pick_col(c("ReadsInBlacklist", "readsInBlacklist"))
-black_ratio_col <- pick_col(c("BlacklistRatio", "blacklistRatio", "FRIP.Blacklist", "FRIP_Blacklist"))
 cell_names <- rownames(cell_col)
 barcodes <- sub("^.*#", "", cell_names)
 fragments <- if (!is.na(frag_col)) cell_col[[frag_col]] else rep(NA_real_, nrow(cell_col))
 tss <- if (!is.na(tss_col)) cell_col[[tss_col]] else rep(NA_real_, nrow(cell_col))
-reads_in_tss <- if (!is.na(reads_in_tss_col)) cell_col[[reads_in_tss_col]] else rep(NA_real_, nrow(cell_col))
-reads_in_prom <- if (!is.na(reads_in_prom_col)) cell_col[[reads_in_prom_col]] else rep(NA_real_, nrow(cell_col))
-prom_ratio <- if (!is.na(prom_ratio_col)) cell_col[[prom_ratio_col]] else rep(NA_real_, nrow(cell_col))
-reads_in_black <- if (!is.na(reads_in_black_col)) cell_col[[reads_in_black_col]] else rep(NA_real_, nrow(cell_col))
-black_ratio <- if (!is.na(black_ratio_col)) cell_col[[black_ratio_col]] else rep(NA_real_, nrow(cell_col))
 
 counts <- data.frame(
   Barcode = barcodes,
@@ -990,13 +1029,6 @@ counts <- data.frame(
 utils::write.table(counts, file = out_counts, sep = "\t", quote = FALSE, row.names = FALSE)
 
 estimated_cells <- nrow(cell_col)
-median_fragments <- if (length(fragments) && any(!is.na(fragments))) stats::median(fragments, na.rm = TRUE) else 0
-median_tss <- if (length(tss) && any(!is.na(tss))) stats::median(tss, na.rm = TRUE) else 0
-median_reads_in_tss <- if (length(reads_in_tss) && any(!is.na(reads_in_tss))) stats::median(reads_in_tss, na.rm = TRUE) else 0
-median_reads_in_prom <- if (length(reads_in_prom) && any(!is.na(reads_in_prom))) stats::median(reads_in_prom, na.rm = TRUE) else 0
-median_prom_ratio <- if (length(prom_ratio) && any(!is.na(prom_ratio))) stats::median(prom_ratio, na.rm = TRUE) else 0
-median_reads_in_black <- if (length(reads_in_black) && any(!is.na(reads_in_black))) stats::median(reads_in_black, na.rm = TRUE) else 0
-median_black_ratio <- if (length(black_ratio) && any(!is.na(black_ratio))) stats::median(black_ratio, na.rm = TRUE) else 0
 
 summary <- data.frame(
   Metric = c(
@@ -1007,12 +1039,19 @@ summary <- data.frame(
     "MinTSSRatioForCell",
     "EstimatedCellsPreDedup",
     "EstimatedCells",
+    "MedianFragmentsPerEstimatedCellPreDedup",
     "MedianFragmentsPerEstimatedCell",
+    "MedianTSSEnrichmentPerEstimatedCellPreDedup",
     "MedianTSSEnrichmentPerEstimatedCell",
+    "MedianReadsInTSSPerEstimatedCellPreDedup",
     "MedianReadsInTSSPerEstimatedCell",
+    "MedianReadsInPromoterPerEstimatedCellPreDedup",
     "MedianReadsInPromoterPerEstimatedCell",
+    "MedianPromoterRatioPerEstimatedCellPreDedup",
     "MedianPromoterRatioPerEstimatedCell",
+    "MedianReadsInBlacklistPerEstimatedCellPreDedup",
     "MedianReadsInBlacklistPerEstimatedCell",
+    "MedianBlacklistRatioPerEstimatedCellPreDedup",
     "MedianBlacklistRatioPerEstimatedCell",
     "ArchRArrowFilePreDedup",
     "ArchRArrowFilePostDedup"
@@ -1023,17 +1062,24 @@ summary <- data.frame(
     archr_genome,
     min_frags,
     min_tss,
-    nrow(pre_res\$cell_col),
+    nrow(pre_res[["cell_col"]]),
     estimated_cells,
-    median_fragments,
-    median_tss,
-    median_reads_in_tss,
-    median_reads_in_prom,
-    median_prom_ratio,
-    median_reads_in_black,
-    median_black_ratio,
-    paste(pre_res\$arrow_files, collapse = ","),
-    paste(post_res\$arrow_files, collapse = ",")
+    pre_m[["median_fragments"]],
+    post_m[["median_fragments"]],
+    pre_m[["median_tss"]],
+    post_m[["median_tss"]],
+    pre_m[["median_reads_in_tss"]],
+    post_m[["median_reads_in_tss"]],
+    pre_m[["median_reads_in_prom"]],
+    post_m[["median_reads_in_prom"]],
+    pre_m[["median_prom_ratio"]],
+    post_m[["median_prom_ratio"]],
+    pre_m[["median_reads_in_black"]],
+    post_m[["median_reads_in_black"]],
+    pre_m[["median_black_ratio"]],
+    post_m[["median_black_ratio"]],
+    paste(pre_res[["arrow_files"]], collapse = ","),
+    paste(post_res[["arrow_files"]], collapse = ",")
   ),
   stringsAsFactors = FALSE
 )
@@ -2185,7 +2231,7 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
     cell_sum = { atac_sample_key(p): p for p in atac_cell_summary_paths }
     cbtag_qc = { atac_sample_key(p): p for p in atac_cbtag_qc_paths }
 
-    rows = []
+    by_sample = {}
     for s in samples:
         pf = parse_flagstat_metrics(pre_flag[s]) if s in pre_flag else {}
         pi = parse_idxstats_metrics(pre_idx[s]) if s in pre_idx else {}
@@ -2197,44 +2243,72 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
         pre_total = _to_int(pf.get("in_total", ""))
         post_total = _to_int(rf.get("in_total", ""))
         retained_pct = (100.0 * post_total / pre_total) if (pre_total and post_total is not None and pre_total > 0) else None
-        removed_pct = (100.0 - retained_pct) if retained_pct is not None else None
 
         pre_mt = (100.0 * pi.get("mt_mapped", 0) / pi.get("total_mapped", 1)) if pi.get("total_mapped", 0) > 0 else 0.0
         post_mt = (100.0 * ri.get("mt_mapped", 0) / ri.get("total_mapped", 1)) if ri.get("total_mapped", 0) > 0 else 0.0
 
-        rows.append([
-            s,
-            cs.get("EstimatedCellsPreDedup", ""),
-            cs.get("EstimatedCells", ""),
-            cs.get("MedianFragmentsPerEstimatedCell", ""),
-            cs.get("MedianTSSEnrichmentPerEstimatedCell", ""),
-            cq.get("CBTaggedPct", ""),
-            pf.get("in_total", ""),
-            _fmt_pct(pre_mt),
-            rf.get("in_total", ""),
-            _fmt_pct(post_mt),
-            _fmt_pct(retained_pct) if retained_pct is not None else "",
-        ])
+        by_sample[s] = {
+            "EstimatedCellsPreDedup": cs.get("EstimatedCellsPreDedup", ""),
+            "EstimatedCells": cs.get("EstimatedCells", ""),
+            "MedianFragmentsPreDedup": cs.get("MedianFragmentsPerEstimatedCellPreDedup", ""),
+            "MedianFragmentsPostDedup": cs.get("MedianFragmentsPerEstimatedCell", ""),
+            "MedianTSSPreDedup": cs.get("MedianTSSEnrichmentPerEstimatedCellPreDedup", ""),
+            "MedianTSSPostDedup": cs.get("MedianTSSEnrichmentPerEstimatedCell", ""),
+            "MedianReadsInTSSPreDedup": cs.get("MedianReadsInTSSPerEstimatedCellPreDedup", ""),
+            "MedianReadsInTSSPostDedup": cs.get("MedianReadsInTSSPerEstimatedCell", ""),
+            "MedianReadsInPromoterPreDedup": cs.get("MedianReadsInPromoterPerEstimatedCellPreDedup", ""),
+            "MedianReadsInPromoterPostDedup": cs.get("MedianReadsInPromoterPerEstimatedCell", ""),
+            "MedianPromoterRatioPreDedup": cs.get("MedianPromoterRatioPerEstimatedCellPreDedup", ""),
+            "MedianPromoterRatioPostDedup": cs.get("MedianPromoterRatioPerEstimatedCell", ""),
+            "MedianReadsInBlacklistPreDedup": cs.get("MedianReadsInBlacklistPerEstimatedCellPreDedup", ""),
+            "MedianReadsInBlacklistPostDedup": cs.get("MedianReadsInBlacklistPerEstimatedCell", ""),
+            "MedianBlacklistRatioPreDedup": cs.get("MedianBlacklistRatioPerEstimatedCellPreDedup", ""),
+            "MedianBlacklistRatioPostDedup": cs.get("MedianBlacklistRatioPerEstimatedCell", ""),
+            "CBTaggedPct": cq.get("CBTaggedPct", ""),
+            "ReadsPreDedup": pf.get("in_total", ""),
+            "MTPctPreDedup": _fmt_pct(pre_mt),
+            "ReadsPostDedup": rf.get("in_total", ""),
+            "MTPctPostDedup": _fmt_pct(post_mt),
+            "ReadsRetainedPct": _fmt_pct(retained_pct) if retained_pct is not None else "",
+        }
+
+    row_defs = [
+        ("Estimated cells (ArchR, pre-dedup)", "EstimatedCellsPreDedup"),
+        ("Estimated cells (ArchR, post-dedup)", "EstimatedCells"),
+        ("Median nFrags per cell (ArchR, pre-dedup)", "MedianFragmentsPreDedup"),
+        ("Median nFrags per cell (ArchR, post-dedup)", "MedianFragmentsPostDedup"),
+        ("Median TSS enrichment (ArchR, pre-dedup)", "MedianTSSPreDedup"),
+        ("Median TSS enrichment (ArchR, post-dedup)", "MedianTSSPostDedup"),
+        ("Median reads in TSS (ArchR, pre-dedup)", "MedianReadsInTSSPreDedup"),
+        ("Median reads in TSS (ArchR, post-dedup)", "MedianReadsInTSSPostDedup"),
+        ("Median reads in promoter (ArchR, pre-dedup)", "MedianReadsInPromoterPreDedup"),
+        ("Median reads in promoter (ArchR, post-dedup)", "MedianReadsInPromoterPostDedup"),
+        ("Median promoter ratio (ArchR, pre-dedup)", "MedianPromoterRatioPreDedup"),
+        ("Median promoter ratio (ArchR, post-dedup)", "MedianPromoterRatioPostDedup"),
+        ("Median reads in blacklist (ArchR, pre-dedup)", "MedianReadsInBlacklistPreDedup"),
+        ("Median reads in blacklist (ArchR, post-dedup)", "MedianReadsInBlacklistPostDedup"),
+        ("Median blacklist ratio (ArchR, pre-dedup)", "MedianBlacklistRatioPreDedup"),
+        ("Median blacklist ratio (ArchR, post-dedup)", "MedianBlacklistRatioPostDedup"),
+        ("CB-tagged alignments % (pre-dedup BAM)", "CBTaggedPct"),
+        ("Total reads (flagstat, pre-dedup)", "ReadsPreDedup"),
+        ("Mitochondrial fraction (pre-dedup)", "MTPctPreDedup"),
+        ("Total reads (flagstat, post-dedup)", "ReadsPostDedup"),
+        ("Mitochondrial fraction (post-dedup)", "MTPctPostDedup"),
+        ("Reads retained after dedup (%)", "ReadsRetainedPct"),
+    ]
 
     cells = []
-    cells.append(
-        "<tr>"
-        "<th>Sample</th>"
-        "<th>Estimated cells pre-dedup</th>"
-        "<th>Estimated cells</th>"
-        "<th>Median nFrags</th>"
-        "<th>medianTSS</th>"
-        "<th>CB-tagged %</th>"
-        "<th>Reads pre-dedup</th>"
-        "<th>MT % pre</th>"
-        "<th>Reads post-dedup</th>"
-        "<th>MT % post</th>"
-        "<th>Reads retained</th>"
-        "</tr>"
-    )
-    for row in rows:
-        cells.append("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in row) + "</tr>")
-    return "<table>" + "".join(cells) + "</table>"
+    cells.append('<tr><th class="atac-pivot-metric">Metric</th>')
+    for s in samples:
+        cells.append(f'<th>{html.escape(str(s))}</th>')
+    cells.append("</tr>")
+    for label, key in row_defs:
+        cells.append(f'<tr><td class="atac-pivot-metric">{html.escape(label)}</td>')
+        for s in samples:
+            v = by_sample.get(s, {}).get(key, "")
+            cells.append(f"<td>{html.escape(str(v))}</td>")
+        cells.append("</tr>")
+    return '<div class="atac-pivot-wrap"><table class="atac-key-pivot">' + "".join(cells) + "</table></div>"
 
 demux_total = rel_list("demux/*.total_number_reads.tsv")
 demux_stats = sorted(set(
@@ -2357,6 +2431,12 @@ parts.append('''<!doctype html>
     }
     td:first-child { font-weight: 600; color: #000000; }
     tr:nth-child(even) td { background: #ffffff; }
+    .atac-pivot-wrap { overflow-x: auto; margin: 8px 0 14px 0; max-width: 100%; -webkit-overflow-scrolling: touch; }
+    table.atac-key-pivot { width: max-content; max-width: none; }
+    .atac-key-pivot th.atac-pivot-metric,
+    .atac-key-pivot td.atac-pivot-metric { white-space: normal; min-width: 200px; max-width: min(360px, 40vw); }
+    .atac-key-pivot th:not(.atac-pivot-metric),
+    .atac-key-pivot td:not(.atac-pivot-metric) { white-space: nowrap; }
     .tabs {
       display: flex;
       flex-wrap: wrap;
@@ -2759,15 +2839,16 @@ for sample in sorted(all_sample_candidates):
         rows = [
             ("Estimated cells pre-dedup", cs.get("EstimatedCellsPreDedup", ""), ""),
             ("Estimated cells", cs.get("EstimatedCells", ""), ""),
-            ("Median nFrags (ArchR)", cs.get("MedianFragmentsPerEstimatedCell", ""), ""),
-            ("ReadsInTSS (ArchR)", cs.get("MedianReadsInTSSPerEstimatedCell", ""), ""),
+            ("Median nFrags (ArchR)", cs.get("MedianFragmentsPerEstimatedCellPreDedup", ""), cs.get("MedianFragmentsPerEstimatedCell", "")),
+            ("Median TSS enrichment (ArchR)", cs.get("MedianTSSEnrichmentPerEstimatedCellPreDedup", ""), cs.get("MedianTSSEnrichmentPerEstimatedCell", "")),
+            ("ReadsInTSS (ArchR)", cs.get("MedianReadsInTSSPerEstimatedCellPreDedup", ""), cs.get("MedianReadsInTSSPerEstimatedCell", "")),
             ("CB-tagged alignments %", cq.get("CBTaggedPct", ""), ""),
             ("CB-tagged alignments", cq.get("CBTaggedAlignments", ""), ""),
             ("Missing CB alignments", cq.get("MissingCBAlignments", ""), ""),
-            ("ReadsInPromoter (ArchR)", cs.get("MedianReadsInPromoterPerEstimatedCell", ""), ""),
-            ("PromoterRatio (ArchR)", cs.get("MedianPromoterRatioPerEstimatedCell", ""), ""),
-            ("ReadsInBlacklist (ArchR)", cs.get("MedianReadsInBlacklistPerEstimatedCell", ""), ""),
-            ("BlacklistRatio (ArchR)", cs.get("MedianBlacklistRatioPerEstimatedCell", ""), ""),
+            ("ReadsInPromoter (ArchR)", cs.get("MedianReadsInPromoterPerEstimatedCellPreDedup", ""), cs.get("MedianReadsInPromoterPerEstimatedCell", "")),
+            ("PromoterRatio (ArchR)", cs.get("MedianPromoterRatioPerEstimatedCellPreDedup", ""), cs.get("MedianPromoterRatioPerEstimatedCell", "")),
+            ("ReadsInBlacklist (ArchR)", cs.get("MedianReadsInBlacklistPerEstimatedCellPreDedup", ""), cs.get("MedianReadsInBlacklistPerEstimatedCell", "")),
+            ("BlacklistRatio (ArchR)", cs.get("MedianBlacklistRatioPerEstimatedCellPreDedup", ""), cs.get("MedianBlacklistRatioPerEstimatedCell", "")),
             ("Total reads", pre_flag.get("in_total", ""), post_flag.get("in_total", "")),
             ("Properly paired %", pre_flag.get("properly_paired_pct", ""), post_flag.get("properly_paired_pct", "")),
             ("Singleton %", pre_flag.get("singletons_pct", ""), post_flag.get("singletons_pct", "")),
