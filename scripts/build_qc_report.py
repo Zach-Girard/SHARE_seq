@@ -458,33 +458,20 @@ def summary_metrics_by_sample(paths):
     return out
 
 def overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample):
-    unique_vals = []
-    med_reads_cell_vals = []
     est_cells_vals = []
     for s in sample_names:
-        sm = starsolo_by_sample.get(s, {})
-        unique = _parse_pct(sm.get("Uniquely mapped reads %", ""))
-        if unique > 0:
-            unique_vals.append(unique)
         sy = summary_by_sample.get(s, {})
-        mrc = _parse_number(sy.get("Median Reads per Cell", ""))
-        if mrc is not None:
-            med_reads_cell_vals.append(mrc)
         est = _parse_number(sy.get("Estimated Number of Cells", ""))
         if est is not None:
             est_cells_vals.append(est)
     n_samples = len(sample_names)
-    med_unique = statistics.median(unique_vals) if unique_vals else None
-    med_reads_cell = statistics.median(med_reads_cell_vals) if med_reads_cell_vals else None
     total_est_cells = sum(est_cells_vals) if est_cells_vals else None
     generated = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
     cards = []
     cards.append('<div class="kpi-grid">')
     cards.append(f'<div class="kpi-card"><div class="kpi-label">Samples</div><div class="kpi-value">{_fmt_int(n_samples)}</div></div>')
-    cards.append(f'<div class="kpi-card"><div class="kpi-label">Median Unique Mapping</div><div class="kpi-value">{_fmt_float(med_unique, 1, "%")}</div></div>')
-    cards.append(f'<div class="kpi-card"><div class="kpi-label">Median Reads per Cell</div><div class="kpi-value">{_fmt_int(med_reads_cell)}</div></div>')
-    cards.append(f'<div class="kpi-card"><div class="kpi-label">Total Estimated Cells</div><div class="kpi-value">{_fmt_int(total_est_cells)}</div></div>')
+    cards.append(f'<div class="kpi-card"><div class="kpi-label">Total Estimated Cells - RNA</div><div class="kpi-value">{_fmt_int(total_est_cells)}</div></div>')
     cards.append('</div>')
     cards.append(f'<p class="meta-line"><strong>Generated:</strong> {html.escape(generated)} | <strong>Project:</strong> <code>{html.escape(proj)}</code></p>')
     return "".join(cards)
@@ -499,12 +486,9 @@ def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, 
             continue
         atac_cells_by_sample[s] = parse_atac_cell_summary(p)
     rows = []
-    rows.append("<tr><th>Sample</th><th>Uniquely mapped reads %</th><th>Median Reads per Cell</th><th>Estimated Number of Cells</th><th>Sample report</th></tr>")
+    rows.append("<tr><th>Sample</th><th>Estimated Number of Cells</th><th>Sample report</th></tr>")
     for s in sample_names:
-        sm = starsolo_by_sample.get(s, {})
         sy = summary_by_sample.get(s, {})
-        unique = sm.get("Uniquely mapped reads %", "")
-        mrc = sy.get("Median Reads per Cell", "")
         enc = sy.get("Estimated Number of Cells", "")
         if not enc:
             enc = atac_cells_by_sample.get(s, {}).get("EstimatedCells", "")
@@ -512,8 +496,6 @@ def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, 
         rows.append(
             "<tr>"
             f"<td>{html.escape(s)}</td>"
-            f"<td>{html.escape(unique)}</td>"
-            f"<td>{html.escape(mrc)}</td>"
             f"<td>{html.escape(enc)}</td>"
             f'<td><a href="{html.escape(link)}">Open</a></td>'
             "</tr>"
@@ -992,26 +974,13 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
     row_defs = [
         ("Estimated cells (ArchR, pre-dedup)", "EstimatedCellsPreDedup"),
         ("Estimated cells (ArchR, post-dedup)", "EstimatedCells"),
+        ("Total reads (flagstat, pre-dedup)", "ReadsPreDedup"),
+        ("Total reads (flagstat, post-dedup)", "ReadsPostDedup"),
+        ("Reads retained after dedup (%)", "ReadsRetainedPct"),
         ("Median nFrags per cell (ArchR, pre-dedup)", "MedianFragmentsPreDedup"),
         ("Median nFrags per cell (ArchR, post-dedup)", "MedianFragmentsPostDedup"),
         ("Median TSS enrichment (ArchR, pre-dedup)", "MedianTSSPreDedup"),
         ("Median TSS enrichment (ArchR, post-dedup)", "MedianTSSPostDedup"),
-        ("Median reads in TSS (ArchR, pre-dedup)", "MedianReadsInTSSPreDedup"),
-        ("Median reads in TSS (ArchR, post-dedup)", "MedianReadsInTSSPostDedup"),
-        ("Median reads in promoter (ArchR, pre-dedup)", "MedianReadsInPromoterPreDedup"),
-        ("Median reads in promoter (ArchR, post-dedup)", "MedianReadsInPromoterPostDedup"),
-        ("Median promoter ratio (ArchR, pre-dedup)", "MedianPromoterRatioPreDedup"),
-        ("Median promoter ratio (ArchR, post-dedup)", "MedianPromoterRatioPostDedup"),
-        ("Median reads in blacklist (ArchR, pre-dedup)", "MedianReadsInBlacklistPreDedup"),
-        ("Median reads in blacklist (ArchR, post-dedup)", "MedianReadsInBlacklistPostDedup"),
-        ("Median blacklist ratio (ArchR, pre-dedup)", "MedianBlacklistRatioPreDedup"),
-        ("Median blacklist ratio (ArchR, post-dedup)", "MedianBlacklistRatioPostDedup"),
-        ("CB-tagged alignments % (pre-dedup BAM)", "CBTaggedPct"),
-        ("Total reads (flagstat, pre-dedup)", "ReadsPreDedup"),
-        ("Mitochondrial fraction (pre-dedup)", "MTPctPreDedup"),
-        ("Total reads (flagstat, post-dedup)", "ReadsPostDedup"),
-        ("Mitochondrial fraction (post-dedup)", "MTPctPostDedup"),
-        ("Reads retained after dedup (%)", "ReadsRetainedPct"),
     ]
 
     cells = []
