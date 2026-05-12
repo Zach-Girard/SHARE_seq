@@ -1271,7 +1271,7 @@ process BUILD_QC_HTML {
     publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
-    tuple val(report_trigger), path(report_input_files)
+    tuple val(report_trigger), path(report_input_files), path(report_builder_script)
 
     output:
     path "QC_Report.html", emit: qc_html
@@ -1280,7 +1280,7 @@ process BUILD_QC_HTML {
     path "QC_Report_bundle.zip", emit: qc_bundle
 
     """
-    python3 "${projectDir}/scripts/build_qc_report.py" \\
+    python3 "${report_builder_script}" \\
         "${projectDir}" \\
         "${params.species_model}" \\
         "${params.star_alignment_mode}"
@@ -1776,7 +1776,7 @@ workflow {
 
     ch_report_done
         .join(ch_report_files)
-        .map { k, done, report_items -> tuple(1, report_items) }
+        .map { k, done, report_items -> tuple(1, report_items, file("${projectDir}/scripts/build_qc_report.py")) }
         .set { ch_build_qc_report }
     BUILD_QC_HTML(ch_build_qc_report)
 }
