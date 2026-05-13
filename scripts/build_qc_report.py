@@ -542,34 +542,33 @@ def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, 
         )
     return "<table>" + "".join(rows) + "</table>"
 
-def sample_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary_paths, sample_to_group):
-    if not sample_names:
-        return "<p><em>No samples detected.</em></p>"
+def group_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary_paths, sample_to_group):
+    if not sample_to_group:
+        return "<p><em>No Experimental Group column found in sample_barcode_file (optional column 4).</em></p>"
     atac_cells_by_sample = build_atac_cells_by_sample(atac_cell_summary_paths)
-    sample_estimates = {}
+    members_by_group = {}
     for s in sample_names:
-        sample_estimates[s] = _parse_number(estimated_cells_for_sample(s, summary_by_sample, atac_cells_by_sample))
+        g = sample_to_group.get(s, "")
+        if g:
+            members_by_group.setdefault(g, []).append(s)
+    if not members_by_group:
+        return "<p><em>No samples in this run matched an Experimental Group label.</em></p>"
 
     group_totals = {}
-    if sample_to_group:
-        members_by_group = {}
-        for s in sample_names:
-            g = sample_to_group.get(s, "")
-            if g:
-                members_by_group.setdefault(g, []).append(s)
-        for g, members in members_by_group.items():
-            vals = [sample_estimates.get(m) for m in members if sample_estimates.get(m) is not None]
-            if vals:
-                group_totals[g] = sum(vals)
+    for g, members in members_by_group.items():
+        vals = []
+        for m in members:
+            v = _parse_number(estimated_cells_for_sample(m, summary_by_sample, atac_cells_by_sample))
+            if v is not None:
+                vals.append(v)
+        if vals:
+            group_totals[g] = sum(vals)
 
     cards = ['<div class="kpi-grid">']
-    for s in sorted(sample_names):
-        g = sample_to_group.get(s, "")
-        val = sample_estimates.get(s)
-        label = s
-        if g and g in group_totals:
-            val = group_totals[g]
-            label = f"{s} ({g})"
+    for g in sorted(members_by_group):
+        val = group_totals.get(g)
+        members = sorted(members_by_group[g])
+        label = f"{g} ({', '.join(members)})"
         cards.append(
             '<div class="kpi-card">'
             f'<div class="kpi-label">{html.escape(label)}</div>'
@@ -1430,8 +1429,8 @@ parts[-1] = parts[-1].replace(
 parts.append('<section id="sec-overview">')
 parts.append("<h2>Overview</h2>")
 parts.append(overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample))
-parts.append("<h3>Combined Cell Estimate by Sample</h3>")
-parts.append(sample_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary, sample_to_group))
+parts.append("<h3>Combined Cell Estimate by Experimental Group</h3>")
+parts.append(group_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary, sample_to_group))
 parts.append("<h3>Sample Directory</h3>")
 parts.append(sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, atac_cell_summary))
 parts.append("</section>")
