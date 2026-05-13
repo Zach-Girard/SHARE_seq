@@ -16,6 +16,7 @@ report_input_files = [
 ]
 species_model = sys.argv[2]
 star_alignment_mode = sys.argv[3]
+sample_barcode_sheet = sys.argv[4] if len(sys.argv) > 4 else ""
 out_path = "QC_Report.html"
 assets_dir = "QC_Report_assets"
 per_sample_dir = "QC_Report"
@@ -443,6 +444,53 @@ def _fmt_float(v, nd=1, suffix=""):
     except Exception:
         return "N/A"
 
+def load_experimental_groups(sample_barcode_path):
+    groups = {}
+    if not sample_barcode_path or not os.path.isfile(sample_barcode_path):
+        return groups
+    try:
+        with open(sample_barcode_path, "r", errors="replace") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                cols = [c.strip() for c in re.split(r"\t|,", line)]
+                if len(cols) < 4:
+                    continue
+                sample = cols[0]
+                group = cols[3]
+                if not sample or not group:
+                    continue
+                sample_l = sample.lower()
+                group_l = group.lower()
+                if sample_l in ("sample", "sample_name") and group_l in ("group", "experimental_group", "condition"):
+                    continue
+                groups[sample] = group
+    except Exception:
+        return {}
+    return groups
+
+def build_atac_cells_by_sample(atac_cell_summary_paths):
+    atac_cells_by_sample = {}
+    for p in sorted(atac_cell_summary_paths):
+        s = atac_sample_key(p)
+        if not s:
+            continue
+        atac_cells_by_sample[s] = parse_atac_cell_summary(p)
+    return atac_cells_by_sample
+
+def estimated_cells_for_sample(sample, summary_by_sample, atac_cells_by_sample):
+    sy = summary_by_sample.get(sample, {})
+    enc = sy.get("Estimated Number of Cells", "")
+    atac_cells = atac_cells_by_sample.get(sample, {})
+    if atac_cells:
+        enc = (
+            atac_cells.get("EstimatedCellsPreDedup", "")
+            or atac_cells.get("EstimatedCells", "")
+            or enc
+        )
+    return enc
+
 def starsolo_metrics_by_sample(log_paths):
     out = {}
     for p in sorted(log_paths):
@@ -479,19 +527,11 @@ def overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample):
 def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, atac_cell_summary_paths):
     if not sample_names:
         return "<p><em>No samples detected.</em></p>"
-    atac_cells_by_sample = {}
-    for p in sorted(atac_cell_summary_paths):
-        s = atac_sample_key(p)
-        if not s:
-            continue
-        atac_cells_by_sample[s] = parse_atac_cell_summary(p)
+    atac_cells_by_sample = build_atac_cells_by_sample(atac_cell_summary_paths)
     rows = []
     rows.append("<tr><th>Sample</th><th>Estimated Number of Cells</th><th>Sample report</th></tr>")
     for s in sample_names:
-        sy = summary_by_sample.get(s, {})
-        enc = sy.get("Estimated Number of Cells", "")
-        if not enc:
-            enc = atac_cells_by_sample.get(s, {}).get("EstimatedCells", "")
+        enc = estimated_cells_for_sample(s, summary_by_sample, atac_cells_by_sample)
         link = f'QC_Report/{s}/index.html'
         rows.append(
             "<tr>"
@@ -501,6 +541,43 @@ def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, 
             "</tr>"
         )
     return "<table>" + "".join(rows) + "</table>"
+
+def sample_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary_paths, sample_to_group):
+    if not sample_names:
+        return "<p><em>No samples detected.</em></p>"
+    atac_cells_by_sample = build_atac_cells_by_sample(atac_cell_summary_paths)
+    sample_estimates = {}
+    for s in sample_names:
+        sample_estimates[s] = _parse_number(estimated_cells_for_sample(s, summary_by_sample, atac_cells_by_sample))
+
+    group_totals = {}
+    if sample_to_group:
+        members_by_group = {}
+        for s in sample_names:
+            g = sample_to_group.get(s, "")
+            if g:
+                members_by_group.setdefault(g, []).append(s)
+        for g, members in members_by_group.items():
+            vals = [sample_estimates.get(m) for m in members if sample_estimates.get(m) is not None]
+            if vals:
+                group_totals[g] = sum(vals)
+
+    cards = ['<div class="kpi-grid">']
+    for s in sorted(sample_names):
+        g = sample_to_group.get(s, "")
+        val = sample_estimates.get(s)
+        label = s
+        if g and g in group_totals:
+            val = group_totals[g]
+            label = f"{s} ({g})"
+        cards.append(
+            '<div class="kpi-card">'
+            f'<div class="kpi-label">{html.escape(label)}</div>'
+            f'<div class="kpi-value">{html.escape(_fmt_int(val))}</div>'
+            '</div>'
+        )
+    cards.append('</div>')
+    return "".join(cards)
 
 def sample_sidebar_links(sample_names):
     if not sample_names:
@@ -1060,6 +1137,7 @@ sample_names = sorted(set(
 ))
 starsolo_by_sample = starsolo_metrics_by_sample(starsolo_logs)
 summary_by_sample = summary_metrics_by_sample(summary_csv)
+sample_to_group = load_experimental_groups(sample_barcode_sheet)
 
 parts = []
 parts.append('''<!doctype html>
@@ -1352,6 +1430,8 @@ parts[-1] = parts[-1].replace(
 parts.append('<section id="sec-overview">')
 parts.append("<h2>Overview</h2>")
 parts.append(overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample))
+parts.append("<h3>Combined Cell Estimate by Sample</h3>")
+parts.append(sample_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary, sample_to_group))
 parts.append("<h3>Sample Directory</h3>")
 parts.append(sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, atac_cell_summary))
 parts.append("</section>")

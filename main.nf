@@ -19,7 +19,7 @@ nextflow.enable.dsl=2
  *
  * Requires:
  *   - RAW_FASTQ/ directory with undetermined R1/R2 fastq.gz and sample barcode file
- *   - sample_barcode_file column 1 = sample name, column 3 = sample type (RNA/ATAC)
+ *   - sample_barcode_file column 1 = sample name, column 3 = sample type (RNA/ATAC), optional column 4 = Experimental_Group
  *   - Genomes/ and GTF/ prepared via helper scripts
  *   - Python dependencies from environment.yml (no local utils.py required)
  */
@@ -1271,7 +1271,7 @@ process BUILD_QC_HTML {
     publishDir "${projectDir}", mode: 'copy', overwrite: true
 
     input:
-    tuple val(report_trigger), path(report_input_files), path(report_builder_script)
+    tuple val(report_trigger), path(report_input_files), path(report_builder_script), path(sample_barcode_file)
 
     output:
     path "QC_Report.html", emit: qc_html
@@ -1283,7 +1283,8 @@ process BUILD_QC_HTML {
     python3 "${report_builder_script}" \\
         "${projectDir}" \\
         "${params.species_model}" \\
-        "${params.star_alignment_mode}"
+        "${params.star_alignment_mode}" \\
+        "${sample_barcode_file}"
     """
 }
 
@@ -1429,7 +1430,7 @@ workflow {
 
     RENAME_FASTQ(ch_demux_pairs)
 
-    // Attach sample type to matched outputs using sample_barcode_file (col1 sample, col3 RNA/ATAC).
+    // Attach sample type to matched outputs using sample_barcode_file (col1 sample, col3 RNA/ATAC; optional col4 Experimental_Group for reporting).
     def ch_matched_r1_typed = RENAME_FASTQ.out.matched_r1
         .map { f ->
             def sample = f.name.replaceFirst(/\.matched\.R1\.fastq\.gz$/, '')
@@ -1776,7 +1777,7 @@ workflow {
 
     ch_report_done
         .join(ch_report_files)
-        .map { k, done, report_items -> tuple(1, report_items, file("${projectDir}/scripts/build_qc_report.py")) }
+        .map { k, done, report_items -> tuple(1, report_items, file("${projectDir}/scripts/build_qc_report.py"), barcodeFile) }
         .set { ch_build_qc_report }
     BUILD_QC_HTML(ch_build_qc_report)
 }
