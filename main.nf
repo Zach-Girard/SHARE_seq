@@ -20,15 +20,14 @@ nextflow.enable.dsl=2
  * Requires:
  *   - RAW_FASTQ/ directory with undetermined R1/R2 fastq.gz and sample barcode file
  *   - sample_barcode_file column 1 = sample name, column 3 = sample type (RNA/ATAC), optional column 4 = Experimental_Group
- *   - Genomes/ and GTF/ prepared via helper scripts
+ *   - Reference FASTA/GTF and BWA/STAR indexes configured in nextflow.config
  *   - Python dependencies from environment.yml (no local utils.py required)
  */
 
-params.genomes_dir         = params.genomes_dir         ?: 'Genomes'
-params.gtf_dir             = params.gtf_dir             ?: 'GTF'
 params.umi_len             = params.umi_len             ?: 10
 params.total_bc_len        = params.total_bc_len        ?: 24
 params.species_model       = params.species_model       ?: 'human'  // 'human', 'mouse', or 'hybrid'
+params.human_genome_build  = params.human_genome_build  ?: 'hg19'   // when species_model=human: 'hg19' or 'hg38'
 // 'single' = STARsolo CB_UMI_Complex on R1 + withBarcodes_R2 (outputs under STARsolo/)
 // 'paired' = STARsolo CB_UMI_Simple with 24bp combinatorial whitelist (outputs under STARsolo_paired/)
 // Both modes use trimmed or untrimmed reads depending on params.trim_reads.
@@ -49,6 +48,27 @@ params.sample_barcode_file = params.sample_barcode_file ?: null   // sample inde
 params.demux_mismatches    = params.demux_mismatches    ?: 1      // allowed mismatches for sample index matching
 params.split_reads         = params.split_reads         ?: 1000000
 params.split_fastq_bin     = params.split_fastq_bin     ?: '/home/yli11/HemTools/bin/splitFastq'
+
+// Fixed reference + index paths (no genome/GTF/index building in pipeline)
+params.hybrid_fasta      = params.hybrid_fasta      ?: null
+params.hybrid_gtf        = params.hybrid_gtf        ?: null
+params.hybrid_bwa_prefix = params.hybrid_bwa_prefix ?: null
+params.hybrid_star_index = params.hybrid_star_index ?: null
+
+params.hg19_fasta      = params.hg19_fasta      ?: null
+params.hg19_gtf        = params.hg19_gtf        ?: null
+params.hg19_bwa_prefix = params.hg19_bwa_prefix ?: null
+params.hg19_star_index = params.hg19_star_index ?: null
+
+params.hg38_fasta      = params.hg38_fasta      ?: null
+params.hg38_gtf        = params.hg38_gtf        ?: null
+params.hg38_bwa_prefix = params.hg38_bwa_prefix ?: null
+params.hg38_star_index = params.hg38_star_index ?: null
+
+params.mm10_fasta      = params.mm10_fasta      ?: null
+params.mm10_gtf        = params.mm10_gtf        ?: null
+params.mm10_bwa_prefix = params.mm10_bwa_prefix ?: null
+params.mm10_star_index = params.mm10_star_index ?: null
 
 // Derive a single "effective" 8bp whitelist file used everywhere:
 //  - RENAME_FASTQ barcode validation (error-correction against whitelist)
@@ -75,10 +95,55 @@ if (params.barcodes_rc) {
 // can always read it via the filesystem regardless of cwd.
 effectiveCbWhitelistPath = file(effectiveCbWhitelistPath).toAbsolutePath().toString()
 
+def resolveReferenceConfig = {
+    def species = (params.species_model ?: 'human').toString().toLowerCase()
+    def humanBuild = (params.human_genome_build ?: 'hg19').toString().toLowerCase()
+    def key = (species == 'human') ? humanBuild : species
+    if (!(key in ['hybrid', 'hg19', 'hg38', 'mm10'])) {
+        error "Unsupported reference selection. species_model=${params.species_model}, human_genome_build=${params.human_genome_build}. Expected hybrid | hg19 | hg38 | mm10."
+    }
+    def cfg = [
+        key        : key,
+        fasta      : params["${key}_fasta"],
+        gtf        : params["${key}_gtf"],
+        bwa_prefix : params["${key}_bwa_prefix"],
+        star_index : params["${key}_star_index"],
+    ]
+    cfg.each { k, v ->
+        if (k != 'key' && (!v || v.toString().trim() == '')) {
+            error "Missing required reference parameter: ${key}_${k}"
+        }
+    }
+    return cfg
+}
+
+def selectedReferenceConfig = resolveReferenceConfig()
+def selectedBwaPrefixName = new File(selectedReferenceConfig.bwa_prefix.toString()).name
+def bwaRequiredExts = ['.amb', '.ann', '.bwt', '.pac', '.sa']
+bwaRequiredExts.each { ext ->
+    def p = file("${selectedReferenceConfig.bwa_prefix}${ext}")
+    if (!p.exists()) {
+        error "Missing BWA index component: ${p}"
+    }
+}
+if (!file(selectedReferenceConfig.star_index.toString()).exists()) {
+    error "STAR index directory not found: ${selectedReferenceConfig.star_index}"
+}
+if (!file(selectedReferenceConfig.fasta.toString()).exists()) {
+    error "Reference FASTA not found: ${selectedReferenceConfig.fasta}"
+}
+if (!file(selectedReferenceConfig.gtf.toString()).exists()) {
+    error "Reference GTF not found: ${selectedReferenceConfig.gtf}"
+}
+
 // Log key configuration
-log.info "Using Genomes directory      : ${params.genomes_dir}"
-log.info "Using GTF directory          : ${params.gtf_dir}"
 log.info "Species model                : ${params.species_model}"
+log.info "Human genome build           : ${params.human_genome_build}"
+log.info "Selected reference set       : ${selectedReferenceConfig.key}"
+log.info "Reference FASTA              : ${selectedReferenceConfig.fasta}"
+log.info "Reference GTF                : ${selectedReferenceConfig.gtf}"
+log.info "BWA index prefix             : ${selectedReferenceConfig.bwa_prefix}"
+log.info "STAR index directory         : ${selectedReferenceConfig.star_index}"
 log.info "STARsolo alignment mode      : ${params.star_alignment_mode}"
 log.info "UMI length (R2)              : ${params.umi_len}"
 log.info "Total barcode length         : ${params.total_bc_len}"
@@ -176,7 +241,7 @@ process DEMULTIPLEX {
     path "*.R2.fastq.gz", emit: demux_r2
 
     """
-    python "${projectDir}/demultiplex.py" \\
+    python "${projectDir}/scripts/demultiplex.py" \\
       -r1 ${r1_undetermined} \\
       -r2 ${r2_undetermined} \\
       -b ${barcode_file} \\
@@ -311,7 +376,7 @@ process RENAME_FASTQ {
     path "${sample_id}.total_number_reads.tsv", emit: rename_stats
 
     """
-    python "${projectDir}/rename_fastq.py" \\
+    python "${projectDir}/scripts/rename_fastq.py" \\
       -r1 ${r1_demux} \\
       -r2 ${r2_demux} \\
       --sample_ID ${sample_id} \\
@@ -350,7 +415,7 @@ process POLYT_FILTER {
     tuple val(sample_id), path("*extracted*.fastq.gz"), emit: polyt_outputs
 
     """
-    bash "${projectDir}/PolyT_cutadapt.sh" \\
+    bash "${projectDir}/scripts/PolyT_cutadapt.sh" \\
       ${r1_fastq} \\
       ${r2_fastq} \\
       .
@@ -549,127 +614,23 @@ PY
     """
 }
 
-process DETERMINE_READ_LENGTH {
-    tag { file(r1_fastq).name }
-
-    input:
-    path r1_fastq
-
-    output:
-    stdout emit: read_length
-
-    """
-    python - "${r1_fastq}" <<'PY'
-import gzip, sys
-
-path = sys.argv[1]
-opener = gzip.open if path.endswith(".gz") else open
-with opener(path, "rt") as f:
-    f.readline()
-    seq = f.readline().rstrip("\\n\\r")
-if not seq:
-    raise SystemExit(f"Failed to determine read length from {path}")
-print(len(seq), end="")
-PY
-    """
-}
-
 process STAR_INDEX {
     tag { params.species_model }
 
     input:
-    tuple val(read_length), path(barcoded_r2_dependency)
+    path barcoded_r2_dependency
 
     output:
-    path "STAR_index_*", emit: star_index
+    path "STAR_index_selected", emit: star_index
 
     script:
-    def proj = projectDir
-    def genomes = params.genomes_dir
-    def gtf = params.gtf_dir
-    def species = params.species_model
+    def starIndexSource = selectedReferenceConfig.star_index.toString()
 
     """
     set -euo pipefail
-
-    readLen=${read_length}
-    overhang=\$((readLen - 1))
-
-    case "${species}" in
-      mouse)  genomeFasta="${proj}/${genomes}/GRCm39/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz"
-              gtfFile="${proj}/${gtf}/Mus_musculus/Mus_musculus.GRCm39.111.gtf.gz"
-              indexDir="STAR_index_mouse\${readLen}bp" ;;
-      hybrid) genomeFasta="${proj}/${genomes}/hybrid/hybrid_human_mouse.fa.gz"
-              gtfFile="${proj}/${gtf}/hybrid/hybrid_human_mouse.gtf.gz"
-              indexDir="STAR_index_hybrid\${readLen}bp" ;;
-      *)      genomeFasta="${proj}/${genomes}/GRCh38/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
-              gtfFile="${proj}/${gtf}/Homo_sapiens/Homo_sapiens.GRCh38.111.gtf.gz"
-              indexDir="STAR_index_human\${readLen}bp" ;;
-    esac
-
-    # Build a fingerprint so we can safely reuse an existing index only when
-    # species/read length/genome fasta/GTF are unchanged.
-    python - "\${genomeFasta}" "\${gtfFile}" "${species}" "\${readLen}" > current_index_fingerprint.json <<'PY'
-import json
-import os
-import sys
-
-genome, gtf, species, read_len = sys.argv[1:5]
-
-def file_meta(path):
-    st = os.stat(path)
-    return {
-        "path": os.path.realpath(path),
-        "size": st.st_size,
-        "mtime": int(st.st_mtime),
-    }
-
-fp = {
-    "species_model": species,
-    "read_length": int(read_len),
-    "genome_fasta": file_meta(genome),
-    "gtf": file_meta(gtf),
-}
-print(json.dumps(fp, sort_keys=True))
-PY
-
-    REUSE_DIR="${proj}/\${indexDir}"
-    REUSE_FP="\${REUSE_DIR}/.index_fingerprint.json"
-
-    if [[ -d "\${REUSE_DIR}" && -f "\${REUSE_FP}" ]] && cmp -s current_index_fingerprint.json "\${REUSE_FP}"; then
-      echo "Reusing existing STAR index: \${REUSE_DIR}"
-      ln -s "\${REUSE_DIR}" "\${indexDir}"
-      exit 0
-    fi
-
-    mkdir -p "\${indexDir}"
-
-    # STAR genomeGenerate expects an uncompressed FASTA (and works best with plain-text GTF).
-    if [[ "\${genomeFasta}" == *.gz ]]; then
-      gzip -dc "\${genomeFasta}" > genome.fa
-    else
-      ln -sf "\${genomeFasta}" genome.fa
-    fi
-
-    if [[ "\${gtfFile}" == *.gz ]]; then
-      gzip -dc "\${gtfFile}" > annotations.gtf
-    else
-      ln -sf "\${gtfFile}" annotations.gtf
-    fi
-
-    STAR --runMode genomeGenerate \\
-         --runThreadN ${task.cpus} \\
-         --genomeDir \${indexDir} \\
-         --genomeFastaFiles genome.fa \\
-         --sjdbGTFfile annotations.gtf \\
-         --sjdbOverhang \${overhang}
-
-    # Save fingerprint in generated index and mirror index to project root for reuse.
-    cp current_index_fingerprint.json "\${indexDir}/.index_fingerprint.json"
-    TMP_REUSE_DIR="\${REUSE_DIR}.tmp"
-    rm -rf "\${TMP_REUSE_DIR}" "\${REUSE_DIR}"
-    cp -R "\${indexDir}" "\${TMP_REUSE_DIR}"
-    mv "\${TMP_REUSE_DIR}" "\${REUSE_DIR}"
+    [ -d "${starIndexSource}" ] || { echo "ERROR: STAR index directory not found: ${starIndexSource}" >&2; exit 1; }
+    [ -f "${starIndexSource}/Genome" ] || { echo "ERROR: STAR index seems invalid (missing Genome file): ${starIndexSource}" >&2; exit 1; }
+    ln -s "${starIndexSource}" STAR_index_selected
     """
 }
 
@@ -680,70 +641,15 @@ process BWA_INDEX {
     val(dummy)
 
     output:
-    path "BWA_index_*", emit: bwa_index
+    path "BWA_index_selected", emit: bwa_index
 
     script:
-    def proj = projectDir
-    def genomes = params.genomes_dir
-    def species = params.species_model
-    def prefixName = (species == 'mouse') ? 'mm39_bwa' : (species == 'hybrid' ? 'hybrid_bwa' : 'hg38_bwa')
+    def bwaPrefix = selectedReferenceConfig.bwa_prefix.toString()
+    def bwaIndexDir = new File(bwaPrefix).parent
     """
     set -euo pipefail
-    command -v bwa >/dev/null 2>&1 || { echo "ERROR: bwa not found in PATH. Install bwa in environment.yml / activate env."; exit 127; }
-
-    case "${species}" in
-      mouse)  genomeFasta="${proj}/${genomes}/GRCm39/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz"
-              indexDir="BWA_index_mouse"
-              prefixName="mm39_bwa" ;;
-      hybrid) genomeFasta="${proj}/${genomes}/hybrid/hybrid_human_mouse.fa.gz"
-              indexDir="BWA_index_hybrid"
-              prefixName="hybrid_bwa" ;;
-      *)      genomeFasta="${proj}/${genomes}/GRCh38/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
-              indexDir="BWA_index_human"
-              prefixName="hg38_bwa" ;;
-    esac
-
-    python - "\${genomeFasta}" "${species}" > current_bwa_index_fingerprint.json <<'PY'
-import json
-import os
-import sys
-
-genome, species = sys.argv[1:3]
-st = os.stat(genome)
-fp = {
-    "species_model": species,
-    "genome_fasta": {
-        "path": os.path.realpath(genome),
-        "size": st.st_size,
-        "mtime": int(st.st_mtime),
-    }
-}
-print(json.dumps(fp, sort_keys=True))
-PY
-
-    REUSE_DIR="${proj}/\${indexDir}"
-    REUSE_FP="\${REUSE_DIR}/.bwa_index_fingerprint.json"
-
-    if [[ -d "\${REUSE_DIR}" && -f "\${REUSE_FP}" ]] && cmp -s current_bwa_index_fingerprint.json "\${REUSE_FP}"; then
-      echo "Reusing existing BWA index: \${REUSE_DIR}"
-      cp -R "\${REUSE_DIR}" "\${indexDir}"
-      exit 0
-    fi
-
-    mkdir -p "\${indexDir}"
-    if [[ "\${genomeFasta}" == *.gz ]]; then
-      gzip -dc "\${genomeFasta}" > genome.fa
-    else
-      ln -sf "\${genomeFasta}" genome.fa
-    fi
-
-    bwa index -p "\${indexDir}/\${prefixName}" genome.fa
-    cp current_bwa_index_fingerprint.json "\${indexDir}/.bwa_index_fingerprint.json"
-
-    TMP_REUSE_DIR="\${REUSE_DIR}.tmp"
-    rm -rf "\${TMP_REUSE_DIR}" "\${REUSE_DIR}"
-    cp -R "\${indexDir}" "\${TMP_REUSE_DIR}"
-    mv "\${TMP_REUSE_DIR}" "\${REUSE_DIR}"
+    [ -d "${bwaIndexDir}" ] || { echo "ERROR: BWA index directory not found: ${bwaIndexDir}" >&2; exit 1; }
+    ln -s "${bwaIndexDir}" BWA_index_selected
     """
 }
 
@@ -894,7 +800,11 @@ process ESTIMATE_ATAC_CELLS {
 
     case "${params.species_model}" in
       mouse)  archrGenome="mm10" ;;
-      *)      archrGenome="hg38" ;;
+      human)  case "${params.human_genome_build}" in
+                hg38) archrGenome="hg38" ;;
+                *)    archrGenome="hg19" ;;
+              esac ;;
+      *)      archrGenome="hg19" ;;
     esac
 
     {
@@ -922,6 +832,9 @@ out_counts <- args[[9]]
 
 if (archr_genome == "hg38" && !requireNamespace("BSgenome.Hsapiens.UCSC.hg38", quietly = TRUE)) {
   stop("Missing package BSgenome.Hsapiens.UCSC.hg38. Install via conda dependency bioconductor-bsgenome.hsapiens.ucsc.hg38.")
+}
+if (archr_genome == "hg19" && !requireNamespace("BSgenome.Hsapiens.UCSC.hg19", quietly = TRUE)) {
+  stop("Missing package BSgenome.Hsapiens.UCSC.hg19. Install via conda dependency bioconductor-bsgenome.hsapiens.ucsc.hg19.")
 }
 if (archr_genome == "mm10" && !requireNamespace("BSgenome.Mmusculus.UCSC.mm10", quietly = TRUE)) {
   stop("Missing package BSgenome.Mmusculus.UCSC.mm10. Install via conda dependency bioconductor-bsgenome.mmusculus.ucsc.mm10.")
@@ -1159,7 +1072,7 @@ PY
       exit 1
     fi
 
-    python "${projectDir}/Visualization_scripts/Knee_plot.py" \\
+    python "${projectDir}/scripts/Knee_plot.py" \\
       --genefull-dir "\${GENEFULL_DIR}" \\
       --estimated-cells "\${EST}" \\
       --output "${qc_base}/${sample_id}/${sample_id}_knee_plot.png"
@@ -1187,7 +1100,7 @@ process BARNYARD_PLOT {
     fi
 
     # 80% purity barnyard plot
-    python "${projectDir}/Visualization_scripts/BarnyardPlot.py" \\
+    python "${projectDir}/scripts/BarnyardPlot.py" \\
       --filtered-dir "\${FILTERED_DIR}" \\
       --human-threshold 0.8 \\
       --mouse-threshold 0.2 \\
@@ -1197,7 +1110,7 @@ process BARNYARD_PLOT {
       --output "${qc_base}/${sample_id}/80%_collision_plot.png"
 
     # 90% purity barnyard plot
-    python "${projectDir}/Visualization_scripts/BarnyardPlot.py" \\
+    python "${projectDir}/scripts/BarnyardPlot.py" \\
       --filtered-dir "\${FILTERED_DIR}" \\
       --human-threshold 0.9 \\
       --mouse-threshold 0.1 \\
@@ -1230,19 +1143,19 @@ process HYBRID_SPLIT_SPECIES {
     fi
 
     # Purity 0.9
-    python "${projectDir}/Split_Species_By_Purity.py" \\
+    python "${projectDir}/scripts/Split_Species_By_Purity.py" \\
       --input "\${FILTERED_DIR}" \\
       --output "${qc_base}/${sample_id}/species_split_purity_0.9" \\
       --purity 0.9
 
     # Purity 0.85
-    python "${projectDir}/Split_Species_By_Purity.py" \\
+    python "${projectDir}/scripts/Split_Species_By_Purity.py" \\
       --input "\${FILTERED_DIR}" \\
       --output "${qc_base}/${sample_id}/species_split_purity_0.85" \\
       --purity 0.85
 
     # Purity 0.8
-    python "${projectDir}/Split_Species_By_Purity.py" \\
+    python "${projectDir}/scripts/Split_Species_By_Purity.py" \\
       --input "\${FILTERED_DIR}" \\
       --output "${qc_base}/${sample_id}/species_split_purity_0.8" \\
       --purity 0.8
@@ -1259,7 +1172,7 @@ process BUILD_PAIRED_WHITELIST {
     path "whitelist_paired.txt", emit: paired_whitelist_file
 
     """
-    python "${projectDir}/Build_Paired_Whitelist.py" \\
+    python "${projectDir}/scripts/Build_Paired_Whitelist.py" \\
       --barcodes "${effectiveCbWhitelistPath}" \\
       --output whitelist_paired.txt
     """
@@ -1498,7 +1411,7 @@ workflow {
 
     BWA_INDEX(ch_bwa_index_trigger)
 
-    def bwaPrefixName = (params.species_model == 'mouse') ? 'mm39_bwa' : (params.species_model == 'hybrid' ? 'hybrid_bwa' : 'hg38_bwa')
+    def bwaPrefixName = selectedBwaPrefixName
 
     ch_atac_pairs_for_align
         .combine(BWA_INDEX.out.bwa_index)
@@ -1588,11 +1501,6 @@ workflow {
         ch_r2_for_barcode_prepend = ch_polyt_r2
     }
 
-    // Read length from R1 (cDNA read) drives STAR index sjdbOverhang
-    def ch_r1_for_index = ch_r1_for_downstream.map { sample_id, r1 -> r1 }.take(1)
-    DETERMINE_READ_LENGTH(ch_r1_for_index)
-    def ch_read_length = DETERMINE_READ_LENGTH.out.read_length.map { it.trim() }
-
     // Barcode prepend: extract 24bp barcode from R2 header and prepend to R2 sequence.
     // Only R2 is needed; the barcode is already in the header from rename_fastq.py.
     ch_r2_for_barcode_prepend
@@ -1601,8 +1509,9 @@ workflow {
 
     PREPEND_HEADER_BARCODES(ch_r2_for_barcode)
 
-    ch_read_length
-        .combine(PREPEND_HEADER_BARCODES.out.r2_with_barcodes.map { sample_id, r2wb -> r2wb }.take(1))
+    PREPEND_HEADER_BARCODES.out.r2_with_barcodes
+        .map { sample_id, r2wb -> r2wb }
+        .take(1)
         .set { ch_star_index_input }
     STAR_INDEX(ch_star_index_input)
 
@@ -1623,7 +1532,6 @@ workflow {
         .mix(FASTQC_DEMUX.out.demux_reports)
         .mix(POLYT_FILTER.out.polyt_outputs)
         .mix(ch_trim_completion)
-        .mix(DETERMINE_READ_LENGTH.out.read_length)
         .mix(PREPEND_HEADER_BARCODES.out.r2_with_barcodes)
         .mix(STAR_INDEX.out.star_index)
         .mix(BWA_ALIGN_ATAC.out.atac_align_out)

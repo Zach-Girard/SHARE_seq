@@ -506,20 +506,12 @@ def summary_metrics_by_sample(paths):
     return out
 
 def overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample):
-    est_cells_vals = []
-    for s in sample_names:
-        sy = summary_by_sample.get(s, {})
-        est = _parse_number(sy.get("Estimated Number of Cells", ""))
-        if est is not None:
-            est_cells_vals.append(est)
     n_samples = len(sample_names)
-    total_est_cells = sum(est_cells_vals) if est_cells_vals else None
     generated = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
     cards = []
     cards.append('<div class="kpi-grid">')
     cards.append(f'<div class="kpi-card"><div class="kpi-label">Samples</div><div class="kpi-value">{_fmt_int(n_samples)}</div></div>')
-    cards.append(f'<div class="kpi-card"><div class="kpi-label">Total Estimated Cells - RNA</div><div class="kpi-value">{_fmt_int(total_est_cells)}</div></div>')
     cards.append('</div>')
     cards.append(f'<p class="meta-line"><strong>Generated:</strong> {html.escape(generated)} | <strong>Project:</strong> <code>{html.escape(proj)}</code></p>')
     return "".join(cards)

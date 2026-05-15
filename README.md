@@ -9,27 +9,26 @@ End-to-end SHARE-seq processing from raw FASTQs to STARsolo quantification and Q
 | 1. Split + parallel demultiplex | `SPLIT_UNDETERMINED_FASTQ`, `DEMULTIPLEX`, `MERGE_DEMUX_CHUNKS` | `RAW_FASTQ/`, `demux/<sample>/` |
 | 2. Barcode validation + demux QC | `RENAME_FASTQ`, `FASTQC_DEMUX` | `demux/<sample>/`, `fastqc_demux/<sample>/` |
 | 3. RNA/ATAC routing | workflow channel logic from `sample_barcode_file` column 3 | N/A |
-| 4a. ATAC BWA index (ATAC only) | `BWA_INDEX` | `BWA_index_<species>/` |
-| 4b. ATAC alignment + filtering/QC (ATAC only) | `BWA_ALIGN_ATAC` | `ATAC/<sample>/` |
+| 4. ATAC alignment + filtering/QC (ATAC only) | `BWA_ALIGN_ATAC` | `ATAC/<sample>/` |
 | 5. Poly-T filtering (RNA only) | `POLYT_FILTER` | `polyt_filtered/<sample>/` |
 | 6. Trimming (optional, RNA only) | `TRIM_R1`, `TRIM_R2_PROTECTED`, `FASTQC_TRIMMED` | `trimmed/<sample>/`, `fastqc_trimmed/` |
 | 7. Barcode prepend (RNA only) | `PREPEND_HEADER_BARCODES` | `trimmed/<sample>/` or `polyt_filtered/<sample>/` |
-| 8. STAR genome index (RNA only) | `STAR_INDEX` | `STAR_index_<species><len>bp/` |
+| 8. STAR genome index validation (RNA only) | `STAR_INDEX` | staged `STAR_index_selected/` symlink |
 | 9a. Single-end alignment (RNA only) | `STARSOLO_SINGLE` | `STARsolo/<sample>/` |
 | 9b. Paired-end alignment (RNA only) | `BUILD_PAIRED_WHITELIST`, `STARSOLO_PAIRED` | `STARsolo_paired/<sample>/` |
 | 10. Downstream QC + reports | `KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES`, `BUILD_QC_HTML` | STARsolo dirs, ATAC dirs, `QC_Report*` |
 
 **Key behaviour:**
 
-- **Read structure after demux**: R1 = cDNA, R2 = UMI + PolyT + cDNA. The 24bp cell barcode (3×8bp round barcodes validated by `rename_fastq.py`) is in the read header.
+- **Read structure after demux**: R1 = cDNA, R2 = UMI + PolyT + cDNA. The 24bp cell barcode (3×8bp round barcodes validated by `scripts/rename_fastq.py`) is in the read header.
 - **Sample-type routing**: `sample_barcode_file` column 1 is sample ID and column 3 is sample type (`RNA` or `ATAC`). RNA samples continue through Poly-T/STARsolo; ATAC samples go through a dedicated BWA branch.
 - **Optional experimental groups**: `sample_barcode_file` can include a 4th column (`Experimental_Group`). The QC Overview can use this to show one KPI card per group with combined group-level estimates (ATAC uses pre-dedup ArchR estimate when available).
-- **ATAC branch**: `BWA_INDEX` builds a species-specific BWA index once and reuses it across runs using a genome fingerprint. `BWA_ALIGN_ATAC` runs `bwa mem -C`, keeps mapped reads with `MAPQ >= 30`, adds `CB:Z` tags from QNAME, performs barcode-aware duplicate removal (`samtools markdup --barcode-tag CB -r`), and writes per-sample BAM + QC metrics (`flagstat`, `idxstats`, `stats`) under `ATAC/<sample>/`.
+- **ATAC branch**: `BWA_INDEX` validates and stages a prebuilt species/build-specific BWA index configured in `nextflow.config`. `BWA_ALIGN_ATAC` runs `bwa mem -C`, keeps mapped reads with `MAPQ >= 30`, adds `CB:Z` tags from QNAME, performs barcode-aware duplicate removal (`samtools markdup --barcode-tag CB -r`), and writes per-sample BAM + QC metrics (`flagstat`, `idxstats`, `stats`) under `ATAC/<sample>/`.
 - **Poly-T filtering** is always run. R2 is the anchor (cutadapt matches UMI + PolyT pattern); R1 (cDNA) is synced. Reads are split into `extracted` and `noPolyT` buckets.
 - **Trimming** (`trim_reads = true`) runs fastp on Poly-T–extracted R1 (standard) and R2 (first `umi_len` bases protected). Read-dropping filters are disabled to keep R1/R2 in sync. When trimming is off (default), Poly-T–extracted reads flow directly to barcode prepend.
 - **Barcode prepend** extracts the 24bp cell barcode from R2's read header and prepends it to R2's sequence. The `withBarcodes_*` output is written to `trimmed/<sample>/` when trimming is enabled, or `polyt_filtered/<sample>/` when disabled.
-- **STARsolo alignment** uses R1 (cDNA) + `withBarcodes_R2` (24bp CB + UMI + cDNA). Single-end mode uses `CB_UMI_Complex`; paired-end mode uses `CB_UMI_Simple` with a combinatorial 24bp whitelist. Barcodes are already error-corrected by `rename_fastq.py`, so no additional barcode matching is needed.
-- **STAR genome index** is reused across runs when species, read length, genome FASTA, and GTF all match (fingerprint-based).
+- **STARsolo alignment** uses R1 (cDNA) + `withBarcodes_R2` (24bp CB + UMI + cDNA). Single-end mode uses `CB_UMI_Complex`; paired-end mode uses `CB_UMI_Simple` with a combinatorial 24bp whitelist. Barcodes are already error-corrected by `scripts/rename_fastq.py`, so no additional barcode matching is needed.
+- **STAR genome index** uses a prebuilt index directory configured in `nextflow.config` (validated and staged for each run).
 - **Barnyard plots and species splits** are generated only when `species_model = hybrid`.
 - **QC report outputs** include `QC_Report.html`, `QC_Report/` (per-sample pages), `QC_Report_assets/`, and `QC_Report_bundle.zip`. Reports now include an ATAC section in the combined page and conditional per-sample ATAC blocks when ATAC outputs exist.
 
@@ -52,42 +51,26 @@ When you initialize this project as a Git repository and push to GitHub, ensure 
 - `environment.yml` and `ENVIRONMENT_SETUP.md` are committed.
 - Any future changes to dependencies are made via `environment.yml` and committed as well.
 
-### Genome assemblies
+### Reference and index configuration
 
-- Genome download and hybrid genome creation are handled by the script `Genomes/prepare_genomes.sh`.
-- By default, it downloads the **GRCh38** (human) and **GRCm39** (mouse) primary assemblies from Ensembl and builds a hybrid FASTA.
+This pipeline now uses fixed, prebuilt reference assets configured in `nextflow.config`:
 
-To use it:
+- FASTA and GTF paths per reference set
+- BWA index prefix path per reference set
+- STAR index directory per reference set
 
-```bash
-cd Genomes
-chmod +x prepare_genomes.sh   # first time only
-./prepare_genomes.sh
-```
+Supported reference sets:
 
-If you want to download **different genomes**, edit the URL variables at the top of `Genomes/prepare_genomes.sh` (e.g. point to different species or assembly builds) and then rerun the script.
+- `hybrid`
+- `hg19`
+- `hg38`
+- `mm10`
 
-The Nextflow pipeline has a `species_model` parameter (default: `human`) that can be set to:
+Selection logic:
 
-- `human`
-- `mouse`
-- `hybrid` (mixed human–mouse model)
-
-If you change `species_model`, make sure you have downloaded and prepared **matching genome and GTF files** under `Genomes/` and `GTF/` (for example, using the provided helper scripts or by customizing them).
-
-### GTF annotations
-
-- GTF annotation files for GRCh38 and GRCm39 are downloaded by the script `GTF/download_gtf.sh`.
-
-To use it:
-
-```bash
-cd GTF
-chmod +x download_gtf.sh   # first time only
-./download_gtf.sh
-```
-
-This will place the human and mouse GTFs under `GTF/Homo_sapiens/` and `GTF/Mus_musculus/`.
+- `species_model=hybrid` -> uses `hybrid_*` paths
+- `species_model=mouse` -> uses `mm10_*` paths
+- `species_model=human` -> uses `hg19_*` or `hg38_*` based on `human_genome_build` (default: `hg19`)
 
 ### Raw FASTQ input (demultiplexing)
 
@@ -161,10 +144,9 @@ This section documents the ATAC-specific logic in detail.
 
 #### 5) ArchR-based ATAC cell estimation
 
-- `ESTIMATE_ATAC_CELLS` uses the post-dedup BAM:
-  - `ATAC/<sample>/<sample>.q30.rmdup.sorted.bam`
-- It creates an ArchR-ready tagged BAM for Arrow creation:
-  - `ATAC/<sample>/<sample>.archr_tagged.sorted.bam`
+- `ESTIMATE_ATAC_CELLS` runs ArchR on both:
+  - pre-dedup BAM: `ATAC/<sample>/<sample>.q30.mapped.sorted.bam`
+  - post-dedup BAM: `ATAC/<sample>/<sample>.q30.rmdup.sorted.bam`
 - ArchR flow:
   - `addArchRGenome(...)`
   - `createArrowFiles(minFrags = atac_min_frags_for_cell, minTSS = atac_min_tss_for_cell, bcTag = "CB")`
@@ -172,7 +154,7 @@ This section documents the ATAC-specific logic in detail.
 - Summary/count outputs:
   - `ATAC/<sample>/<sample>.atac_cells.summary.tsv`
   - `ATAC/<sample>/<sample>.atac_cells.counts.tsv`
-  - `ATAC/<sample>/<sample>.archr_tagged.stats.tsv`
+  - `ATAC/<sample>/<sample>.archr_tagged.stats.tsv` (input alignment counts pre/post dedup)
 
 #### 6) ATAC metrics surfaced in reports
 
@@ -242,7 +224,7 @@ nextflow run main.nf -profile lsf
 - **LSF defaults** (tune to your site in `nextflow.config`):
   - **Queue**: `standard`
   - **Queue size**: `executor.queueSize = 200`
-  - **ATAC overrides**: `BWA_INDEX` (high-memory one-time index build), `BWA_ALIGN_ATAC` (per-sample alignment/filter/QC)
+  - **ATAC overrides**: `BWA_INDEX` (index path validation/staging), `BWA_ALIGN_ATAC` (per-sample alignment/filter/QC)
   - **Other processes**: profile-specific overrides in `nextflow.config`
 
 **One-time environment setup on the HPC:**
@@ -300,10 +282,11 @@ nextflow run main.nf -profile lsf \
 **Checklist before running:**
 
 - `RAW_FASTQ/` contains the undetermined R1/R2 and sample barcode file, and `--undetermined_r1`, `--undetermined_r2`, `--sample_barcode_file` are set.
-- `Genomes/` and `GTF/` have been prepared using `Genomes/prepare_genomes.sh` and `GTF/download_gtf.sh`.
-- `species_model` matches your genome/GTF setup (`human`, `mouse`, or `hybrid`).
+- `species_model` is set to `human`, `mouse`, or `hybrid`.
+- If `species_model=human`, set `human_genome_build` to `hg19` or `hg38` (default is `hg19`).
+- The corresponding `*_fasta`, `*_gtf`, `*_bwa_prefix`, and `*_star_index` paths are valid in `nextflow.config`.
 - `barcodes_8bp_file` and `barcodes_rc` are set correctly for your barcode scheme.
 - `star_alignment_mode` is `single` or `paired` as needed.
 - Set `trim_reads = true` to enable fastp trimming. R1 (cDNA) gets standard fastp; R2's first `umi_len` bases (UMI) are always protected.
-- For ATAC samples, ensure `species_model` matches the intended BWA genome (`human`, `mouse`, or `hybrid`) since BWA index reuse is species-specific.
+- For ATAC samples, ensure `species_model`/`human_genome_build` resolve to the intended configured BWA prefix and STAR index.
 

@@ -21,6 +21,7 @@ dependencies:
   - r-base
   - r-archr=1.0.3
   - r-biocmanager
+  - bioconductor-bsgenome.hsapiens.ucsc.hg19
   - bioconductor-bsgenome.hsapiens.ucsc.hg38
   - bioconductor-bsgenome.mmusculus.ucsc.mm10
   - bedtools

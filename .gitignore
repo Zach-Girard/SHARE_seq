@@ -8,10 +8,4 @@ RAW_FASTQ/
 demux/
 STAR_index_*/
 STARsolo*/
-# Ignore downloaded genome/GTF data but keep setup scripts
-Genomes/*
-!Genomes/prepare_genomes.sh
-GTF/*
-!GTF/download_gtf.sh
-QC_Report*
-ATAC_C1200/*
+
