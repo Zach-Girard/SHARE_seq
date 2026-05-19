@@ -1053,7 +1053,7 @@ process KNEE_PLOT {
     fi
 
     # Extract "Estimated Number of Cells" (2nd CSV column) without awk regex literals (/.../)
-    EST=\$(python - "\${SUMMARY_CSV}" <<'PY'
+    EST=\$(python3 - "\${SUMMARY_CSV}" <<'PY'
 import csv, sys
 path = sys.argv[1]
 with open(path, newline="") as f:
@@ -1072,7 +1072,7 @@ PY
       exit 1
     fi
 
-    python "${projectDir}/scripts/Knee_plot.py" \\
+    python3 "${projectDir}/scripts/Knee_plot.py" \\
       --genefull-dir "\${GENEFULL_DIR}" \\
       --estimated-cells "\${EST}" \\
       --output "${qc_base}/${sample_id}/${sample_id}_knee_plot.png"
@@ -1100,7 +1100,7 @@ process BARNYARD_PLOT {
     fi
 
     # 80% purity barnyard plot
-    python "${projectDir}/scripts/BarnyardPlot.py" \\
+    python3 "${projectDir}/scripts/BarnyardPlot.py" \\
       --filtered-dir "\${FILTERED_DIR}" \\
       --human-threshold 0.8 \\
       --mouse-threshold 0.2 \\
@@ -1110,7 +1110,7 @@ process BARNYARD_PLOT {
       --output "${qc_base}/${sample_id}/80%_collision_plot.png"
 
     # 90% purity barnyard plot
-    python "${projectDir}/scripts/BarnyardPlot.py" \\
+    python3 "${projectDir}/scripts/BarnyardPlot.py" \\
       --filtered-dir "\${FILTERED_DIR}" \\
       --human-threshold 0.9 \\
       --mouse-threshold 0.1 \\
@@ -1143,19 +1143,19 @@ process HYBRID_SPLIT_SPECIES {
     fi
 
     # Purity 0.9
-    python "${projectDir}/scripts/Split_Species_By_Purity.py" \\
+    python3 "${projectDir}/scripts/Split_Species_By_Purity.py" \\
       --input "\${FILTERED_DIR}" \\
       --output "${qc_base}/${sample_id}/species_split_purity_0.9" \\
       --purity 0.9
 
     # Purity 0.85
-    python "${projectDir}/scripts/Split_Species_By_Purity.py" \\
+    python3 "${projectDir}/scripts/Split_Species_By_Purity.py" \\
       --input "\${FILTERED_DIR}" \\
       --output "${qc_base}/${sample_id}/species_split_purity_0.85" \\
       --purity 0.85
 
     # Purity 0.8
-    python "${projectDir}/scripts/Split_Species_By_Purity.py" \\
+    python3 "${projectDir}/scripts/Split_Species_By_Purity.py" \\
       --input "\${FILTERED_DIR}" \\
       --output "${qc_base}/${sample_id}/species_split_purity_0.8" \\
       --purity 0.8
@@ -1172,7 +1172,7 @@ process BUILD_PAIRED_WHITELIST {
     path "whitelist_paired.txt", emit: paired_whitelist_file
 
     """
-    python "${projectDir}/scripts/Build_Paired_Whitelist.py" \\
+    python3 "${projectDir}/scripts/Build_Paired_Whitelist.py" \\
       --barcodes "${effectiveCbWhitelistPath}" \\
       --output whitelist_paired.txt
     """
