@@ -241,7 +241,7 @@ process DEMULTIPLEX {
     path "*.R2.fastq.gz", emit: demux_r2
 
     """
-    python "${projectDir}/scripts/demultiplex.py" \\
+    python3 "${projectDir}/scripts/demultiplex.py" \\
       -r1 ${r1_undetermined} \\
       -r2 ${r2_undetermined} \\
       -b ${barcode_file} \\
@@ -376,7 +376,7 @@ process RENAME_FASTQ {
     path "${sample_id}.total_number_reads.tsv", emit: rename_stats
 
     """
-    python "${projectDir}/scripts/rename_fastq.py" \\
+    python3 "${projectDir}/scripts/rename_fastq.py" \\
       -r1 ${r1_demux} \\
       -r2 ${r2_demux} \\
       --sample_ID ${sample_id} \\

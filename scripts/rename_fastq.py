@@ -95,7 +95,7 @@ def read_fastq_record(handle):
 
 def read_barcode_list(path):
 	barcodes = []
-	with open(path, newline="") as f:
+	with open(path) as f:
 		sample = f.read(4096)
 		f.seek(0)
 		try:

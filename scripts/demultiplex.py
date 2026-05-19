@@ -63,7 +63,7 @@ def read_barcode_table(path, rc=False):
 	"""Return ({sample_id: barcode_seq}, {sample_id: sample_type}) from TSV/CSV table.
 	Column 1 = sample name, column 2 = barcode (typical), column 3 = sample type when present."""
 	rows = []
-	with open(path, newline="") as f:
+	with open(path) as f:
 		sample = f.read(4096)
 		f.seek(0)
 		try:
