@@ -859,26 +859,106 @@ def summary_csv_key_metrics_table(paths):
             sample = os.path.basename(os.path.dirname(p))
         metrics = parse_summary_csv_metrics(p)
         sample_metrics.append((sample, metrics))
+
+    def _class_for_metric(metric, val):
+        if val is None:
+            return ""
+        if metric == "Number of Reads":
+            return ""
+        if metric == "Reads Mapped to Genome: Unique":
+            if val >= 80.0:
+                return "qc-good"
+            if val >= 65.0:
+                return "qc-warn"
+            return "qc-bad"
+        if metric == "Reads With Valid Barcodes":
+            if val >= 0.99:
+                return "qc-good"
+            return "qc-bad"
+        if metric == "Estimated Number of Cells":
+            # Colored dynamically in HTML using user-provided expected cell count.
+            return ""
+        if metric == "Median Reads per Cell":
+            return ""
+        if metric == "Median UMI per Cell":
+            return ""
+        if metric == "Total GeneFull Detected":
+            if val >= 20000.0:
+                return "qc-good"
+            if val >= 18000.0:
+                return "qc-warn"
+            return "qc-bad"
+        return ""
+
+    metric_values = {}
+    for metric in wanted_metrics:
+        vals = []
+        for _, m in sample_metrics:
+            raw = m.get(metric, "")
+            if metric in ("Reads Mapped to Genome: Unique", "Reads With Valid Barcodes"):
+                vals.append(_parse_pct(raw))
+            else:
+                vals.append(_parse_number(raw))
+        metric_values[metric] = vals
+
     headers = ["Metric"] + [s for s, _ in sample_metrics]
     cells = []
     cells.append("<tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in headers) + "</tr>")
     for metric in wanted_metrics:
         row_html = [f"<td>{html.escape(metric)}</td>"]
-        for _, m in sample_metrics:
+        for sample_idx, (_, m) in enumerate(sample_metrics):
             val = m.get(metric, "")
-            if metric == "Reads Mapped to Genome: Unique":
-                pct = _parse_pct(val)
-                if pct >= 85.0:
-                    cls = "qc-good"
-                elif pct >= 70.0:
-                    cls = "qc-warn"
-                else:
-                    cls = "qc-bad"
+            metric_val = metric_values.get(metric, [None] * len(sample_metrics))[sample_idx]
+            cls = _class_for_metric(metric, metric_val)
+            if metric == "Estimated Number of Cells":
+                data_val = "" if metric_val is None else f"{float(metric_val):.6f}"
+                row_html.append(
+                    f'<td class="expected-cells-cell" data-expected-cells-value="{html.escape(data_val)}">{html.escape(str(val))}</td>'
+                )
+            elif cls:
                 row_html.append(f'<td class="{cls}">{html.escape(str(val))}</td>')
             else:
                 row_html.append(f"<td>{html.escape(str(val))}</td>")
         cells.append("<tr>" + "".join(row_html) + "</tr>")
-    return "<table>" + "".join(cells) + "</table>"
+    controls = """
+<div class="expected-cells-controls" style="margin: 8px 0 10px 0;">
+  <label for="expected-cells-input" style="font-weight:600;">Expected cell count:</label>
+  <input id="expected-cells-input" type="number" min="0" step="1" placeholder="Enter expected cells"
+         style="margin-left:8px; padding:4px 6px; width:180px;" />
+  <span style="margin-left:10px; font-size:12px;">
+    Coloring for <code>Estimated Number of Cells</code>: good >=80% of expected, warn >=60%, bad <60%.
+  </span>
+</div>
+"""
+    script = """
+<script>
+(function() {
+  var input = document.getElementById('expected-cells-input');
+  if (!input) return;
+  var cells = Array.prototype.slice.call(
+    document.querySelectorAll('td.expected-cells-cell[data-expected-cells-value]')
+  );
+  function clearClasses(td) {
+    td.classList.remove('qc-good', 'qc-warn', 'qc-bad');
+  }
+  function applyExpectedCellColors() {
+    var expected = parseFloat(input.value);
+    cells.forEach(function(td) {
+      clearClasses(td);
+      var raw = parseFloat(td.getAttribute('data-expected-cells-value'));
+      if (!isFinite(expected) || expected <= 0 || !isFinite(raw)) return;
+      var pct = (raw / expected) * 100.0;
+      if (pct >= 80.0) td.classList.add('qc-good');
+      else if (pct >= 60.0) td.classList.add('qc-warn');
+      else td.classList.add('qc-bad');
+    });
+  }
+  input.addEventListener('input', applyExpectedCellColors);
+  applyExpectedCellColors();
+})();
+</script>
+"""
+    return controls + "<table>" + "".join(cells) + "</table>" + script
 
 def parse_flagstat_metrics(rel_path):
     out = {
