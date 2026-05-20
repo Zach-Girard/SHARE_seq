@@ -105,7 +105,9 @@ def load_rna_barcodes(project_dir: str, sample: str, starsolo_root: str) -> Set[
 
 
 def load_atac_barcodes(project_dir: str, sample: str) -> Set[str]:
-    path = os.path.join(project_dir, "ATAC", sample, f"{sample}.atac_cells.counts.tsv")
+    path = os.path.join(
+        project_dir, "ATAC", sample, f"{sample}.atac_cells.pre_dedup.counts.tsv"
+    )
     if not os.path.isfile(path):
         return set()
     out: Set[str] = set()
@@ -239,7 +241,7 @@ def main() -> int:
         elif not rna_barcodes:
             note = "No RNA barcodes found (missing STARsolo filtered output)"
         elif not atac_barcodes:
-            note = "No ATAC barcodes found (missing ArchR counts)"
+            note = "No ATAC barcodes found (missing ArchR pre-dedup counts; re-run ESTIMATE_ATAC_CELLS)"
 
         row = {
             "Experimental_Group": group,

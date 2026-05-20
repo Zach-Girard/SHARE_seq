@@ -107,11 +107,12 @@ def ensure_atac_files():
         "*.q30.mapped.idxstats.txt",
         "*.q30.mapped.stats.txt",
         "*.atac_cells.summary.tsv",
+        "*.atac_cells.pre_dedup.counts.tsv",
         "*.atac_cells.counts.tsv",
     ]
     name_patterns = [
         re.compile(r"(.+?)\.q30\.(?:rmdup|mapped|possort)\.(?:flagstat|idxstats|stats)\.txt\$"),
-        re.compile(r"(.+?)\.atac_cells\.(?:summary|counts)\.tsv\$"),
+        re.compile(r"(.+?)\.atac_cells\.(?:summary|pre_dedup\.counts|counts)\.tsv\$"),
     ]
     seen = set()
     for pat in atac_patterns:
@@ -647,7 +648,7 @@ def multiome_overlap_section(overlap_tsv_path, overlap_png_path):
     chunks = [
         "<p>Cell barcodes are compared per experimental group: "
         "RNA from STARsolo <code>GeneFull/filtered/barcodes.tsv</code>, "
-        "ATAC from ArchR <code>*.atac_cells.counts.tsv</code>.</p>",
+        "ATAC from ArchR <code>*.atac_cells.pre_dedup.counts.tsv</code> (pre-dedup BAM).</p>",
         read_table_preview(overlap_tsv_path, max_rows=None),
     ]
     if overlap_png_path and os.path.isfile(os.path.join(proj, overlap_png_path)):

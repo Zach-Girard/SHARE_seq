@@ -784,6 +784,7 @@ process ESTIMATE_ATAC_CELLS {
 
     output:
     path "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv", emit: atac_cell_summary
+    path "ATAC/${sample_id}/${sample_id}.atac_cells.pre_dedup.counts.tsv", emit: atac_cell_counts_pre
     path "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv", emit: atac_cell_counts
     path "ATAC/${sample_id}/${sample_id}.archr_tagged.stats.tsv", emit: archr_tagged_stats
 
@@ -816,6 +817,7 @@ process ESTIMATE_ATAC_CELLS {
     Rscript - "${sample_id}" "\$BAM_PRE" "\$BAM_POST" \\
         "${params.atac_min_frags_for_cell}" "${params.atac_min_tss_for_cell}" "\${archrGenome}" "${task.cpus}" \\
         "ATAC/${sample_id}/${sample_id}.atac_cells.summary.tsv" \\
+        "ATAC/${sample_id}/${sample_id}.atac_cells.pre_dedup.counts.tsv" \\
         "ATAC/${sample_id}/${sample_id}.atac_cells.counts.tsv" <<'RSCRIPT'
 suppressPackageStartupMessages(library(ArchR))
 
@@ -828,7 +830,33 @@ min_tss <- as.numeric(args[[5]])
 archr_genome <- args[[6]]
 threads <- as.integer(args[[7]])
 out_summary <- args[[8]]
-out_counts <- args[[9]]
+out_counts_pre <- args[[9]]
+out_counts_post <- args[[10]]
+
+write_cell_counts <- function(cell_col, out_path) {
+  pick_col <- function(candidates) {
+    for (candidate in candidates) {
+      if (candidate %in% colnames(cell_col)) {
+        return(candidate)
+      }
+    }
+    NA_character_
+  }
+  frag_col <- pick_col(c("nFrags", "NFrags", "nfrags"))
+  tss_col <- pick_col(c("TSSEnrichment", "TSS.enrichment", "TSSRatio"))
+  cell_names <- rownames(cell_col)
+  barcodes <- sub("^.*#", "", cell_names)
+  fragments <- if (!is.na(frag_col)) cell_col[[frag_col]] else rep(NA_real_, nrow(cell_col))
+  tss <- if (!is.na(tss_col)) cell_col[[tss_col]] else rep(NA_real_, nrow(cell_col))
+  counts <- data.frame(
+    Barcode = barcodes,
+    Fragments = fragments,
+    TSSEnrichment = tss,
+    stringsAsFactors = FALSE
+  )
+  utils::write.table(counts, file = out_path, sep = "\t", quote = FALSE, row.names = FALSE)
+  nrow(cell_col)
+}
 
 if (archr_genome == "hg38" && !requireNamespace("BSgenome.Hsapiens.UCSC.hg38", quietly = TRUE)) {
   stop("Missing package BSgenome.Hsapiens.UCSC.hg38. Install via conda dependency bioconductor-bsgenome.hsapiens.ucsc.hg38.")
@@ -916,32 +944,11 @@ summarize_archr_cell_col <- function(cell_col) {
 
 pre_m <- summarize_archr_cell_col(pre_res[["cell_col"]])
 post_m <- summarize_archr_cell_col(post_res[["cell_col"]])
-cell_col <- post_res[["cell_col"]]
-pick_col <- function(candidates) {
-  for (candidate in candidates) {
-    if (candidate %in% colnames(cell_col)) {
-      return(candidate)
-    }
-  }
-  return(NA_character_)
-}
 
-frag_col <- pick_col(c("nFrags", "NFrags", "nfrags"))
-tss_col <- pick_col(c("TSSEnrichment", "TSS.enrichment", "TSSRatio"))
-cell_names <- rownames(cell_col)
-barcodes <- sub("^.*#", "", cell_names)
-fragments <- if (!is.na(frag_col)) cell_col[[frag_col]] else rep(NA_real_, nrow(cell_col))
-tss <- if (!is.na(tss_col)) cell_col[[tss_col]] else rep(NA_real_, nrow(cell_col))
-
-counts <- data.frame(
-  Barcode = barcodes,
-  Fragments = fragments,
-  TSSEnrichment = tss,
-  stringsAsFactors = FALSE
-)
-utils::write.table(counts, file = out_counts, sep = "\t", quote = FALSE, row.names = FALSE)
-
-estimated_cells <- nrow(cell_col)
+write_cell_counts(pre_res[["cell_col"]], out_counts_pre)
+estimated_cells_post <- write_cell_counts(post_res[["cell_col"]], out_counts_post)
+estimated_cells_pre <- nrow(pre_res[["cell_col"]])
+estimated_cells <- estimated_cells_post
 
 summary <- data.frame(
   Metric = c(
@@ -975,7 +982,7 @@ summary <- data.frame(
     archr_genome,
     min_frags,
     min_tss,
-    nrow(pre_res[["cell_col"]]),
+    estimated_cells_pre,
     estimated_cells,
     pre_m[["median_fragments"]],
     post_m[["median_fragments"]],
@@ -1548,6 +1555,7 @@ workflow {
         .mix(BWA_ALIGN_ATAC.out.atac_align_out)
         .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_summary)
         .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_counts)
+        .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_counts_pre)
         .mix(ESTIMATE_ATAC_CELLS.out.archr_tagged_stats)
         .mix(MULTIQC_ATAC.out.multiqc_report)
         .mix(MULTIQC_ATAC.out.multiqc_data)
@@ -1562,6 +1570,7 @@ workflow {
         .mix(BWA_ALIGN_ATAC.out.atac_align_out)
         .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_summary)
         .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_counts)
+        .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_counts_pre)
         .mix(ESTIMATE_ATAC_CELLS.out.archr_tagged_stats)
         .mix(MULTIQC_ATAC.out.multiqc_report)
         .mix(MULTIQC_ATAC.out.multiqc_data)
