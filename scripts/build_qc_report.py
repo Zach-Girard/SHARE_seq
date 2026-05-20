@@ -176,26 +176,15 @@ def ensure_multiome_overlap_files():
         except Exception:
             pass
 
-def overlap_results_stale():
-    """True if overlap TSV is missing or older than pre-dedup ATAC count files."""
-    out_tsv = os.path.join(proj, "multiome_overlap", "overlap_by_group.tsv")
-    pre_files = glob.glob(os.path.join(proj, "ATAC", "*", "*.atac_cells.pre_dedup.counts.tsv"))
-    if not os.path.isfile(out_tsv) or os.path.getsize(out_tsv) == 0:
-        return True
-    if not pre_files:
-        return True
-    overlap_mtime = os.path.getmtime(out_tsv)
-    return any(os.path.getmtime(p) > overlap_mtime for p in pre_files)
-
 def ensure_multiome_overlap_results():
-    """Generate or refresh overlap tables from pre-dedup ATAC ArchR counts."""
+    """Always regenerate overlap from pre-dedup ATAC ArchR counts on disk."""
     out_dir = os.path.join(proj, "multiome_overlap")
-    out_tsv = os.path.join(out_dir, "overlap_by_group.tsv")
     script = os.path.join(proj, "scripts", "cell_overlap_by_group.py")
     barcode_path = resolve_sample_barcode_path()
     if not os.path.isfile(script) or not barcode_path:
         return
-    if not overlap_results_stale():
+    pre_files = glob.glob(os.path.join(proj, "ATAC", "*", "*.atac_cells.pre_dedup.counts.tsv"))
+    if not pre_files:
         return
     os.makedirs(out_dir, exist_ok=True)
     subprocess.run(

@@ -110,47 +110,84 @@ def load_rna_barcodes(project_dir: str, sample: str, starsolo_root: str) -> Set[
 
 
 def resolve_atac_pre_counts_path(
-    project_dir: str, sample: str, atac_pre_counts_dir: Optional[str]
+    project_dir: str,
+    sample: str,
+    atac_pre_counts_dir: Optional[str],
+    staged_only: bool = False,
 ) -> Optional[str]:
     fname = f"{sample}.atac_cells.pre_dedup.counts.tsv"
     if atac_pre_counts_dir:
         staged = os.path.join(atac_pre_counts_dir, fname)
         if os.path.isfile(staged):
             return staged
+        if staged_only:
+            return None
     canonical = os.path.join(project_dir, "ATAC", sample, fname)
     if os.path.isfile(canonical):
         return canonical
     return None
 
 
+def count_rows_in_counts_tsv(path: str) -> int:
+    with open(path, "r", errors="replace") as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
+        if not reader.fieldnames:
+            return 0
+        return sum(1 for _ in reader)
+
+
 def load_atac_barcodes(
-    project_dir: str, sample: str, atac_pre_counts_dir: Optional[str] = None
-) -> Set[str]:
-    path = resolve_atac_pre_counts_path(project_dir, sample, atac_pre_counts_dir)
+    project_dir: str,
+    sample: str,
+    atac_pre_counts_dir: Optional[str] = None,
+    staged_only: bool = False,
+) -> Tuple[Set[str], str]:
+    path = resolve_atac_pre_counts_path(
+        project_dir, sample, atac_pre_counts_dir, staged_only=staged_only
+    )
     if not path:
         print(
             f"WARNING: missing {sample}.atac_cells.pre_dedup.counts.tsv "
             f"(re-run ESTIMATE_ATAC_CELLS; overlap uses pre-dedup ArchR cells only)",
             file=sys.stderr,
         )
-        return set()
+        return set(), ""
     out: Set[str] = set()
     with open(path, "r", errors="replace") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         if not reader.fieldnames:
-            return out
+            return out, path
         bc_col = None
         for name in reader.fieldnames:
             if name and name.strip().lower() == "barcode":
                 bc_col = name
                 break
         if not bc_col:
-            return out
+            print(
+                f"WARNING: no Barcode column in {path}; skipping sample {sample}",
+                file=sys.stderr,
+            )
+            return out, path
         for row in reader:
             bc = normalize_barcode(row.get(bc_col, ""))
             if bc:
                 out.add(bc)
-    return out
+    post_path = os.path.join(project_dir, "ATAC", sample, f"{sample}.atac_cells.counts.tsv")
+    if os.path.isfile(post_path):
+        post_rows = count_rows_in_counts_tsv(post_path)
+        pre_rows = count_rows_in_counts_tsv(path)
+        if len(out) == post_rows and pre_rows > post_rows:
+            print(
+                f"WARNING: {sample} unique pre-dedup barcodes ({len(out)}) equals post-dedup "
+                f"row count ({post_rows}) but pre file has more rows ({pre_rows}); "
+                "check barcode normalization.",
+                file=sys.stderr,
+            )
+    print(
+        f"ATAC {sample}: {len(out)} barcodes from pre-dedup {path}",
+        file=sys.stderr,
+    )
+    return out, path
 
 
 def write_shared_barcodes(path: str, barcodes: Set[str]) -> None:
@@ -181,7 +218,7 @@ def plot_overlap(rows: List[dict], out_png: str) -> None:
     width = 0.25
     fig, ax = plt.subplots(figsize=(max(8, len(groups) * 1.4), 5))
     ax.bar([i - width for i in x], rna_n, width=width, label="RNA cells", color="#3b82f6")
-    ax.bar(x, atac_n, width=width, label="ATAC cells", color="#f59e0b")
+    ax.bar(x, atac_n, width=width, label="ATAC cells (pre-dedup)", color="#f59e0b")
     ax.bar([i + width for i in x], shared_n, width=width, label="Shared barcodes", color="#10b981")
     ax.set_xticks(list(x))
     ax.set_xticklabels(groups, rotation=25, ha="right")
@@ -198,8 +235,10 @@ def main() -> int:
     project_dir = os.path.abspath(args.project_dir)
     out_dir = os.path.abspath(args.out_dir)
     atac_pre_counts_dir = (args.atac_pre_counts_dir or "").strip()
+    staged_only = False
     if atac_pre_counts_dir:
         atac_pre_counts_dir = os.path.abspath(atac_pre_counts_dir)
+        staged_only = True
     os.makedirs(out_dir, exist_ok=True)
 
     starsolo_root = "STARsolo_paired" if args.star_alignment_mode == "paired" else "STARsolo"
@@ -218,6 +257,7 @@ def main() -> int:
                     "Experimental_Group",
                     "RNA_Samples",
                     "ATAC_Samples",
+                    "ATAC_PreDedup_Files",
                     "RNA_Cells",
                     "ATAC_Cells",
                     "Shared_Cells",
@@ -228,7 +268,9 @@ def main() -> int:
                     "Jaccard",
                 ]
             )
-            w.writerow(["", "", "", "", "", "", "", "", "", "", "No experimental groups defined"])
+            w.writerow(
+                ["", "", "", "", "", "", "", "", "", "", "", "No experimental groups defined"]
+            )
         return 0
 
     members_by_group: Dict[str, List[str]] = defaultdict(list)
@@ -247,8 +289,14 @@ def main() -> int:
             rna_barcodes |= load_rna_barcodes(project_dir, s, starsolo_root)
 
         atac_barcodes: Set[str] = set()
+        atac_sources: List[str] = []
         for s in atac_samples:
-            atac_barcodes |= load_atac_barcodes(project_dir, s, atac_pre_counts_dir)
+            sample_barcodes, src = load_atac_barcodes(
+                project_dir, s, atac_pre_counts_dir, staged_only=staged_only
+            )
+            atac_barcodes |= sample_barcodes
+            if src:
+                atac_sources.append(src)
 
         shared = rna_barcodes & atac_barcodes
         rna_only = rna_barcodes - atac_barcodes
@@ -263,6 +311,7 @@ def main() -> int:
             "Experimental_Group": group,
             "RNA_Samples": ",".join(rna_samples),
             "ATAC_Samples": ",".join(atac_samples),
+            "ATAC_PreDedup_Files": ";".join(atac_sources),
             "RNA_Cells": len(rna_barcodes),
             "ATAC_Cells": len(atac_barcodes),
             "Shared_Cells": len(shared),
@@ -285,6 +334,7 @@ def main() -> int:
         "Experimental_Group",
         "RNA_Samples",
         "ATAC_Samples",
+        "ATAC_PreDedup_Files",
         "RNA_Cells",
         "ATAC_Cells",
         "Shared_Cells",

@@ -1191,7 +1191,7 @@ process CELL_OVERLAP_BY_GROUP {
     publishDir "${projectDir}/multiome_overlap", mode: 'copy', overwrite: true
 
     input:
-    tuple val(trigger), path(atac_pre_counts, optional: true)
+    tuple val(trigger), val(overlap_mode), path(atac_pre_counts, optional: true)
     path(sample_barcode_file)
 
     output:
@@ -1702,14 +1702,18 @@ workflow {
     // RNA/ATAC cell barcode overlap per Experimental_Group (column 4 of sample_barcode_file).
     def ch_overlap_trigger = ch_report_barrier.collect().map { 1 }
     def ch_atac_pre_counts = ESTIMATE_ATAC_CELLS.out.atac_cell_counts_pre.collect()
+    def ch_overlap_mode = Channel.value('pre_dedup_staged')
     CELL_OVERLAP_BY_GROUP(
-        ch_overlap_trigger.combine(ch_atac_pre_counts, remainder: true),
+        ch_overlap_trigger
+            .combine(ch_overlap_mode)
+            .combine(ch_atac_pre_counts, remainder: true),
         barcodeFile
     )
     ch_report_barrier = ch_report_barrier.mix(CELL_OVERLAP_BY_GROUP.out.overlap_summary)
     // Only top-level overlap files go to BUILD_QC_HTML (per-group TSVs share basenames and collide).
     // Per-group outputs are published under projectDir/multiome_overlap/ by CELL_OVERLAP_BY_GROUP.
     ch_report_inputs = ch_report_inputs
+        .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_counts_pre)
         .mix(CELL_OVERLAP_BY_GROUP.out.overlap_summary)
         .mix(CELL_OVERLAP_BY_GROUP.out.overlap_plot)
 
