@@ -1700,7 +1700,7 @@ workflow {
     CELL_OVERLAP_BY_GROUP(
         ch_overlap_trigger
             .combine(ch_overlap_mode)
-            .combine(ch_atac_pre_counts, remainder: true),
+            .combine(ch_atac_pre_counts),
         barcodeFile
     )
     ch_report_barrier = ch_report_barrier.mix(CELL_OVERLAP_BY_GROUP.out.overlap_summary)
