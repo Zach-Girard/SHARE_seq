@@ -4,6 +4,8 @@ work/
 *.log
 *.out
 
+docs/
+
 RAW_FASTQ/
 demux/
 STAR_index_*/

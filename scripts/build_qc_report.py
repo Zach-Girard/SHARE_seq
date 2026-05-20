@@ -570,6 +570,24 @@ def group_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary
     cards.append('</div>')
     return "".join(cards)
 
+def multiome_overlap_section(overlap_tsv_path, overlap_png_path):
+    if not overlap_tsv_path or not os.path.isfile(os.path.join(proj, overlap_tsv_path)):
+        return (
+            "<p><em>No multiome overlap results found. "
+            "Requires Experimental_Group (column 4) in sample_barcode_file and both RNA and ATAC samples per group.</em></p>"
+        )
+    chunks = [
+        "<p>Cell barcodes are compared per experimental group: "
+        "RNA from STARsolo <code>GeneFull/filtered/barcodes.tsv</code>, "
+        "ATAC from ArchR <code>*.atac_cells.counts.tsv</code>.</p>",
+        read_table_preview(overlap_tsv_path, max_rows=None),
+    ]
+    if overlap_png_path and os.path.isfile(os.path.join(proj, overlap_png_path)):
+        chunks.append(
+            f'<p><img class="plot-img" src="../{html.escape(overlap_png_path)}" alt="Overlap by group"></p>'
+        )
+    return "".join(chunks)
+
 def sample_sidebar_links(sample_names):
     if not sample_names:
         return "<p><em>No sample reports</em></p>"
@@ -1122,6 +1140,10 @@ atac_multiqc_tables = sorted(set(
     rel_list("ATAC_MultiQC_data/multiqc_samtools_flagstat.txt") +
     rel_list("ATAC_MultiQC_data/multiqc_samtools_stats.txt")
 ))
+overlap_by_group_tsv = rel_list("multiome_overlap/overlap_by_group.tsv")
+overlap_by_group_png = rel_list("multiome_overlap/overlap_by_group.png")
+overlap_by_group_tsv = overlap_by_group_tsv[0] if overlap_by_group_tsv else ""
+overlap_by_group_png = overlap_by_group_png[0] if overlap_by_group_png else ""
 sample_names = sorted(set(
     [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup + atac_cbtag_qc) if sample_from_report_path(p)]
     + list(load_demux_sample_names(demux_stats))
@@ -1403,6 +1425,7 @@ parts.append('''<!doctype html>
   <a href="#sec-fastqc">FastQC (Demultiplexed)</a>
   <a href="#sec-atac">ATAC QC</a>
   <a href="#sec-starsolo">RNA QC</a>
+  <a href="#sec-overlap">Multiome Overlap</a>
 __BARNYARD_TAB__
 </div>
 </div>
@@ -1423,8 +1446,15 @@ parts.append("<h2>Overview</h2>")
 parts.append(overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample))
 parts.append("<h3>Combined Cell Estimate by Experimental Group</h3>")
 parts.append(group_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary, sample_to_group))
+parts.append("<h3>RNA / ATAC Cell Barcode Overlap by Experimental Group</h3>")
+parts.append(multiome_overlap_section(overlap_by_group_tsv, overlap_by_group_png))
 parts.append("<h3>Sample Directory</h3>")
 parts.append(sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, atac_cell_summary))
+parts.append("</section>")
+
+parts.append('<section id="sec-overlap">')
+parts.append("<h2>Multiome Cell Overlap</h2>")
+parts.append(multiome_overlap_section(overlap_by_group_tsv, overlap_by_group_png))
 parts.append("</section>")
 
 parts.append('<section id="sec-demux">')

@@ -16,13 +16,13 @@ End-to-end SHARE-seq processing from raw FASTQs to STARsolo quantification and Q
 | 8. STAR genome index validation (RNA only) | `STAR_INDEX` | staged `STAR_index_selected/` symlink |
 | 9a. Single-end alignment (RNA only) | `STARSOLO_SINGLE` | `STARsolo/<sample>/` |
 | 9b. Paired-end alignment (RNA only) | `BUILD_PAIRED_WHITELIST`, `STARSOLO_PAIRED` | `STARsolo_paired/<sample>/` |
-| 10. Downstream QC + reports | `KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES`, `BUILD_QC_HTML` | STARsolo dirs, ATAC dirs, `QC_Report*` |
+| 10. Downstream QC + reports | `KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES`, `CELL_OVERLAP_BY_GROUP`, `BUILD_QC_HTML` | STARsolo dirs, ATAC dirs, `multiome_overlap/`, `QC_Report*` |
 
 **Key behaviour:**
 
 - **Read structure after demux**: R1 = cDNA, R2 = UMI + PolyT + cDNA. The 24bp cell barcode (3×8bp round barcodes validated by `scripts/rename_fastq.py`) is in the read header.
 - **Sample-type routing**: `sample_barcode_file` column 1 is sample ID and column 3 is sample type (`RNA` or `ATAC`). RNA samples continue through Poly-T/STARsolo; ATAC samples go through a dedicated BWA branch.
-- **Optional experimental groups**: `sample_barcode_file` can include a 4th column (`Experimental_Group`). The QC Overview can use this to show one KPI card per group with combined group-level estimates (ATAC uses pre-dedup ArchR estimate when available).
+- **Optional experimental groups**: `sample_barcode_file` can include a 4th column (`Experimental_Group`). The QC Overview can use this to show one KPI card per group with combined group-level estimates (ATAC uses pre-dedup ArchR estimate when available), and `CELL_OVERLAP_BY_GROUP` compares shared 24bp cell barcodes between RNA (STARsolo filtered) and ATAC (ArchR) samples within each group.
 - **ATAC branch**: `BWA_INDEX` validates and stages a prebuilt species/build-specific BWA index configured in `nextflow.config`. `BWA_ALIGN_ATAC` runs `bwa mem -C`, keeps mapped reads with `MAPQ >= 30`, adds `CB:Z` tags from QNAME, performs barcode-aware duplicate removal (`samtools markdup --barcode-tag CB -r`), and writes per-sample BAM + QC metrics (`flagstat`, `idxstats`, `stats`) under `ATAC/<sample>/`.
 - **Poly-T filtering** is always run. R2 is the anchor (cutadapt matches UMI + PolyT pattern); R1 (cDNA) is synced. Reads are split into `extracted` and `noPolyT` buckets.
 - **Trimming** (`trim_reads = true`) runs fastp on Poly-T–extracted R1 (standard) and R2 (first `umi_len` bases protected). Read-dropping filters are disabled to keep R1/R2 in sync. When trimming is off (default), Poly-T–extracted reads flow directly to barcode prepend.

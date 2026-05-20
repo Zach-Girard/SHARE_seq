@@ -15,7 +15,7 @@ nextflow.enable.dsl=2
  *   7. Barcode prepending (24bp cell barcode from R2 header → R2 sequence)
  *   8. STAR genome index (built or reused via fingerprint)
  *   9. STARsolo alignment (single-end CB_UMI_Complex or paired-end CB_UMI_Simple)
- *  10. QC: knee plots, barnyard plots (hybrid), species-purity splits (hybrid), HTML report outputs
+ *  10. QC: knee plots, barnyard plots (hybrid), species-purity splits (hybrid), multiome cell overlap by group, HTML report outputs
  *
  * Requires:
  *   - RAW_FASTQ/ directory with undetermined R1/R2 fastq.gz and sample barcode file
@@ -1178,6 +1178,30 @@ process BUILD_PAIRED_WHITELIST {
     """
 }
 
+process CELL_OVERLAP_BY_GROUP {
+    tag "multiome_overlap"
+
+    publishDir "${projectDir}/multiome_overlap", mode: 'copy', overwrite: true
+
+    input:
+    val(trigger)
+    path(sample_barcode_file)
+
+    output:
+    path "overlap_by_group.tsv", emit: overlap_summary
+    path "overlap_by_group.png", emit: overlap_plot, optional: true
+    path "*", emit: overlap_outputs
+
+    """
+    set -euo pipefail
+    python3 "${projectDir}/scripts/cell_overlap_by_group.py" \\
+      --project-dir "${projectDir}" \\
+      --sample-barcode-file "${sample_barcode_file}" \\
+      --star-alignment-mode "${params.star_alignment_mode}" \\
+      --out-dir "."
+    """
+}
+
 process BUILD_QC_HTML {
     tag "qc_report"
 
@@ -1657,6 +1681,15 @@ workflow {
     } else {
         log.info "Unknown star_alignment_mode = ${params.star_alignment_mode}; skipping STARsolo alignment."
     }
+
+    // RNA/ATAC cell barcode overlap per Experimental_Group (column 4 of sample_barcode_file).
+    def ch_overlap_trigger = ch_report_barrier.collect().map { 1 }
+    CELL_OVERLAP_BY_GROUP(ch_overlap_trigger, barcodeFile)
+    ch_report_barrier = ch_report_barrier.mix(CELL_OVERLAP_BY_GROUP.out.overlap_summary)
+    ch_report_inputs = ch_report_inputs
+        .mix(CELL_OVERLAP_BY_GROUP.out.overlap_summary)
+        .mix(CELL_OVERLAP_BY_GROUP.out.overlap_plot)
+        .mix(CELL_OVERLAP_BY_GROUP.out.overlap_outputs)
 
     def ch_report_done = ch_report_barrier
         .collect()
