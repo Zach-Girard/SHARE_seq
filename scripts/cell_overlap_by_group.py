@@ -257,7 +257,6 @@ def main() -> int:
                     "Experimental_Group",
                     "RNA_Samples",
                     "ATAC_Samples",
-                    "ATAC_PreDedup_Files",
                     "RNA_Cells",
                     "ATAC_Cells",
                     "Shared_Cells",
@@ -269,7 +268,7 @@ def main() -> int:
                 ]
             )
             w.writerow(
-                ["", "", "", "", "", "", "", "", "", "", "", "No experimental groups defined"]
+                ["", "", "", "", "", "", "", "", "", "", "No experimental groups defined"]
             )
         return 0
 
@@ -289,14 +288,11 @@ def main() -> int:
             rna_barcodes |= load_rna_barcodes(project_dir, s, starsolo_root)
 
         atac_barcodes: Set[str] = set()
-        atac_sources: List[str] = []
         for s in atac_samples:
-            sample_barcodes, src = load_atac_barcodes(
+            sample_barcodes, _src = load_atac_barcodes(
                 project_dir, s, atac_pre_counts_dir, staged_only=staged_only
             )
             atac_barcodes |= sample_barcodes
-            if src:
-                atac_sources.append(src)
 
         shared = rna_barcodes & atac_barcodes
         rna_only = rna_barcodes - atac_barcodes
@@ -311,7 +307,6 @@ def main() -> int:
             "Experimental_Group": group,
             "RNA_Samples": ",".join(rna_samples),
             "ATAC_Samples": ",".join(atac_samples),
-            "ATAC_PreDedup_Files": ";".join(atac_sources),
             "RNA_Cells": len(rna_barcodes),
             "ATAC_Cells": len(atac_barcodes),
             "Shared_Cells": len(shared),
@@ -334,7 +329,6 @@ def main() -> int:
         "Experimental_Group",
         "RNA_Samples",
         "ATAC_Samples",
-        "ATAC_PreDedup_Files",
         "RNA_Cells",
         "ATAC_Cells",
         "Shared_Cells",

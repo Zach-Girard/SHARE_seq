@@ -577,6 +577,68 @@ def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, 
         )
     return "<table>" + "".join(rows) + "</table>"
 
+def load_experimental_groups(sample_barcode_path):
+    groups = {}
+    if not sample_barcode_path or not os.path.isfile(sample_barcode_path):
+        return groups
+    try:
+        with open(sample_barcode_path, "r", errors="replace") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                cols = [c.strip() for c in re.split(r"\t|,", line)]
+                if len(cols) < 4:
+                    continue
+                sample = cols[0]
+                group = cols[3]
+                if not sample or not group:
+                    continue
+                sample_l = sample.lower()
+                group_l = group.lower()
+                if sample_l in ("sample", "sample_name") and group_l in ("group", "experimental_group", "condition"):
+                    continue
+                groups[sample] = group
+    except Exception:
+        return {}
+    return groups
+
+def group_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary_paths, sample_to_group):
+    if not sample_to_group:
+        return "<p><em>No Experimental Group column found in sample_barcode_file (optional column 4).</em></p>"
+    atac_cells_by_sample = build_atac_cells_by_sample(atac_cell_summary_paths)
+    members_by_group = {}
+    for s in sample_names:
+        g = sample_to_group.get(s, "")
+        if g:
+            members_by_group.setdefault(g, []).append(s)
+    if not members_by_group:
+        return "<p><em>No samples in this run matched an Experimental Group label.</em></p>"
+
+    group_totals = {}
+    for g, members in members_by_group.items():
+        vals = []
+        for m in members:
+            v = _parse_number(estimated_cells_for_sample(m, summary_by_sample, atac_cells_by_sample))
+            if v is not None:
+                vals.append(v)
+        if vals:
+            group_totals[g] = sum(vals)
+
+    cards = ['<div class="kpi-grid">']
+    for g in sorted(members_by_group):
+        val = group_totals.get(g)
+        members = sorted(members_by_group[g])
+        label = f"{g} ({', '.join(members)})"
+        cards.append(
+            '<div class="kpi-card">'
+            f'<div class="kpi-label">{html.escape(label)}</div>'
+            f'<div class="kpi-value">{html.escape(_fmt_int(val))}</div>'
+            '</div>'
+        )
+    cards.append('</div>')
+    return "".join(cards)
+
 def load_overlap_shared_cells(overlap_tsv_path):
     """Return (group, shared_cells) rows from overlap_by_group.tsv."""
     if not overlap_tsv_path:
@@ -1194,6 +1256,7 @@ overlap_by_group_tsv = rel_list("multiome_overlap/overlap_by_group.tsv")
 overlap_by_group_png = rel_list("multiome_overlap/overlap_by_group.png")
 overlap_by_group_tsv = overlap_by_group_tsv[0] if overlap_by_group_tsv else ""
 overlap_by_group_png = overlap_by_group_png[0] if overlap_by_group_png else ""
+sample_to_group = load_experimental_groups(resolve_sample_barcode_path())
 sample_names = sorted(set(
     [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup + atac_cbtag_qc) if sample_from_report_path(p)]
     + list(load_demux_sample_names(demux_stats))
@@ -1493,6 +1556,8 @@ parts[-1] = parts[-1].replace(
 parts.append('<section id="sec-overview">')
 parts.append("<h2>Overview</h2>")
 parts.append(overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample))
+parts.append("<h3>Combined Cell Estimate by Experimental Group</h3>")
+parts.append(group_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary, sample_to_group))
 parts.append("<h3>Shared Cells by Experimental Group</h3>")
 parts.append(multiome_shared_cells_kpi_cards(overlap_by_group_tsv))
 parts.append("<h3>Sample Directory</h3>")
