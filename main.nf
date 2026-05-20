@@ -1696,11 +1696,11 @@ workflow {
     def ch_overlap_trigger = ch_report_barrier.collect().map { 1 }
     CELL_OVERLAP_BY_GROUP(ch_overlap_trigger, barcodeFile)
     ch_report_barrier = ch_report_barrier.mix(CELL_OVERLAP_BY_GROUP.out.overlap_summary)
+    // Only top-level overlap files go to BUILD_QC_HTML (per-group TSVs share basenames and collide).
+    // Per-group outputs are published under projectDir/multiome_overlap/ by CELL_OVERLAP_BY_GROUP.
     ch_report_inputs = ch_report_inputs
         .mix(CELL_OVERLAP_BY_GROUP.out.overlap_summary)
         .mix(CELL_OVERLAP_BY_GROUP.out.overlap_plot)
-        .mix(CELL_OVERLAP_BY_GROUP.out.overlap_per_group)
-        .mix(CELL_OVERLAP_BY_GROUP.out.overlap_shared_barcodes)
 
     def ch_report_done = ch_report_barrier
         .collect()
