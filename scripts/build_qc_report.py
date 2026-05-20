@@ -176,15 +176,26 @@ def ensure_multiome_overlap_files():
         except Exception:
             pass
 
+def overlap_results_stale():
+    """True if overlap TSV is missing or older than pre-dedup ATAC count files."""
+    out_tsv = os.path.join(proj, "multiome_overlap", "overlap_by_group.tsv")
+    pre_files = glob.glob(os.path.join(proj, "ATAC", "*", "*.atac_cells.pre_dedup.counts.tsv"))
+    if not os.path.isfile(out_tsv) or os.path.getsize(out_tsv) == 0:
+        return True
+    if not pre_files:
+        return True
+    overlap_mtime = os.path.getmtime(out_tsv)
+    return any(os.path.getmtime(p) > overlap_mtime for p in pre_files)
+
 def ensure_multiome_overlap_results():
-    """Generate overlap tables if the Nextflow process did not publish them yet."""
+    """Generate or refresh overlap tables from pre-dedup ATAC ArchR counts."""
     out_dir = os.path.join(proj, "multiome_overlap")
     out_tsv = os.path.join(out_dir, "overlap_by_group.tsv")
     script = os.path.join(proj, "scripts", "cell_overlap_by_group.py")
     barcode_path = resolve_sample_barcode_path()
     if not os.path.isfile(script) or not barcode_path:
         return
-    if os.path.isfile(out_tsv) and os.path.getsize(out_tsv) > 0:
+    if not overlap_results_stale():
         return
     os.makedirs(out_dir, exist_ok=True)
     subprocess.run(
@@ -513,32 +524,6 @@ def _fmt_float(v, nd=1, suffix=""):
     except Exception:
         return "N/A"
 
-def load_experimental_groups(sample_barcode_path):
-    groups = {}
-    if not sample_barcode_path or not os.path.isfile(sample_barcode_path):
-        return groups
-    try:
-        with open(sample_barcode_path, "r", errors="replace") as fh:
-            for raw in fh:
-                line = raw.strip()
-                if not line or line.startswith("#"):
-                    continue
-                cols = [c.strip() for c in re.split(r"\t|,", line)]
-                if len(cols) < 4:
-                    continue
-                sample = cols[0]
-                group = cols[3]
-                if not sample or not group:
-                    continue
-                sample_l = sample.lower()
-                group_l = group.lower()
-                if sample_l in ("sample", "sample_name") and group_l in ("group", "experimental_group", "condition"):
-                    continue
-                groups[sample] = group
-    except Exception:
-        return {}
-    return groups
-
 def build_atac_cells_by_sample(atac_cell_summary_paths):
     atac_cells_by_sample = {}
     for p in sorted(atac_cell_summary_paths):
@@ -603,37 +588,41 @@ def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, 
         )
     return "<table>" + "".join(rows) + "</table>"
 
-def group_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary_paths, sample_to_group):
-    if not sample_to_group:
-        return "<p><em>No Experimental Group column found in sample_barcode_file (optional column 4).</em></p>"
-    atac_cells_by_sample = build_atac_cells_by_sample(atac_cell_summary_paths)
-    members_by_group = {}
-    for s in sample_names:
-        g = sample_to_group.get(s, "")
-        if g:
-            members_by_group.setdefault(g, []).append(s)
-    if not members_by_group:
-        return "<p><em>No samples in this run matched an Experimental Group label.</em></p>"
+def load_overlap_shared_cells(overlap_tsv_path):
+    """Return (group, shared_cells) rows from overlap_by_group.tsv."""
+    if not overlap_tsv_path:
+        return []
+    abs_path = os.path.join(proj, overlap_tsv_path)
+    if not os.path.isfile(abs_path):
+        return []
+    rows = []
+    try:
+        with open(abs_path, newline="", errors="replace") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            for row in reader:
+                group = (row.get("Experimental_Group") or "").strip()
+                if not group:
+                    continue
+                rows.append((group, row.get("Shared_Cells", "")))
+    except Exception:
+        return []
+    return rows
 
-    group_totals = {}
-    for g, members in members_by_group.items():
-        vals = []
-        for m in members:
-            v = _parse_number(estimated_cells_for_sample(m, summary_by_sample, atac_cells_by_sample))
-            if v is not None:
-                vals.append(v)
-        if vals:
-            group_totals[g] = sum(vals)
-
+def multiome_shared_cells_kpi_cards(overlap_tsv_path):
+    overlap_rows = load_overlap_shared_cells(overlap_tsv_path)
+    if not overlap_rows:
+        return (
+            "<p><em>No multiome overlap results found. "
+            "Requires Experimental_Group (column 4) in sample_barcode_file and both RNA and ATAC samples per group.</em></p>"
+        )
     cards = ['<div class="kpi-grid">']
-    for g in sorted(members_by_group):
-        val = group_totals.get(g)
-        members = sorted(members_by_group[g])
-        label = f"{g} ({', '.join(members)})"
+    for group, shared in sorted(overlap_rows, key=lambda x: x[0].lower()):
+        n = _parse_number(shared)
+        val = _fmt_int(n) if n is not None else "N/A"
         cards.append(
             '<div class="kpi-card">'
-            f'<div class="kpi-label">{html.escape(label)}</div>'
-            f'<div class="kpi-value">{html.escape(_fmt_int(val))}</div>'
+            f'<div class="kpi-label">{html.escape(group)}</div>'
+            f'<div class="kpi-value">{html.escape(val)}</div>'
             '</div>'
         )
     cards.append('</div>')
@@ -1222,7 +1211,6 @@ sample_names = sorted(set(
 ))
 starsolo_by_sample = starsolo_metrics_by_sample(starsolo_logs)
 summary_by_sample = summary_metrics_by_sample(summary_csv)
-sample_to_group = load_experimental_groups(sample_barcode_sheet)
 
 parts = []
 parts.append('''<!doctype html>
@@ -1497,8 +1485,8 @@ parts.append('''<!doctype html>
   <a href="#sec-fastqc">FastQC (Demultiplexed)</a>
   <a href="#sec-atac">ATAC QC</a>
   <a href="#sec-starsolo">RNA QC</a>
-  <a href="#sec-overlap">Multiome Overlap</a>
 __BARNYARD_TAB__
+  <a href="#sec-overlap">Multiome Overlap</a>
 </div>
 </div>
 <div class="main-layout">
@@ -1510,23 +1498,16 @@ __SAMPLE_SIDEBAR__
 parts[-1] = parts[-1].replace("__SAMPLE_SIDEBAR__", sample_sidebar_links(sample_names))
 parts[-1] = parts[-1].replace(
     "__BARNYARD_TAB__",
-    '  <a href="#sec-barnyard">Hybrid Barnyard</a>' if species_model == 'hybrid' else ""
+    '  <a href="#sec-barnyard">Hybrid Barnyard</a>\n' if species_model == 'hybrid' else ""
 )
 
 parts.append('<section id="sec-overview">')
 parts.append("<h2>Overview</h2>")
 parts.append(overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample))
-parts.append("<h3>Combined Cell Estimate by Experimental Group</h3>")
-parts.append(group_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary, sample_to_group))
-parts.append("<h3>RNA / ATAC Cell Barcode Overlap by Experimental Group</h3>")
-parts.append(multiome_overlap_section(overlap_by_group_tsv, overlap_by_group_png))
+parts.append("<h3>Shared Cells by Experimental Group</h3>")
+parts.append(multiome_shared_cells_kpi_cards(overlap_by_group_tsv))
 parts.append("<h3>Sample Directory</h3>")
 parts.append(sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, atac_cell_summary))
-parts.append("</section>")
-
-parts.append('<section id="sec-overlap">')
-parts.append("<h2>Multiome Cell Overlap</h2>")
-parts.append(multiome_overlap_section(overlap_by_group_tsv, overlap_by_group_png))
 parts.append("</section>")
 
 parts.append('<section id="sec-demux">')
@@ -1577,6 +1558,11 @@ if species_model == 'hybrid':
     parts.append("<h2>Hybrid Barnyard Plots</h2>")
     parts.append(image_files_block("STARsolo*/<sample>/*collision_plot.png", barnyard))
     parts.append("</section>")
+
+parts.append('<section id="sec-overlap">')
+parts.append("<h2>Multiome Cell Overlap</h2>")
+parts.append(multiome_overlap_section(overlap_by_group_tsv, overlap_by_group_png))
+parts.append("</section>")
 
 parts.append("</div></div>")
 parts.append("</body></html>")

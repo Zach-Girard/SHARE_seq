@@ -30,6 +30,11 @@ def parse_args():
         help="STARsolo output root: STARsolo (single) or STARsolo_paired (paired).",
     )
     p.add_argument("--out-dir", default=".", help="Output directory (multiome_overlap/).")
+    p.add_argument(
+        "--atac-pre-counts-dir",
+        default="",
+        help="Directory of staged *.atac_cells.pre_dedup.counts.tsv files (from Nextflow).",
+    )
     return p.parse_args()
 
 
@@ -104,11 +109,30 @@ def load_rna_barcodes(project_dir: str, sample: str, starsolo_root: str) -> Set[
     return out
 
 
-def load_atac_barcodes(project_dir: str, sample: str) -> Set[str]:
-    path = os.path.join(
-        project_dir, "ATAC", sample, f"{sample}.atac_cells.pre_dedup.counts.tsv"
-    )
-    if not os.path.isfile(path):
+def resolve_atac_pre_counts_path(
+    project_dir: str, sample: str, atac_pre_counts_dir: Optional[str]
+) -> Optional[str]:
+    fname = f"{sample}.atac_cells.pre_dedup.counts.tsv"
+    if atac_pre_counts_dir:
+        staged = os.path.join(atac_pre_counts_dir, fname)
+        if os.path.isfile(staged):
+            return staged
+    canonical = os.path.join(project_dir, "ATAC", sample, fname)
+    if os.path.isfile(canonical):
+        return canonical
+    return None
+
+
+def load_atac_barcodes(
+    project_dir: str, sample: str, atac_pre_counts_dir: Optional[str] = None
+) -> Set[str]:
+    path = resolve_atac_pre_counts_path(project_dir, sample, atac_pre_counts_dir)
+    if not path:
+        print(
+            f"WARNING: missing {sample}.atac_cells.pre_dedup.counts.tsv "
+            f"(re-run ESTIMATE_ATAC_CELLS; overlap uses pre-dedup ArchR cells only)",
+            file=sys.stderr,
+        )
         return set()
     out: Set[str] = set()
     with open(path, "r", errors="replace") as fh:
@@ -173,6 +197,9 @@ def main() -> int:
     args = parse_args()
     project_dir = os.path.abspath(args.project_dir)
     out_dir = os.path.abspath(args.out_dir)
+    atac_pre_counts_dir = (args.atac_pre_counts_dir or "").strip()
+    if atac_pre_counts_dir:
+        atac_pre_counts_dir = os.path.abspath(atac_pre_counts_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     starsolo_root = "STARsolo_paired" if args.star_alignment_mode == "paired" else "STARsolo"
@@ -199,10 +226,9 @@ def main() -> int:
                     "Pct_RNA_in_ATAC",
                     "Pct_ATAC_in_RNA",
                     "Jaccard",
-                    "Note",
                 ]
             )
-            w.writerow(["", "", "", "", "", "", "", "", "", "", "", "No experimental groups defined"])
+            w.writerow(["", "", "", "", "", "", "", "", "", "", "No experimental groups defined"])
         return 0
 
     members_by_group: Dict[str, List[str]] = defaultdict(list)
@@ -222,7 +248,7 @@ def main() -> int:
 
         atac_barcodes: Set[str] = set()
         for s in atac_samples:
-            atac_barcodes |= load_atac_barcodes(project_dir, s)
+            atac_barcodes |= load_atac_barcodes(project_dir, s, atac_pre_counts_dir)
 
         shared = rna_barcodes & atac_barcodes
         rna_only = rna_barcodes - atac_barcodes
@@ -232,16 +258,6 @@ def main() -> int:
         pct_rna_in_atac = (100.0 * len(shared) / len(rna_barcodes)) if rna_barcodes else ""
         pct_atac_in_rna = (100.0 * len(shared) / len(atac_barcodes)) if atac_barcodes else ""
         jaccard = (len(shared) / len(union)) if union else ""
-
-        note = ""
-        if not rna_samples:
-            note = "No RNA samples in group"
-        elif not atac_samples:
-            note = "No ATAC samples in group"
-        elif not rna_barcodes:
-            note = "No RNA barcodes found (missing STARsolo filtered output)"
-        elif not atac_barcodes:
-            note = "No ATAC barcodes found (missing ArchR pre-dedup counts; re-run ESTIMATE_ATAC_CELLS)"
 
         row = {
             "Experimental_Group": group,
@@ -255,7 +271,6 @@ def main() -> int:
             "Pct_RNA_in_ATAC": f"{pct_rna_in_atac:.2f}" if pct_rna_in_atac != "" else "",
             "Pct_ATAC_in_RNA": f"{pct_atac_in_rna:.2f}" if pct_atac_in_rna != "" else "",
             "Jaccard": f"{jaccard:.4f}" if jaccard != "" else "",
-            "Note": note,
         }
         summary_rows.append(row)
 
@@ -278,7 +293,6 @@ def main() -> int:
         "Pct_RNA_in_ATAC",
         "Pct_ATAC_in_RNA",
         "Jaccard",
-        "Note",
     ]
     with open(master_path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=fieldnames, delimiter="\t")
