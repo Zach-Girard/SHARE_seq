@@ -4,6 +4,7 @@ import os
 import csv
 import sys
 import shutil
+import subprocess
 import zipfile
 import re
 import datetime
@@ -31,7 +32,7 @@ else:
     active_starsolo_roots = ["STARsolo", "STARsolo_paired"]
 
 def hydrate_report_inputs():
-    roots = ("STARsolo", "STARsolo_paired", "ATAC", "multiqc_atac")
+    roots = ("STARsolo", "STARsolo_paired", "ATAC", "multiqc_atac", "multiome_overlap")
     sample_roots = {}
     for src in report_input_files:
         norm = os.path.normpath(src)
@@ -136,6 +137,73 @@ def ensure_atac_files():
                 pass
 
 ensure_atac_files()
+
+def resolve_sample_barcode_path():
+    if not sample_barcode_sheet:
+        return None
+    candidates = [sample_barcode_sheet]
+    if not os.path.isabs(sample_barcode_sheet):
+        candidates.append(os.path.join(proj, sample_barcode_sheet))
+        candidates.append(os.path.join(proj, "RAW_FASTQ", os.path.basename(sample_barcode_sheet)))
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            return os.path.abspath(cand)
+    return None
+
+def ensure_multiome_overlap_files():
+    """Copy overlap outputs staged in the BUILD_QC_HTML work dir back to projectDir."""
+    seen = set()
+    for src in glob.glob("**/*", recursive=True):
+        if not os.path.isfile(src) or src in seen:
+            continue
+        norm = os.path.normpath(src)
+        parts = norm.split(os.sep)
+        if "multiome_overlap" not in parts and os.path.basename(src) not in (
+            "overlap_by_group.tsv",
+            "overlap_by_group.png",
+        ):
+            continue
+        seen.add(src)
+        if "multiome_overlap" in parts:
+            rel = os.path.join(*parts[parts.index("multiome_overlap"):])
+            dst = os.path.join(proj, rel)
+        else:
+            dst = os.path.join(proj, "multiome_overlap", os.path.basename(src))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            shutil.copy2(src, dst)
+        except Exception:
+            pass
+
+def ensure_multiome_overlap_results():
+    """Generate overlap tables if the Nextflow process did not publish them yet."""
+    out_dir = os.path.join(proj, "multiome_overlap")
+    out_tsv = os.path.join(out_dir, "overlap_by_group.tsv")
+    script = os.path.join(proj, "scripts", "cell_overlap_by_group.py")
+    barcode_path = resolve_sample_barcode_path()
+    if not os.path.isfile(script) or not barcode_path:
+        return
+    if os.path.isfile(out_tsv) and os.path.getsize(out_tsv) > 0:
+        return
+    os.makedirs(out_dir, exist_ok=True)
+    subprocess.run(
+        [
+            sys.executable,
+            script,
+            "--project-dir",
+            proj,
+            "--sample-barcode-file",
+            barcode_path,
+            "--star-alignment-mode",
+            star_alignment_mode,
+            "--out-dir",
+            out_dir,
+        ],
+        check=False,
+    )
+
+ensure_multiome_overlap_files()
+ensure_multiome_overlap_results()
 
 def rel_list(pattern):
     return sorted([
@@ -583,9 +651,12 @@ def multiome_overlap_section(overlap_tsv_path, overlap_png_path):
         read_table_preview(overlap_tsv_path, max_rows=None),
     ]
     if overlap_png_path and os.path.isfile(os.path.join(proj, overlap_png_path)):
-        chunks.append(
-            f'<p><img class="plot-img" src="../{html.escape(overlap_png_path)}" alt="Overlap by group"></p>'
-        )
+        asset = stage_asset(overlap_png_path)
+        if asset:
+            chunks.append(
+                f'<p><img src="{html.escape(asset)}" alt="Overlap by group" '
+                'style="max-width: 1200px; width: 100%; border: 1px solid #ddd; margin-bottom: 14px;" /></p>'
+            )
     return "".join(chunks)
 
 def sample_sidebar_links(sample_names):

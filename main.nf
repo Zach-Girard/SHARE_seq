@@ -1190,7 +1190,8 @@ process CELL_OVERLAP_BY_GROUP {
     output:
     path "overlap_by_group.tsv", emit: overlap_summary
     path "overlap_by_group.png", emit: overlap_plot, optional: true
-    path "*", emit: overlap_outputs
+    path "*/overlap_summary.tsv", emit: overlap_per_group, optional: true
+    path "*/shared_barcodes.txt", emit: overlap_shared_barcodes, optional: true
 
     """
     set -euo pipefail
@@ -1689,7 +1690,8 @@ workflow {
     ch_report_inputs = ch_report_inputs
         .mix(CELL_OVERLAP_BY_GROUP.out.overlap_summary)
         .mix(CELL_OVERLAP_BY_GROUP.out.overlap_plot)
-        .mix(CELL_OVERLAP_BY_GROUP.out.overlap_outputs)
+        .mix(CELL_OVERLAP_BY_GROUP.out.overlap_per_group)
+        .mix(CELL_OVERLAP_BY_GROUP.out.overlap_shared_barcodes)
 
     def ch_report_done = ch_report_barrier
         .collect()
