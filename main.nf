@@ -10,7 +10,7 @@ nextflow.enable.dsl=2
  *   4. Route by sample type from sample_barcode_file (column 3):
  *      - ATAC: stop after FASTQC_DEMUX
  *      - RNA : continue through full RNA workflow below
- *      - sgRNA: extracted to sgRNA.tsv (direct FASTQ + gRNA library CSV); optional sgRNA analysis branch
+ *      - sgRNA: cutadapt demux from gRNA Undetermined R1, then analysis (run_lsf, rename, count)
  *   5. Poly-T filtering (R2 anchor, R1 synced) for RNA samples
  *   6. Optional fastp trimming (R1 standard; R2 with UMI protection)
  *   7. Barcode prepending (24bp cell barcode from R2 header → R2 sequence)
@@ -21,7 +21,7 @@ nextflow.enable.dsl=2
  * Requires:
  *   - RAW_FASTQ/ directory with undetermined R1/R2 fastq.gz and sample barcode file
  *   - sample_barcode_file column 1 = sample name, column 3 = sample type (RNA/ATAC/sgRNA), optional column 4 = Experimental_Group
- *   - sgRNA rows also require gRNA library CSV and FASTQ paths (see README); written to sgRNA.tsv for analysis
+ *   - sgRNA rows: sample index + gRNA library CSV; demuxed from shared sgRNA Undetermined R1/R2 then analyzed
  *   - Reference FASTA/GTF and BWA/STAR indexes configured in nextflow.config
  *   - Python dependencies from environment.yml (no local utils.py required)
  */
@@ -46,6 +46,8 @@ params.atac_min_tss_for_cell   = params.atac_min_tss_for_cell ?: 4
 params.raw_fastq           = params.raw_fastq           ?: 'RAW_FASTQ'
 params.undetermined_r1     = params.undetermined_r1     ?: null   // R1 fastq.gz filename (inside raw_fastq/)
 params.undetermined_r2     = params.undetermined_r2     ?: null   // R2 fastq.gz filename (inside raw_fastq/)
+params.sgrna_undetermined_r1 = params.sgrna_undetermined_r1 ?: 'sgRNA_Undetermined_S0_R1_001.fastq.gz'
+params.sgrna_cutadapt_error_rate = params.sgrna_cutadapt_error_rate ?: 0.15
 params.sample_barcode_file = params.sample_barcode_file ?: null   // sample index barcode mapping (inside raw_fastq/)
 params.demux_mismatches    = params.demux_mismatches    ?: 1      // allowed mismatches for sample index matching
 params.split_reads         = params.split_reads         ?: 1000000
@@ -165,6 +167,7 @@ log.info "ATAC min TSS ratio for cell  : ${params.atac_min_tss_for_cell}"
 def rawDir = params.raw_fastq
 log.info "RAW_FASTQ directory           : ${rawDir}"
 log.info "Undetermined FASTQs           : explicit --undetermined_r1/--undetermined_r2 or auto-detect *Undetermined*R1*.fastq.gz in ${rawDir}"
+log.info "sgRNA Undetermined FASTQ (R1)  : explicit --sgrna_undetermined_r1 or auto-detect *gRNA*Undetermined*R1*.fastq.gz in ${rawDir}"
 def sampleBarcodePath = params.sample_barcode_file ? "${rawDir}/${params.sample_barcode_file}" : 'not set'
 log.info "Sample barcode file           : ${sampleBarcodePath}"
 log.info "Split reads per chunk         : ${params.split_reads}"
@@ -209,6 +212,8 @@ process BUILD_SAMPLE_MANIFESTS {
     output:
     path "sgRNA.tsv", emit: sgrna_manifest
     path "demux_barcodes.tsv", emit: demux_barcode_file
+    path "sgrna_demux_barcodes.tsv", emit: sgrna_demux_barcode_file
+    path "sgrna_barcode.fa", emit: sgrna_barcode_fa, optional: true
 
     """
     set -euo pipefail
@@ -217,7 +222,58 @@ process BUILD_SAMPLE_MANIFESTS {
       --project-dir "${projectDir}" \\
       --raw-fastq-dir "${rawDir}" \\
       --out-sgrna "sgRNA.tsv" \\
+      --out-sgrna-demux-barcodes "sgrna_demux_barcodes.tsv" \\
+      --out-sgrna-barcode-fa "sgrna_barcode.fa" \\
       --out-demux-barcodes "demux_barcodes.tsv"
+    """
+}
+
+// sgRNA demultiplex: cutadapt with sgrna_barcode.fa (from input.tsv Sample_Name + Sample_Index).
+process SGRNA_DEMULTIPLEX_CUTADAPT {
+    tag "sgrna_cutadapt_demux"
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    path(r1_undetermined)
+    path(sgrna_demux_barcodes)
+    path(sgrna_barcode_fa)
+
+    output:
+    path "demux/**/*.R1.fastq.gz", emit: demux_r1, optional: true
+    path "untrimmed.fastq.gz", emit: untrimmed, optional: true
+    path ".sgrna_demux_complete", emit: demux_done
+
+    """
+    set -euo pipefail
+    bash "${projectDir}/scripts/sgrna_demux_cutadapt.sh" \\
+      --barcode-table "${sgrna_demux_barcodes}" \\
+      --barcode-fa "${sgrna_barcode_fa}" \\
+      --input "${r1_undetermined}" \\
+      --out-dir "demux" \\
+      --error-rate "${params.sgrna_cutadapt_error_rate}"
+    touch .sgrna_demux_complete
+    """
+}
+
+process BUILD_SGRNA_RUN_MANIFEST {
+    tag "sgrna_run_manifest"
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    path(sgrna_manifest)
+    val _demux_done
+
+    output:
+    path "sgRNA_run.tsv", emit: sgrna_run_manifest
+
+    """
+    set -euo pipefail
+    python3 "${projectDir}/scripts/build_sgrna_run_manifest.py" \\
+      --sgrna-manifest "${sgrna_manifest}" \\
+      --demux-dir "${projectDir}/demux" \\
+      --out "sgRNA_run.tsv"
     """
 }
 
@@ -1357,13 +1413,41 @@ workflow {
 
     BUILD_SAMPLE_MANIFESTS(barcodeFile)
     def demuxBarcodeFile = BUILD_SAMPLE_MANIFESTS.out.demux_barcode_file
-    SGRNA_ANALYSIS(BUILD_SAMPLE_MANIFESTS.out.sgrna_manifest)
 
-    if (nRNA + nATAC == 0) {
-        error "No RNA or ATAC samples found for demultiplexing. sgRNA-only runs are not supported through the undetermined demux path."
+    if (nRNA + nATAC == 0 && nSGRNA == 0) {
+        error "No RNA, ATAC, or sgRNA samples found in ${barcodeFile}."
     }
 
-    if (params.undetermined_r1 && params.undetermined_r2) {
+    // sgRNA: cutadapt demux from one shared Undetermined R1 + sgrna_barcode.fa (Sample_Name / Sample_Index from input.tsv).
+    if (nSGRNA > 0) {
+        def sgrnaDemuxBarcodeFile = BUILD_SAMPLE_MANIFESTS.out.sgrna_demux_barcode_file
+        def sgrnaBarcodeFa = BUILD_SAMPLE_MANIFESTS.out.sgrna_barcode_fa
+
+        def ch_sgrna_r1 = params.sgrna_undetermined_r1
+            ? Channel.of(file("${rawDir}/${params.sgrna_undetermined_r1}"))
+            : Channel
+                .fromPath("${rawDir}/*gRNA*Undetermined*R1*.fastq.gz")
+                .ifEmpty {
+                    error "No sgRNA Undetermined R1 FASTQ found in ${rawDir}. Provide --sgrna_undetermined_r1 or place sgRNA_Undetermined_S0_R1_001.fastq.gz in ${rawDir}."
+                }
+
+        SGRNA_DEMULTIPLEX_CUTADAPT(
+            ch_sgrna_r1,
+            sgrnaDemuxBarcodeFile,
+            sgrnaBarcodeFa
+        )
+
+        BUILD_SGRNA_RUN_MANIFEST(
+            BUILD_SAMPLE_MANIFESTS.out.sgrna_manifest,
+            SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_done.collect()
+        )
+
+        SGRNA_ANALYSIS(BUILD_SGRNA_RUN_MANIFEST.out.sgrna_run_manifest)
+    }
+
+    if (nRNA + nATAC == 0) {
+        log.info "No RNA/ATAC samples; skipping global Undetermined demultiplexing."
+    } else if (params.undetermined_r1 && params.undetermined_r2) {
         Channel
             .of(tuple(
                 params.undetermined_r1.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''),
@@ -1389,6 +1473,7 @@ workflow {
             .set { ch_undetermined_pairs }
     }
 
+    if (nRNA + nATAC > 0) {
     // Step 1: Split undetermined FASTQs in RAW_FASTQ so demultiplex can fan out in parallel.
     SPLIT_UNDETERMINED_FASTQ(ch_undetermined_pairs)
 
@@ -1446,7 +1531,7 @@ workflow {
             def sample = f.name.replaceFirst(/\.matched\.R1\.fastq\.gz$/, '')
             def sampleType = sampleTypeMap[sample]
             if (!sampleType) {
-                error "Sample ${sample} not found in sample_barcode_file with RNA/ATAC type."
+                error "Sample ${sample} not found in sample_barcode_file."
             }
             tuple(sample, sampleType, f)
         }
@@ -1456,7 +1541,7 @@ workflow {
             def sample = f.name.replaceFirst(/\.matched\.R2\.fastq\.gz$/, '')
             def sampleType = sampleTypeMap[sample]
             if (!sampleType) {
-                error "Sample ${sample} not found in sample_barcode_file with RNA/ATAC type."
+                error "Sample ${sample} not found in sample_barcode_file."
             }
             tuple(sample, sampleType, f)
         }
@@ -1757,7 +1842,10 @@ workflow {
         log.info "Unknown star_alignment_mode = ${params.star_alignment_mode}; skipping STARsolo alignment."
     }
 
+    } // end RNA/ATAC global demultiplexing and alignment (nRNA + nATAC > 0)
+
     // RNA/ATAC cell barcode overlap per Experimental_Group (column 4 of sample_barcode_file).
+    if (nRNA + nATAC > 0) {
     def ch_overlap_trigger = ch_report_barrier.collect().map { 1 }
     def ch_atac_pre_counts = ESTIMATE_ATAC_CELLS.out.atac_cell_counts_pre.collect()
     def ch_overlap_mode = Channel.value('pre_dedup_staged')
@@ -1805,5 +1893,6 @@ workflow {
         .map { k, done, report_items -> tuple(1, report_items, file("${projectDir}/scripts/build_qc_report.py"), barcodeFile) }
         .set { ch_build_qc_report }
     BUILD_QC_HTML(ch_build_qc_report)
+    } // end QC / overlap (nRNA + nATAC > 0)
 }
 

@@ -82,7 +82,7 @@ Selection logic:
   - column 2 = sample index barcode (for demultiplexing)
   - column 3 = sample type (`RNA` or `ATAC`)
   - optional column 4 = `Experimental_Group` (used in QC Overview and multiome overlap)
-- **sgRNA** rows use a different layout (direct FASTQ + gRNA library CSV; not demultiplexed from Undetermined reads). The pipeline writes `sgRNA.tsv` with columns `fastq`, `sample_name`, `grna_library_csv`, and `experimental_group` (for QC grouping).
+- **sgRNA** rows use five columns: `sample_name`, `Sample_Index`, `sgRNA`, `Experimental_Group`, `grna_library_csv`. All sgRNA samples are demultiplexed from one shared **R1-only** Undetermined file in `RAW_FASTQ/` (default: `sgRNA_Undetermined_S0_R1_001.fastq.gz` in `RAW_FASTQ/`, override with `--sgrna_undetermined_r1`). Analysis uses demuxed R1 under `demux/<sample_name>/`.
 - Example `input.tsv` mixing RNA, ATAC, and sgRNA:
 
 ```tsv
@@ -93,18 +93,11 @@ RNA_B	GATTACAA	RNA	Group_2
 ```
 
 ```tsv
-sgRNA_Group_1	library_A.csv	sgRNA	Group_1	sgRNA_Group_1.R1.fastq.gz
+sgRNA_C1200	gcagagtc	sgRNA	C1200	C1200_gRNA_library.csv
+sgRNA_C6991	gagcagca	sgRNA	C6991	C6991_gRNA_library.csv
 ```
 
-Five-column sgRNA layout: `sample_name`, `grna_library_csv`, `sgRNA`, `Experimental_Group`, `fastq` (paths relative to the project directory or `RAW_FASTQ/`).
-
-Optional six-column sgRNA layout with a placeholder index in column 2 (e.g. `NA`):
-
-```tsv
-sgRNA_Group_1	NA	sgRNA	Group_1	library_A.csv	sgRNA_Group_1.R1.fastq.gz
-```
-
-On startup, `BUILD_SAMPLE_MANIFESTS` extracts sgRNA rows into `sgRNA.tsv` and builds `demux_barcodes.tsv` (RNA/ATAC only) for demultiplexing. `SGRNA_ANALYSIS` runs `scripts/sgrna_run.sh` (workflow documentation deferred until the branch is tested).
+On startup, `BUILD_SAMPLE_MANIFESTS` writes `sgRNA.tsv`, `sgrna_demux_barcodes.tsv`, and `sgrna_barcode.fa` (cutadapt format: `>Sample_Name` / `^Sample_Index`). `SGRNA_DEMULTIPLEX_CUTADAPT` runs cutadapt (see `scripts/sgrna_split.lsf` for manual `bsub`). Full docs deferred until tested.
 - Undetermined FASTQs are first split into chunks (`split_reads`) and demultiplexed in parallel, then merged per sample.
 - `RENAME_FASTQ` validates the three SHARE-seq round barcodes embedded in R1's sequence, rewrites headers with error-corrected barcodes, and writes per-sample outputs to `demux/<sample>/`.
 - `FASTQC_DEMUX` writes per-sample reports to `fastqc_demux/<sample>/`.

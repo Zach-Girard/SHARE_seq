@@ -2,20 +2,22 @@
 """
 Parse the combined sample_barcode_file (input.tsv) and:
 
-1. Write sgRNA.tsv for sgRNA analysis (fastq, sample_name, grna_library_csv).
-2. Write demux_barcodes.tsv containing only RNA/ATAC rows for undetermined demultiplexing.
+1. Write sgRNA.tsv (sgRNA sample metadata).
+2. Write sgrna_demux_barcodes.tsv and sgrna_barcode.fa (cutadapt demux from shared Undetermined R1).
+3. Write demux_barcodes.tsv for global Undetermined demux (RNA/ATAC only).
 
-sgRNA row layouts supported
----------------------------
-Five columns (no demux index; library in column 2):
+sgRNA row layout (5 columns; demux from shared sgRNA Undetermined FASTQs, not per-row paths):
 
-  sample_name  grna_library_csv  sgRNA  Experimental_Group  fastq
+  sample_name  Sample_Index  sgRNA  Experimental_Group  grna_library_csv
 
-Six columns (optional demux index placeholder in column 2, e.g. NA):
+Example:
 
-  sample_name  Sample_Index  sgRNA  Experimental_Group  grna_library_csv  fastq
+  sgRNA_C1200  gcagagtc  sgRNA  C1200  C1200_gRNA_library.csv
+  sgRNA_C6991  gagcagca  sgRNA  C6991  C6991_gRNA_library.csv
 
-RNA/ATAC rows use the standard layout (columns 1–4 minimum):
+Undetermined input is a single R1 FASTQ via params (default: sgRNA_Undetermined_S0_R1_001.fastq.gz in RAW_FASTQ/).
+
+RNA/ATAC rows (columns 1–4 minimum):
 
   sample_name  Sample_Index  RNA|ATAC  Experimental_Group
 """
@@ -27,7 +29,7 @@ import csv
 import os
 import re
 import sys
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 
 def split_cols(line: str) -> List[str]:
@@ -53,6 +55,10 @@ def normalize_type(value: str) -> str:
     if u in ("RNA", "ATAC"):
         return u
     return ""
+
+
+def looks_like_library_csv(value: str) -> bool:
+    return (value or "").lower().endswith(".csv")
 
 
 def resolve_path(project_dir: str, raw_fastq_dir: str, path_value: str) -> str:
@@ -81,34 +87,25 @@ def parse_row(cols: List[str]) -> Optional[dict]:
         return None
 
     if stype == "sgRNA":
-        if len(cols) >= 6:
-            return {
-                "sample": sample,
-                "sample_index": cols[1],
-                "sample_type": stype,
-                "experimental_group": cols[3] if len(cols) > 3 else "",
-                "grna_library_csv": cols[4],
-                "fastq": cols[5],
-            }
-        if len(cols) >= 5:
-            return {
-                "sample": sample,
-                "sample_index": "",
-                "sample_type": stype,
-                "experimental_group": cols[3],
-                "grna_library_csv": cols[1],
-                "fastq": cols[4],
-            }
-        return None
+        if len(cols) < 5:
+            return None
+        lib = cols[-1]
+        if not looks_like_library_csv(lib):
+            return None
+        return {
+            "sample": sample,
+            "sample_index": cols[1],
+            "sample_type": stype,
+            "experimental_group": cols[3] if len(cols) > 3 else "",
+            "grna_library_csv": lib,
+        }
 
-    # RNA / ATAC
     return {
         "sample": sample,
         "sample_index": cols[1] if len(cols) > 1 else "",
         "sample_type": stype,
         "experimental_group": cols[3] if len(cols) > 3 else "",
         "grna_library_csv": "",
-        "fastq": "",
     }
 
 
@@ -143,31 +140,48 @@ def write_demux_barcodes(path: str, demux_rows: List[dict]) -> None:
             )
 
 
+def write_sgrna_barcode_fa(path: str, sgrna_rows: List[dict]) -> None:
+    """cutadapt -g file:barcode.fa format: >Sample_Name then ^Sample_Index."""
+    seen: set[str] = set()
+    with open(path, "w") as fh:
+        for row in sgrna_rows:
+            name = row["sample"]
+            if name in seen:
+                raise ValueError(f"Duplicate sgRNA sample name: {name}")
+            seen.add(name)
+            idx = row["sample_index"].strip().upper()
+            if not idx or not re.fullmatch(r"[ACGTN]+", idx):
+                raise ValueError(f"Invalid Sample_Index for {name}: {row['sample_index']!r}")
+            fh.write(f">{name}\n")
+            fh.write(f"^{idx}\n")
+
+
 def write_sgrna_manifest(
     path: str, sgrna_rows: List[dict], project_dir: str, raw_fastq_dir: str
 ) -> None:
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh, delimiter="\t")
-        w.writerow(["fastq", "sample_name", "grna_library_csv", "experimental_group"])
+        w.writerow(["sample_name", "sample_index", "experimental_group", "grna_library_csv"])
         for row in sgrna_rows:
-            fastq_abs = resolve_path(project_dir, raw_fastq_dir, row["fastq"])
             lib_abs = resolve_path(project_dir, raw_fastq_dir, row["grna_library_csv"])
             w.writerow(
                 [
-                    fastq_abs,
                     row["sample"],
-                    lib_abs,
+                    row["sample_index"],
                     row.get("experimental_group", ""),
+                    lib_abs,
                 ]
             )
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Build sgRNA.tsv and demux_barcodes.tsv from input.tsv.")
+    p = argparse.ArgumentParser(description="Build sgRNA and demux manifests from input.tsv.")
     p.add_argument("--sample-barcode-file", required=True)
     p.add_argument("--project-dir", required=True)
     p.add_argument("--raw-fastq-dir", default="RAW_FASTQ")
     p.add_argument("--out-sgrna", default="sgRNA.tsv")
+    p.add_argument("--out-sgrna-demux-barcodes", default="sgrna_demux_barcodes.tsv")
+    p.add_argument("--out-sgrna-barcode-fa", default="sgrna_barcode.fa")
     p.add_argument("--out-demux-barcodes", default="demux_barcodes.tsv")
     args = p.parse_args()
 
@@ -179,9 +193,7 @@ def main() -> int:
     )
     barcode_path = args.sample_barcode_file
     if not os.path.isfile(barcode_path):
-        if os.path.isabs(barcode_path):
-            pass
-        else:
+        if not os.path.isabs(barcode_path):
             for candidate in (
                 os.path.join(project_dir, barcode_path),
                 os.path.join(project_dir, raw_fastq_dir, os.path.basename(barcode_path)),
@@ -207,25 +219,33 @@ def main() -> int:
             return 1
 
     for row in sgrna_rows:
-        if not row.get("grna_library_csv") or not row.get("fastq"):
+        if not row.get("sample_index"):
             print(
-                f"ERROR: sgRNA sample {row['sample']} requires grna_library_csv and fastq.",
+                f"ERROR: sgRNA sample {row['sample']} missing Sample_Index (column 2).",
+                file=sys.stderr,
+            )
+            return 1
+        if not row.get("grna_library_csv"):
+            print(
+                f"ERROR: sgRNA sample {row['sample']} requires grna_library_csv (column 5).",
                 file=sys.stderr,
             )
             return 1
         lib = resolve_path(project_dir, raw_fastq_dir, row["grna_library_csv"])
-        fq = resolve_path(project_dir, raw_fastq_dir, row["fastq"])
         if not os.path.isfile(lib):
             print(f"ERROR: gRNA library CSV not found for {row['sample']}: {lib}", file=sys.stderr)
-            return 1
-        if not os.path.isfile(fq):
-            print(f"ERROR: FASTQ not found for {row['sample']}: {fq}", file=sys.stderr)
             return 1
 
     write_demux_barcodes(args.out_demux_barcodes, demux_rows)
     write_sgrna_manifest(args.out_sgrna, sgrna_rows, project_dir, raw_fastq_dir)
+    write_demux_barcodes(args.out_sgrna_demux_barcodes, sgrna_rows)
+    if sgrna_rows:
+        write_sgrna_barcode_fa(args.out_sgrna_barcode_fa, sgrna_rows)
 
     print(f"Wrote {args.out_demux_barcodes} ({len(demux_rows)} RNA/ATAC samples)")
+    print(f"Wrote {args.out_sgrna_demux_barcodes} ({len(sgrna_rows)} sgRNA samples)")
+    if sgrna_rows:
+        print(f"Wrote {args.out_sgrna_barcode_fa} (cutadapt barcode.fa)")
     print(f"Wrote {args.out_sgrna} ({len(sgrna_rows)} sgRNA samples)")
     return 0
 

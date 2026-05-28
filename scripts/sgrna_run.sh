@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# sgRNA analysis:
+# sgRNA analysis (after per-pool demux; input manifest is sgRNA_run.tsv with demuxed FASTQs):
 #   1. run_lsf.py
-#   2. rename_fastq.py (share_seq_step2) -> {sample}.matched.R1.fastq.gz
+#   2. rename_fastq.py -> {sample}.matched.R1.fastq.gz
 #   3. gRNA counting on matched R1
 #
 # Environment (set by scripts/sgrna_analyze.py):

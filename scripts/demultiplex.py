@@ -23,6 +23,7 @@ def my_args():
 	mainParser.add_argument('-b',"--barcode",  help="barcode file in fasta or table, csv or tsv format", required=True)	
 	mainParser.add_argument('-n',"--num_mismatch",  help="number of mismatch allowed", default=1,type=int)	
 	mainParser.add_argument("--revcomp",  help="revcomp barcode",action='store_true')
+	mainParser.add_argument("--r1-only", help="demultiplex R1 only (gRNA); write minimal empty R2 outputs", action='store_true')
 
 	##------- add parameters above ---------------------
 	args = mainParser.parse_args()	
@@ -190,29 +191,31 @@ def main():
 					log_count['unmatched'] += 1
 				lines=[]
 
-	n = 4
-	count = 0
-	# https://www.biostars.org/p/317524/
-	with gzip.open(args.r2, 'rt') as fh:
-		lines = []
-		for line in fh:
-			lines.append(line.strip())
-			if len(lines) == n:
-				# print (lines)
-				
-				# logging.info("%s reads processed"%(count))
-				if count %100000 == 0:
-					# print (count,"reads has been processed")
-					logging.info("%s matched R2 reads processed"%(count))
-				# @NB551526:91:HC27NAFX2:1:11101:17620:1055 1:N:0:CTGCCTAA
-				myString = lines[0].split("+")[-1]
-				# print (myString)
-				try:
-					count += 1
-					R2[myString].write("\n".join(lines)+"\n")
-				except:
-					R2['unmatched'].write("\n".join(lines)+"\n")
-				lines=[]
+	if args.r1_only:
+		logging.info("R1-only mode: skipping R2 demultiplex pass")
+		seen_r2 = set()
+		for fh in R2.values():
+			if id(fh) in seen_r2:
+				continue
+			seen_r2.add(id(fh))
+			fh.write("@r1_only_placeholder\nN\n+\nI\n")
+	else:
+		n = 4
+		count = 0
+		with gzip.open(args.r2, 'rt') as fh:
+			lines = []
+			for line in fh:
+				lines.append(line.strip())
+				if len(lines) == n:
+					if count %100000 == 0:
+						logging.info("%s matched R2 reads processed"%(count))
+					myString = lines[0].split("+")[-1]
+					try:
+						count += 1
+						R2[myString].write("\n".join(lines)+"\n")
+					except:
+						R2['unmatched'].write("\n".join(lines)+"\n")
+					lines=[]
 
 	# Map observed index sequence -> sample name (column 1); include mismatch variants.
 	seq_to_sid = {}
