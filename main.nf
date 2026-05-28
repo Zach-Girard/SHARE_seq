@@ -1412,7 +1412,6 @@ workflow {
     log.info "Sample types loaded            : RNA=${nRNA}, ATAC=${nATAC}, sgRNA=${nSGRNA}"
 
     BUILD_SAMPLE_MANIFESTS(barcodeFile)
-    def demuxBarcodeFile = BUILD_SAMPLE_MANIFESTS.out.demux_barcode_file
 
     if (nRNA + nATAC == 0 && nSGRNA == 0) {
         error "No RNA, ATAC, or sgRNA samples found in ${barcodeFile}."
@@ -1447,28 +1446,32 @@ workflow {
 
     if (nRNA + nATAC == 0) {
         log.info "No RNA/ATAC samples; skipping global Undetermined demultiplexing."
-    } else if (params.undetermined_r1 && params.undetermined_r2) {
-        Channel
-            .of(tuple(
+    } else {
+        def ch_undetermined_r12 = (params.undetermined_r1 && params.undetermined_r2)
+            ? Channel.of(tuple(
                 params.undetermined_r1.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''),
                 file("${rawDir}/${params.undetermined_r1}"),
-                file("${rawDir}/${params.undetermined_r2}"),
-                demuxBarcodeFile
+                file("${rawDir}/${params.undetermined_r2}")
             ))
-            .set { ch_undetermined_pairs }
-    } else {
-        Channel
-            .fromPath("${rawDir}/*Undetermined*R1*.fastq.gz")
-            .map { r1 ->
-                def r2name = r1.name.replaceFirst(/R1/, 'R2')
-                def r2 = file("${r1.parent}/${r2name}")
-                if (!r2.exists()) {
-                    error "Missing R2 pair for ${r1}: expected ${r2}"
+            : Channel
+                .fromPath("${rawDir}/*Undetermined*R1*.fastq.gz")
+                .filter { r1 -> !r1.name.toLowerCase().contains('sgRNA') }
+                .map { r1 ->
+                    def r2name = r1.name.replaceFirst(/R1/, 'R2')
+                    def r2 = file("${r1.parent}/${r2name}")
+                    if (!r2.exists()) {
+                        error "Missing R2 pair for ${r1}: expected ${r2}"
+                    }
+                    tuple(r1.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''), r1, r2)
                 }
-                tuple(r1.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''), r1, r2, demuxBarcodeFile)
-            }
-            .ifEmpty {
-                error "No Undetermined R1 FASTQs found in ${rawDir}. Provide --undetermined_r1/--undetermined_r2 or place files matching *Undetermined*R1*.fastq.gz in RAW_FASTQ."
+                .ifEmpty {
+                    error "No RNA/ATAC Undetermined R1 FASTQs found in ${rawDir}. Provide --undetermined_r1/--undetermined_r2 or place *Undetermined*R1*.fastq.gz (excluding sgRNA Undetermined) in RAW_FASTQ."
+                }
+
+        ch_undetermined_r12
+            .combine(BUILD_SAMPLE_MANIFESTS.out.demux_barcode_file)
+            .map { pair_id, r1, r2, barcode_file ->
+                tuple(pair_id, r1, r2, barcode_file)
             }
             .set { ch_undetermined_pairs }
     }
@@ -1478,7 +1481,8 @@ workflow {
     SPLIT_UNDETERMINED_FASTQ(ch_undetermined_pairs)
 
     SPLIT_UNDETERMINED_FASTQ.out
-        .flatMap { pair_id, r1_split_files, r2_split_files ->
+        .combine(BUILD_SAMPLE_MANIFESTS.out.demux_barcode_file)
+        .flatMap { pair_id, r1_split_files, r2_split_files, barcode_file ->
             def r1List = (r1_split_files instanceof List) ? r1_split_files : [r1_split_files]
             def r2List = (r2_split_files instanceof List) ? r2_split_files : [r2_split_files]
             def r1Sorted = r1List.toList().sort { it.name }
@@ -1488,7 +1492,7 @@ workflow {
             }
             def chunks = []
             r1Sorted.eachWithIndex { r1f, i ->
-                chunks << tuple("${pair_id}__chunk${i + 1}", r1f, r2Sorted[i], demuxBarcodeFile)
+                chunks << tuple("${pair_id}__chunk${i + 1}", r1f, r2Sorted[i], barcode_file)
             }
             return chunks
         }
@@ -1514,7 +1518,7 @@ workflow {
     MERGE_DEMUX_CHUNKS(ch_demux_chunk_grouped)
     BUILD_DEMUX_STATS_FROM_MERGED(
         MERGE_DEMUX_CHUNKS.out.map { sample_id, r1, r2 -> r1 }.collect(),
-        demuxBarcodeFile
+        BUILD_SAMPLE_MANIFESTS.out.demux_barcode_file
     )
 
     // Step 3: Pair per-sample R1/R2 and validate SHARE-seq round barcodes
