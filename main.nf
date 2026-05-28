@@ -1842,10 +1842,7 @@ workflow {
         log.info "Unknown star_alignment_mode = ${params.star_alignment_mode}; skipping STARsolo alignment."
     }
 
-    } // end RNA/ATAC global demultiplexing and alignment (nRNA + nATAC > 0)
-
     // RNA/ATAC cell barcode overlap per Experimental_Group (column 4 of sample_barcode_file).
-    if (nRNA + nATAC > 0) {
     def ch_overlap_trigger = ch_report_barrier.collect().map { 1 }
     def ch_atac_pre_counts = ESTIMATE_ATAC_CELLS.out.atac_cell_counts_pre.collect()
     def ch_overlap_mode = Channel.value('pre_dedup_staged')
@@ -1893,6 +1890,7 @@ workflow {
         .map { k, done, report_items -> tuple(1, report_items, file("${projectDir}/scripts/build_qc_report.py"), barcodeFile) }
         .set { ch_build_qc_report }
     BUILD_QC_HTML(ch_build_qc_report)
-    } // end QC / overlap (nRNA + nATAC > 0)
+
+    } // end RNA/ATAC workflow (nRNA + nATAC > 0)
 }
 
