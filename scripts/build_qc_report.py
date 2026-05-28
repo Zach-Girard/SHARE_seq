@@ -598,7 +598,9 @@ def load_experimental_groups(sample_barcode_path):
                 group_l = group.lower()
                 if sample_l in ("sample", "sample_name") and group_l in ("group", "experimental_group", "condition"):
                     continue
-                groups[sample] = group
+                stype = cols[2].upper() if len(cols) >= 3 else ""
+                if stype in ("RNA", "ATAC", "SGRNA"):
+                    groups[sample] = group
     except Exception:
         return {}
     return groups
@@ -879,9 +881,17 @@ def summary_csv_key_metrics_table(paths):
             # Colored dynamically in HTML using user-provided expected cell count.
             return ""
         if metric == "Median Reads per Cell":
-            return ""
+            if val >= 15000.0:
+                return "qc-good"
+            if val >= 5000.0:
+                return "qc-warn"
+            return "qc-bad"
         if metric == "Median UMI per Cell":
-            return ""
+            if val >= 1500.0:
+                return "qc-good"
+            if val >= 500.0:
+                return "qc-warn"
+            return "qc-bad"
         if metric == "Total GeneFull Detected":
             if val >= 20000.0:
                 return "qc-good"
@@ -911,54 +921,22 @@ def summary_csv_key_metrics_table(paths):
             metric_val = metric_values.get(metric, [None] * len(sample_metrics))[sample_idx]
             cls = _class_for_metric(metric, metric_val)
             if metric == "Estimated Number of Cells":
-                data_val = "" if metric_val is None else f"{float(metric_val):.6f}"
-                row_html.append(
-                    f'<td class="expected-cells-cell" data-expected-cells-value="{html.escape(data_val)}">{html.escape(str(val))}</td>'
-                )
+                row_html.append(expected_cells_metric_td(val, "expected-cells-cell"))
             elif cls:
                 row_html.append(f'<td class="{cls}">{html.escape(str(val))}</td>')
             else:
                 row_html.append(f"<td>{html.escape(str(val))}</td>")
         cells.append("<tr>" + "".join(row_html) + "</tr>")
-    controls = """
-<div class="expected-cells-controls" style="margin: 8px 0 10px 0;">
-  <label for="expected-cells-input" style="font-weight:600;">Expected cell count:</label>
-  <input id="expected-cells-input" type="number" min="0" step="1" placeholder="Enter expected cells"
-         style="margin-left:8px; padding:4px 6px; width:180px;" />
-  <span style="margin-left:10px; font-size:12px;">
-    Coloring for <code>Estimated Number of Cells</code>: good >=80% of expected, warn >=60%, bad <60%.
-  </span>
-</div>
-"""
-    script = """
-<script>
-(function() {
-  var input = document.getElementById('expected-cells-input');
-  if (!input) return;
-  var cells = Array.prototype.slice.call(
-    document.querySelectorAll('td.expected-cells-cell[data-expected-cells-value]')
-  );
-  function clearClasses(td) {
-    td.classList.remove('qc-good', 'qc-warn', 'qc-bad');
-  }
-  function applyExpectedCellColors() {
-    var expected = parseFloat(input.value);
-    cells.forEach(function(td) {
-      clearClasses(td);
-      var raw = parseFloat(td.getAttribute('data-expected-cells-value'));
-      if (!isFinite(expected) || expected <= 0 || !isFinite(raw)) return;
-      var pct = (raw / expected) * 100.0;
-      if (pct >= 80.0) td.classList.add('qc-good');
-      else if (pct >= 60.0) td.classList.add('qc-warn');
-      else td.classList.add('qc-bad');
-    });
-  }
-  input.addEventListener('input', applyExpectedCellColors);
-  applyExpectedCellColors();
-})();
-</script>
-"""
-    return controls + "<table>" + "".join(cells) + "</table>" + script
+    return (
+        expected_cells_controls_html(
+            "expected-cells-input-rna",
+            "Estimated Number of Cells (RNA)",
+        )
+        + "<table>"
+        + "".join(cells)
+        + "</table>"
+        + expected_cells_coloring_script("expected-cells-input-rna", "expected-cells-cell")
+    )
 
 def parse_flagstat_metrics(rel_path):
     out = {
@@ -1153,6 +1131,105 @@ def _to_int(s):
     except Exception:
         return None
 
+def _class_for_atac_median_nfrags(value):
+    n = _parse_number(value)
+    if n is None:
+        return ""
+    if n >= 3000.0:
+        return "qc-good"
+    if n >= 1500.0:
+        return "qc-warn"
+    return "qc-bad"
+
+def _class_for_atac_median_tss(value):
+    n = _parse_number(value)
+    if n is None:
+        return ""
+    if n >= 7.0:
+        return "qc-good"
+    if n >= 5.0:
+        return "qc-warn"
+    return "qc-bad"
+
+def _class_for_atac_reads_retained_pct(value):
+    pct = _parse_pct(value)
+    if pct <= 0.0 and not str(value).strip():
+        return ""
+    if pct >= 80.0:
+        return "qc-good"
+    if pct >= 65.0:
+        return "qc-warn"
+    return "qc-bad"
+
+def _atac_colored_td(value, classify_fn):
+    cls = classify_fn(value)
+    text = html.escape(str(value))
+    if cls:
+        return f'<td class="{cls}">{text}</td>'
+    return f"<td>{text}</td>"
+
+ATAC_QC_ROW_CLASSIFIERS = {
+    "MedianFragmentsPreDedup": _class_for_atac_median_nfrags,
+    "MedianFragmentsPostDedup": _class_for_atac_median_nfrags,
+    "MedianTSSPreDedup": _class_for_atac_median_tss,
+    "MedianTSSPostDedup": _class_for_atac_median_tss,
+    "ReadsRetainedPct": _class_for_atac_reads_retained_pct,
+}
+
+ATAC_ESTIMATED_CELLS_ROW_KEYS = frozenset({"EstimatedCellsPreDedup", "EstimatedCells"})
+
+def expected_cells_metric_td(value, cell_css_class):
+    n = _parse_number(value)
+    data_val = "" if n is None else f"{float(n):.6f}"
+    text = html.escape(str(value))
+    return (
+        f'<td class="{cell_css_class}" data-expected-cells-value="{html.escape(data_val)}">'
+        f"{text}</td>"
+    )
+
+def expected_cells_controls_html(input_id, metric_label):
+    return f"""
+<div class="expected-cells-controls" style="margin: 8px 0 10px 0;">
+  <label for="{html.escape(input_id)}" style="font-weight:600;">Expected cell count:</label>
+  <input id="{html.escape(input_id)}" type="number" min="0" step="1" placeholder="Enter expected cells"
+         style="margin-left:8px; padding:4px 6px; width:180px;" />
+  <span style="margin-left:10px; font-size:12px;">
+    Coloring for <code>{html.escape(metric_label)}</code>:
+    good &gt;=80% of expected, warn &gt;=60%, bad &lt;60%.
+  </span>
+</div>
+"""
+
+def expected_cells_coloring_script(input_id, cell_css_class):
+    return f"""
+<script>
+(function() {{
+  var input = document.getElementById({repr(input_id)});
+  if (!input) return;
+  var cells = Array.prototype.slice.call(
+    document.querySelectorAll('td.{cell_css_class}[data-expected-cells-value]')
+  );
+  function clearClasses(td) {{
+    td.classList.remove('qc-good', 'qc-warn', 'qc-bad');
+  }}
+  function applyExpectedCellColors() {{
+    var expected = parseFloat(input.value);
+    cells.forEach(function(td) {{
+      clearClasses(td);
+      var raw = parseFloat(td.getAttribute('data-expected-cells-value'));
+      if (!isFinite(expected) || expected <= 0 || !isFinite(raw)) return;
+      var pct = (raw / expected) * 100.0;
+      if (pct >= 80.0) td.classList.add('qc-good');
+      else if (pct >= 60.0) td.classList.add('qc-warn');
+      else td.classList.add('qc-bad');
+    }});
+  }}
+  input.addEventListener('input', applyExpectedCellColors);
+  applyExpectedCellColors();
+}})();
+</script>
+"""
+
 def atac_alignment_summary_table(flagstat_paths, idxstats_paths):
     if not flagstat_paths and not idxstats_paths:
         return "<p><em>No ATAC alignment metrics found.</em></p>"
@@ -1270,9 +1347,25 @@ def atac_key_summary_table(flagstat_prededup_paths, idxstats_prededup_paths, fla
         cells.append(f'<tr><td class="atac-pivot-metric">{html.escape(label)}</td>')
         for s in samples:
             v = by_sample.get(s, {}).get(key, "")
-            cells.append(f"<td>{html.escape(str(v))}</td>")
+            if key in ATAC_ESTIMATED_CELLS_ROW_KEYS:
+                cells.append(expected_cells_metric_td(v, "atac-expected-cells-cell"))
+            else:
+                classify_fn = ATAC_QC_ROW_CLASSIFIERS.get(key)
+                if classify_fn:
+                    cells.append(_atac_colored_td(v, classify_fn))
+                else:
+                    cells.append(f"<td>{html.escape(str(v))}</td>")
         cells.append("</tr>")
-    return '<div class="atac-pivot-wrap"><table class="atac-key-pivot">' + "".join(cells) + "</table></div>"
+    return (
+        expected_cells_controls_html(
+            "atac-expected-cells-input",
+            "Estimated cells (ArchR)",
+        )
+        + '<div class="atac-pivot-wrap"><table class="atac-key-pivot">'
+        + "".join(cells)
+        + "</table></div>"
+        + expected_cells_coloring_script("atac-expected-cells-input", "atac-expected-cells-cell")
+    )
 
 demux_total = rel_list("demux/*.total_number_reads.tsv")
 demux_stats = sorted(set(
@@ -1841,8 +1934,42 @@ for sample in sorted(all_sample_candidates):
         ]
         cells = ['<tr><th>Metric</th><th>Pre-dedup (.q30.mapped)</th><th>Post-dedup (.q30.rmdup)</th></tr>']
         for m, pre_v, post_v in rows:
-            cells.append(f"<tr><td>{html.escape(str(m))}</td><td>{html.escape(str(pre_v))}</td><td>{html.escape(str(post_v))}</td></tr>")
-        return "<table>" + "".join(cells) + "</table>"
+            if m == "Estimated cells (ArchR)":
+                cells.append(
+                    f"<tr><td>{html.escape(str(m))}</td>"
+                    f'{expected_cells_metric_td(pre_v, "atac-expected-cells-cell")}'
+                    f'{expected_cells_metric_td(post_v, "atac-expected-cells-cell")}</tr>'
+                )
+            elif m == "Median nFrags (ArchR)":
+                cells.append(
+                    f"<tr><td>{html.escape(str(m))}</td>"
+                    f"{_atac_colored_td(pre_v, _class_for_atac_median_nfrags)}"
+                    f"{_atac_colored_td(post_v, _class_for_atac_median_nfrags)}</tr>"
+                )
+            elif m == "Median TSS enrichment (ArchR)":
+                cells.append(
+                    f"<tr><td>{html.escape(str(m))}</td>"
+                    f"{_atac_colored_td(pre_v, _class_for_atac_median_tss)}"
+                    f"{_atac_colored_td(post_v, _class_for_atac_median_tss)}</tr>"
+                )
+            elif m == "Reads retained":
+                cells.append(
+                    f"<tr><td>{html.escape(str(m))}</td>"
+                    f"<td>{html.escape(str(pre_v))}</td>"
+                    f"{_atac_colored_td(post_v, _class_for_atac_reads_retained_pct)}</tr>"
+                )
+            else:
+                cells.append(
+                    f"<tr><td>{html.escape(str(m))}</td>"
+                    f"<td>{html.escape(str(pre_v))}</td>"
+                    f"<td>{html.escape(str(post_v))}</td></tr>"
+                )
+        return (
+            "<table>"
+            + "".join(cells)
+            + "</table>"
+            + expected_cells_coloring_script("atac-expected-cells-input", "atac-expected-cells-cell")
+        )
 
     sample_parts = []
     sample_parts.append(f'''<!doctype html>
@@ -1897,6 +2024,9 @@ for sample in sorted(all_sample_candidates):
     }}
     th {{ background: #ffffff; font-weight: 700; text-align: left; color: #000000; }}
     tr:nth-child(even) td {{ background: #ffffff; }}
+    td.qc-good {{ background: #e6f4ea !important; color: #000000 !important; font-weight: 700; }}
+    td.qc-warn {{ background: #fff8e1 !important; color: #000000 !important; font-weight: 700; }}
+    td.qc-bad {{ background: #f7b8b8 !important; color: #000000 !important; font-weight: 700; }}
     .top-banner {{
       background: #d11947;
       color: #ffffff;
@@ -1970,6 +2100,12 @@ for sample in sorted(all_sample_candidates):
     if has_atac:
         sample_parts.append('<section id="sec-atac">')
         sample_parts.append("<h2>ATAC QC</h2>")
+        sample_parts.append(
+            expected_cells_controls_html(
+                "atac-expected-cells-input",
+                "Estimated cells (ArchR)",
+            )
+        )
         sample_parts.append(atac_pre_post_table(sample))
         sample_parts.append(sample_links_block("ATAC MultiQC report", atac_multiqc_report))
         sample_parts.append("</section>")

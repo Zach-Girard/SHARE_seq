@@ -10,6 +10,7 @@ nextflow.enable.dsl=2
  *   4. Route by sample type from sample_barcode_file (column 3):
  *      - ATAC: stop after FASTQC_DEMUX
  *      - RNA : continue through full RNA workflow below
+ *      - sgRNA: extracted to sgRNA.tsv (direct FASTQ + gRNA library CSV); optional sgRNA analysis branch
  *   5. Poly-T filtering (R2 anchor, R1 synced) for RNA samples
  *   6. Optional fastp trimming (R1 standard; R2 with UMI protection)
  *   7. Barcode prepending (24bp cell barcode from R2 header → R2 sequence)
@@ -19,7 +20,8 @@ nextflow.enable.dsl=2
  *
  * Requires:
  *   - RAW_FASTQ/ directory with undetermined R1/R2 fastq.gz and sample barcode file
- *   - sample_barcode_file column 1 = sample name, column 3 = sample type (RNA/ATAC), optional column 4 = Experimental_Group
+ *   - sample_barcode_file column 1 = sample name, column 3 = sample type (RNA/ATAC/sgRNA), optional column 4 = Experimental_Group
+ *   - sgRNA rows also require gRNA library CSV and FASTQ paths (see README); written to sgRNA.tsv for analysis
  *   - Reference FASTA/GTF and BWA/STAR indexes configured in nextflow.config
  *   - Python dependencies from environment.yml (no local utils.py required)
  */
@@ -48,6 +50,8 @@ params.sample_barcode_file = params.sample_barcode_file ?: null   // sample inde
 params.demux_mismatches    = params.demux_mismatches    ?: 1      // allowed mismatches for sample index matching
 params.split_reads         = params.split_reads         ?: 1000000
 params.split_fastq_bin     = params.split_fastq_bin     ?: '/home/yli11/HemTools/bin/splitFastq'
+params.sgrna_runner      = params.sgrna_runner      ?: "${projectDir}/scripts/sgrna_run.sh"
+params.sgrna_pool        = params.sgrna_pool        ?: 'CROP_gRNA'
 
 // Fixed reference + index paths (no genome/GTF/index building in pipeline)
 params.hybrid_fasta      = params.hybrid_fasta      ?: null
@@ -183,8 +187,8 @@ def loadSampleTypes = { barcodePathObj ->
         if (!sample || sample.equalsIgnoreCase('sample') || sampleType in ['TYPE', 'SAMPLE_TYPE']) {
             return
         }
-        if (sampleType in ['RNA', 'ATAC']) {
-            sampleTypes[sample] = sampleType
+        if (sampleType in ['RNA', 'ATAC', 'SGRNA']) {
+            sampleTypes[sample] = (sampleType == 'SGRNA') ? 'sgRNA' : sampleType
         }
     }
     return sampleTypes
@@ -193,6 +197,57 @@ def loadSampleTypes = { barcodePathObj ->
 /*
  * Processes
  */
+
+process BUILD_SAMPLE_MANIFESTS {
+    tag "sample_manifests"
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    path(sample_barcode_file)
+
+    output:
+    path "sgRNA.tsv", emit: sgrna_manifest
+    path "demux_barcodes.tsv", emit: demux_barcode_file
+
+    """
+    set -euo pipefail
+    python3 "${projectDir}/scripts/build_sample_manifests.py" \\
+      --sample-barcode-file "${sample_barcode_file}" \\
+      --project-dir "${projectDir}" \\
+      --raw-fastq-dir "${rawDir}" \\
+      --out-sgrna "sgRNA.tsv" \\
+      --out-demux-barcodes "demux_barcodes.tsv"
+    """
+}
+
+process SGRNA_ANALYSIS {
+    tag "sgrna"
+
+    publishDir "${projectDir}", mode: 'copy', overwrite: true
+
+    input:
+    path(sgrna_manifest)
+
+    output:
+    path "sgRNA/**", emit: sgrna_out, optional: true
+
+    """
+    set -euo pipefail
+    mkdir -p sgRNA
+    if [ ! -s "${sgrna_manifest}" ] || [ "\$(wc -l < "${sgrna_manifest}")" -le 1 ]; then
+      echo "No sgRNA samples in manifest; skipping analysis."
+      exit 0
+    fi
+    python3 "${projectDir}/scripts/sgrna_analyze.py" \\
+      --manifest "${sgrna_manifest}" \\
+      --out-dir "sgRNA" \\
+      --runner "${params.sgrna_runner}" \\
+      --project-dir "${projectDir}" \\
+      --pool "${params.sgrna_pool}" \\
+      --barcode-list "${effectiveCbWhitelistPath}"
+    """
+}
 
 // Step 1: Split undetermined input FASTQs into smaller chunks for parallel demultiplexing.
 process SPLIT_UNDETERMINED_FASTQ {
@@ -1293,11 +1348,20 @@ workflow {
     }
     def sampleTypeMap = loadSampleTypes(barcodeFile)
     if (!sampleTypeMap) {
-        error "No valid sample types found in ${barcodeFile}. Expected column 1 = sample name and column 3 = RNA or ATAC."
+        error "No valid sample types found in ${barcodeFile}. Expected column 1 = sample name and column 3 = RNA, ATAC, or sgRNA."
     }
     def nRNA = sampleTypeMap.findAll { k, v -> v == 'RNA' }.size()
     def nATAC = sampleTypeMap.findAll { k, v -> v == 'ATAC' }.size()
-    log.info "Sample types loaded            : RNA=${nRNA}, ATAC=${nATAC}"
+    def nSGRNA = sampleTypeMap.findAll { k, v -> v == 'sgRNA' }.size()
+    log.info "Sample types loaded            : RNA=${nRNA}, ATAC=${nATAC}, sgRNA=${nSGRNA}"
+
+    BUILD_SAMPLE_MANIFESTS(barcodeFile)
+    def demuxBarcodeFile = BUILD_SAMPLE_MANIFESTS.out.demux_barcode_file
+    SGRNA_ANALYSIS(BUILD_SAMPLE_MANIFESTS.out.sgrna_manifest)
+
+    if (nRNA + nATAC == 0) {
+        error "No RNA or ATAC samples found for demultiplexing. sgRNA-only runs are not supported through the undetermined demux path."
+    }
 
     if (params.undetermined_r1 && params.undetermined_r2) {
         Channel
@@ -1305,7 +1369,7 @@ workflow {
                 params.undetermined_r1.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''),
                 file("${rawDir}/${params.undetermined_r1}"),
                 file("${rawDir}/${params.undetermined_r2}"),
-                barcodeFile
+                demuxBarcodeFile
             ))
             .set { ch_undetermined_pairs }
     } else {
@@ -1317,7 +1381,7 @@ workflow {
                 if (!r2.exists()) {
                     error "Missing R2 pair for ${r1}: expected ${r2}"
                 }
-                tuple(r1.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''), r1, r2, barcodeFile)
+                tuple(r1.name.replaceFirst(/(\.fastq|\.fq)(\.gz)?$/, ''), r1, r2, demuxBarcodeFile)
             }
             .ifEmpty {
                 error "No Undetermined R1 FASTQs found in ${rawDir}. Provide --undetermined_r1/--undetermined_r2 or place files matching *Undetermined*R1*.fastq.gz in RAW_FASTQ."
@@ -1339,7 +1403,7 @@ workflow {
             }
             def chunks = []
             r1Sorted.eachWithIndex { r1f, i ->
-                chunks << tuple("${pair_id}__chunk${i + 1}", r1f, r2Sorted[i], barcodeFile)
+                chunks << tuple("${pair_id}__chunk${i + 1}", r1f, r2Sorted[i], demuxBarcodeFile)
             }
             return chunks
         }
@@ -1365,7 +1429,7 @@ workflow {
     MERGE_DEMUX_CHUNKS(ch_demux_chunk_grouped)
     BUILD_DEMUX_STATS_FROM_MERGED(
         MERGE_DEMUX_CHUNKS.out.map { sample_id, r1, r2 -> r1 }.collect(),
-        barcodeFile
+        demuxBarcodeFile
     )
 
     // Step 3: Pair per-sample R1/R2 and validate SHARE-seq round barcodes

@@ -16,6 +16,7 @@ End-to-end SHARE-seq processing from raw FASTQs to STARsolo quantification and Q
 | 8. STAR genome index validation (RNA only) | `STAR_INDEX` | staged `STAR_index_selected/` symlink |
 | 9a. Single-end alignment (RNA only) | `STARSOLO_SINGLE` | `STARsolo/<sample>/` |
 | 9b. Paired-end alignment (RNA only) | `BUILD_PAIRED_WHITELIST`, `STARSOLO_PAIRED` | `STARsolo_paired/<sample>/` |
+| 3b. Sample manifests + sgRNA | `BUILD_SAMPLE_MANIFESTS`, `SGRNA_ANALYSIS` | `sgRNA.tsv`, `demux_barcodes.tsv`, `sgRNA/` |
 | 10. Downstream QC + reports | `KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES`, `CELL_OVERLAP_BY_GROUP`, `BUILD_QC_HTML` | STARsolo dirs, ATAC dirs, `multiome_overlap/`, `QC_Report*` |
 
 **Key behaviour:**
@@ -76,11 +77,13 @@ Selection logic:
 
 - Place undetermined R1/R2 FASTQ files and the sample barcode mapping file in the `RAW_FASTQ/` directory (configurable via `params.raw_fastq`).
 - Specify filenames (not full paths) via `--undetermined_r1`, `--undetermined_r2`, and `--sample_barcode_file`; they are resolved relative to `raw_fastq/`.
-- `sample_barcode_file` must provide at least 3 columns:
+- `sample_barcode_file` must provide at least 3 columns for **RNA/ATAC** rows:
   - column 1 = sample ID
+  - column 2 = sample index barcode (for demultiplexing)
   - column 3 = sample type (`RNA` or `ATAC`)
-- Optional column 4 = `Experimental_Group` (free text group label used in the QC report Overview).
-- Example `input.tsv` (`sample_barcode_file`) with optional `Experimental_Group`:
+  - optional column 4 = `Experimental_Group` (used in QC Overview and multiome overlap)
+- **sgRNA** rows use a different layout (direct FASTQ + gRNA library CSV; not demultiplexed from Undetermined reads). The pipeline writes `sgRNA.tsv` with columns `fastq`, `sample_name`, `grna_library_csv`, and `experimental_group` (for QC grouping).
+- Example `input.tsv` mixing RNA, ATAC, and sgRNA:
 
 ```tsv
 Sample_Name	Sample_Index	Sample_Type	Experimental_Group
@@ -88,6 +91,20 @@ RNA_A	ACGTACGT	RNA	Group_1
 ATAC_A	TGCATGCA	ATAC	Group_1
 RNA_B	GATTACAA	RNA	Group_2
 ```
+
+```tsv
+sgRNA_Group_1	library_A.csv	sgRNA	Group_1	sgRNA_Group_1.R1.fastq.gz
+```
+
+Five-column sgRNA layout: `sample_name`, `grna_library_csv`, `sgRNA`, `Experimental_Group`, `fastq` (paths relative to the project directory or `RAW_FASTQ/`).
+
+Optional six-column sgRNA layout with a placeholder index in column 2 (e.g. `NA`):
+
+```tsv
+sgRNA_Group_1	NA	sgRNA	Group_1	library_A.csv	sgRNA_Group_1.R1.fastq.gz
+```
+
+On startup, `BUILD_SAMPLE_MANIFESTS` extracts sgRNA rows into `sgRNA.tsv` and builds `demux_barcodes.tsv` (RNA/ATAC only) for demultiplexing. `SGRNA_ANALYSIS` runs `scripts/sgrna_run.sh` (workflow documentation deferred until the branch is tested).
 - Undetermined FASTQs are first split into chunks (`split_reads`) and demultiplexed in parallel, then merged per sample.
 - `RENAME_FASTQ` validates the three SHARE-seq round barcodes embedded in R1's sequence, rewrites headers with error-corrected barcodes, and writes per-sample outputs to `demux/<sample>/`.
 - `FASTQC_DEMUX` writes per-sample reports to `fastqc_demux/<sample>/`.

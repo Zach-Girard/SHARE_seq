@@ -43,7 +43,7 @@ def split_cols(line: str) -> list[str]:
 
 
 def load_sample_metadata(path: str) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Return sample -> type (RNA|ATAC), sample -> experimental group."""
+    """Return sample -> type (RNA|ATAC|sgRNA), sample -> experimental group."""
     sample_type: Dict[str, str] = {}
     sample_group: Dict[str, str] = {}
     if not path or not os.path.isfile(path):
@@ -64,8 +64,8 @@ def load_sample_metadata(path: str) -> Tuple[Dict[str, str], Dict[str, str]]:
                 continue
             if sample.lower() in ("sample", "sample_name") or stype in ("TYPE", "SAMPLE_TYPE"):
                 continue
-            if stype in ("RNA", "ATAC"):
-                sample_type[sample] = stype
+            if stype in ("RNA", "ATAC", "SGRNA"):
+                sample_type[sample] = "sgRNA" if stype == "SGRNA" else stype
             if group and group.lower() not in ("group", "experimental_group", "condition"):
                 sample_group[sample] = group
     return sample_type, sample_group
@@ -257,6 +257,7 @@ def main() -> int:
                     "Experimental_Group",
                     "RNA_Samples",
                     "ATAC_Samples",
+                    "sgRNA_Samples",
                     "RNA_Cells",
                     "ATAC_Cells",
                     "Shared_Cells",
@@ -268,7 +269,7 @@ def main() -> int:
                 ]
             )
             w.writerow(
-                ["", "", "", "", "", "", "", "", "", "", "No experimental groups defined"]
+                ["", "", "", "", "", "", "", "", "", "", "", "No experimental groups defined"]
             )
         return 0
 
@@ -282,6 +283,7 @@ def main() -> int:
         members = members_by_group[group]
         rna_samples = sorted(s for s in members if sample_type.get(s) == "RNA")
         atac_samples = sorted(s for s in members if sample_type.get(s) == "ATAC")
+        sgrna_samples = sorted(s for s in members if sample_type.get(s) == "sgRNA")
 
         rna_barcodes: Set[str] = set()
         for s in rna_samples:
@@ -307,6 +309,7 @@ def main() -> int:
             "Experimental_Group": group,
             "RNA_Samples": ",".join(rna_samples),
             "ATAC_Samples": ",".join(atac_samples),
+            "sgRNA_Samples": ",".join(sgrna_samples),
             "RNA_Cells": len(rna_barcodes),
             "ATAC_Cells": len(atac_barcodes),
             "Shared_Cells": len(shared),
@@ -329,6 +332,7 @@ def main() -> int:
         "Experimental_Group",
         "RNA_Samples",
         "ATAC_Samples",
+        "sgRNA_Samples",
         "RNA_Cells",
         "ATAC_Cells",
         "Shared_Cells",
