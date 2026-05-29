@@ -60,6 +60,22 @@ def read_fasta(path, rc=False):
 	return barcode, {}
 
 
+def is_header_row(row):
+	"""Skip TSV/CSV header lines (e.g. Sample_Name, Sample_Index, Sample_Type)."""
+	if not row:
+		return True
+	c0 = row[0].strip().lower()
+	c1 = row[1].strip().lower() if len(row) > 1 else ""
+	c2 = row[2].strip().lower() if len(row) > 2 else ""
+	if c0 in ("sample", "sample_name", "sample_id"):
+		return True
+	if c1 in ("sample_index", "index", "barcode"):
+		return True
+	if c2 in ("type", "sample_type"):
+		return True
+	return False
+
+
 def read_barcode_table(path, rc=False):
 	"""Return ({sample_id: barcode_seq}, {sample_id: sample_type}) from TSV/CSV table.
 	Column 1 = sample name, column 2 = barcode (typical), column 3 = sample type when present."""
@@ -74,7 +90,7 @@ def read_barcode_table(path, rc=False):
 			reader = csv.reader(f, delimiter="\t")
 		for row in reader:
 			row = [x.strip() for x in row if str(x).strip() != ""]
-			if row:
+			if row and not is_header_row(row):
 				rows.append(row)
 	if not rows:
 		raise ValueError(f"No barcode rows found in {path}")

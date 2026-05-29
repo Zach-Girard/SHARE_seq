@@ -187,7 +187,8 @@ def loadSampleTypes = { barcodePathObj ->
         }
         def sample = cols[0]
         def sampleType = cols[2].toUpperCase()
-        if (!sample || sample.equalsIgnoreCase('sample') || sampleType in ['TYPE', 'SAMPLE_TYPE']) {
+        if (!sample || sample.equalsIgnoreCase('sample') || sample.equalsIgnoreCase('sample_name')
+            || sample.equalsIgnoreCase('sample_id') || sampleType in ['TYPE', 'SAMPLE_TYPE']) {
             return
         }
         if (sampleType in ['RNA', 'ATAC', 'SGRNA']) {
@@ -210,21 +211,22 @@ process BUILD_SAMPLE_MANIFESTS {
     path(sample_barcode_file)
 
     output:
-    path "sgRNA.tsv", emit: sgrna_manifest
-    path "demux_barcodes.tsv", emit: demux_barcode_file
-    path "sgrna_demux_barcodes.tsv", emit: sgrna_demux_barcode_file
-    path "sgrna_barcode.fa", emit: sgrna_barcode_fa, optional: true
+    path "manifests/sgRNA.tsv", emit: sgrna_manifest
+    path "manifests/demux_barcodes.tsv", emit: demux_barcode_file
+    path "manifests/sgrna_demux_barcodes.tsv", emit: sgrna_demux_barcode_file
+    path "manifests/sgrna_barcode.fa", emit: sgrna_barcode_fa, optional: true
 
     """
     set -euo pipefail
+    mkdir -p manifests
     python3 "${projectDir}/scripts/build_sample_manifests.py" \\
       --sample-barcode-file "${sample_barcode_file}" \\
       --project-dir "${projectDir}" \\
       --raw-fastq-dir "${rawDir}" \\
-      --out-sgrna "sgRNA.tsv" \\
-      --out-sgrna-demux-barcodes "sgrna_demux_barcodes.tsv" \\
-      --out-sgrna-barcode-fa "sgrna_barcode.fa" \\
-      --out-demux-barcodes "demux_barcodes.tsv"
+      --out-sgrna "manifests/sgRNA.tsv" \\
+      --out-sgrna-demux-barcodes "manifests/sgrna_demux_barcodes.tsv" \\
+      --out-sgrna-barcode-fa "manifests/sgrna_barcode.fa" \\
+      --out-demux-barcodes "manifests/demux_barcodes.tsv"
     """
 }
 
@@ -240,8 +242,8 @@ process SGRNA_DEMULTIPLEX_CUTADAPT {
     path(sgrna_barcode_fa)
 
     output:
-    path "demux/**/*.R1.fastq.gz", emit: demux_r1, optional: true
-    path "untrimmed.fastq.gz", emit: untrimmed, optional: true
+    path "sgRNA/demux/**/*.R1.fastq.gz", emit: demux_r1, optional: true
+    path "sgRNA/demux/untrimmed.fastq.gz", emit: untrimmed, optional: true
     path ".sgrna_demux_complete", emit: demux_done
 
     """
@@ -250,7 +252,7 @@ process SGRNA_DEMULTIPLEX_CUTADAPT {
       --barcode-table "${sgrna_demux_barcodes}" \\
       --barcode-fa "${sgrna_barcode_fa}" \\
       --input "${r1_undetermined}" \\
-      --out-dir "demux" \\
+      --out-dir "sgRNA/demux" \\
       --error-rate "${params.sgrna_cutadapt_error_rate}"
     touch .sgrna_demux_complete
     """
@@ -266,14 +268,15 @@ process BUILD_SGRNA_RUN_MANIFEST {
     val _demux_done
 
     output:
-    path "sgRNA_run.tsv", emit: sgrna_run_manifest
+    path "sgRNA/sgRNA_run.tsv", emit: sgrna_run_manifest
 
     """
     set -euo pipefail
+    mkdir -p sgRNA
     python3 "${projectDir}/scripts/build_sgrna_run_manifest.py" \\
       --sgrna-manifest "${sgrna_manifest}" \\
-      --demux-dir "${projectDir}/demux" \\
-      --out "sgRNA_run.tsv"
+      --demux-dir "${projectDir}/sgRNA/demux" \\
+      --out "sgRNA/sgRNA_run.tsv"
     """
 }
 
@@ -400,10 +403,17 @@ def read_barcode_table(path):
             row = [x.strip() for x in row if str(x).strip() != ""]
             if row:
                 rows.append(row)
+    def is_header(row):
+        if not row:
+            return True
+        c0 = row[0].strip().lower()
+        c1 = row[1].strip().lower() if len(row) > 1 else ""
+        c2 = row[2].strip().lower() if len(row) > 2 else ""
+        return c0 in ("sample", "sample_name", "sample_id") or c1 in ("sample_index", "index") or c2 in ("type", "sample_type")
     barcode = {}
     sample_type = {}
     for row in rows:
-        if len(row) < 2:
+        if len(row) < 2 or is_header(row):
             continue
         sid = row[0]
         seq = row[1].upper()

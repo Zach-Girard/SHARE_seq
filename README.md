@@ -16,7 +16,7 @@ End-to-end SHARE-seq processing from raw FASTQs to STARsolo quantification and Q
 | 8. STAR genome index validation (RNA only) | `STAR_INDEX` | staged `STAR_index_selected/` symlink |
 | 9a. Single-end alignment (RNA only) | `STARSOLO_SINGLE` | `STARsolo/<sample>/` |
 | 9b. Paired-end alignment (RNA only) | `BUILD_PAIRED_WHITELIST`, `STARSOLO_PAIRED` | `STARsolo_paired/<sample>/` |
-| 3b. Sample manifests + sgRNA | `BUILD_SAMPLE_MANIFESTS`, `SGRNA_ANALYSIS` | `sgRNA.tsv`, `demux_barcodes.tsv`, `sgRNA/` |
+| 3b. Sample manifests + sgRNA | `BUILD_SAMPLE_MANIFESTS`, `SGRNA_ANALYSIS` | `manifests/`, `sgRNA/` |
 | 10. Downstream QC + reports | `KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES`, `CELL_OVERLAP_BY_GROUP`, `BUILD_QC_HTML` | STARsolo dirs, ATAC dirs, `multiome_overlap/`, `QC_Report*` |
 
 **Key behaviour:**
@@ -97,7 +97,7 @@ sgRNA_C1200	gcagagtc	sgRNA	C1200	C1200_gRNA_library.csv
 sgRNA_C6991	gagcagca	sgRNA	C6991	C6991_gRNA_library.csv
 ```
 
-On startup, `BUILD_SAMPLE_MANIFESTS` writes `sgRNA.tsv`, `sgrna_demux_barcodes.tsv`, and `sgrna_barcode.fa` (cutadapt format: `>Sample_Name` / `^Sample_Index`). `SGRNA_DEMULTIPLEX_CUTADAPT` runs cutadapt (see `scripts/sgrna_split.lsf` for manual `bsub`). Full docs deferred until tested.
+On startup, `BUILD_SAMPLE_MANIFESTS` writes `manifests/` (`sgRNA.tsv`, `demux_barcodes.tsv`, `sgrna_demux_barcodes.tsv`, `sgrna_barcode.fa`). Cutadapt demux outputs go to `sgRNA/demux/` (including `untrimmed.fastq.gz`); `sgRNA/sgRNA_run.tsv` feeds analysis. See `scripts/sgrna_split.lsf` for manual `bsub`. Full docs deferred until tested.
 - Undetermined FASTQs are first split into chunks (`split_reads`) and demultiplexed in parallel, then merged per sample.
 - `RENAME_FASTQ` validates the three SHARE-seq round barcodes embedded in R1's sequence, rewrites headers with error-corrected barcodes, and writes per-sample outputs to `demux/<sample>/`.
 - `FASTQC_DEMUX` writes per-sample reports to `fastqc_demux/<sample>/`.

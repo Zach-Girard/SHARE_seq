@@ -10,7 +10,7 @@ usage() {
 BARCODE_TABLE=""
 BARCODE_FA=""
 INPUT_FASTQ=""
-OUT_DIR="demux"
+OUT_DIR="sgRNA/demux"
 ERROR_RATE="0.15"
 
 while [[ $# -gt 0 ]]; do
@@ -38,7 +38,8 @@ fi
 
 WORKDIR="$(pwd)"
 LOCAL_BARCODE_FA="${WORKDIR}/barcode.fa"
-UNTRIMMED="${WORKDIR}/untrimmed.fastq.gz"
+mkdir -p "${OUT_DIR}"
+UNTRIMMED="${OUT_DIR}/untrimmed.fastq.gz"
 
 if [[ -n "${BARCODE_FA}" && -f "${BARCODE_FA}" ]]; then
   cp "${BARCODE_FA}" "${LOCAL_BARCODE_FA}"
@@ -56,7 +57,6 @@ cutadapt \
   -o "{name}.fastq.gz" \
   "${INPUT_FASTQ}"
 
-mkdir -p "${OUT_DIR}"
 while IFS=$'\t' read -r sample_name sample_index _rest; do
   [[ "${sample_name}" == "Sample_Name" || "${sample_name}" == "sample_name" ]] && continue
   [[ -z "${sample_name}" ]] && continue

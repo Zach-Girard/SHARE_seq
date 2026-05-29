@@ -13,7 +13,10 @@
 #
 # Build barcode.fa from input.tsv (after BUILD_SAMPLE_MANIFESTS):
 #   python3 /path/to/scripts/build_sgrna_barcode_fa.py \\
-#     --barcode-table /path/to/sgrna_demux_barcodes.tsv -o barcode.fa
+#     --barcode-table /path/to/manifests/sgrna_demux_barcodes.tsv -o barcode.fa
+#
+# Stage demuxed reads under sgRNA/demux/<sample>/<sample>.R1.fastq.gz;
+# keep untrimmed reads as sgRNA/demux/untrimmed.fastq.gz (not project root).
 #
 # Submit:
 #   dos2unix sgrna_split.lsf
@@ -26,6 +29,6 @@ cutadapt \
   -e 0.15 \
   -g file:barcode.fa \
   --no-trim \
-  --untrimmed-output untrimmed.fastq.gz \
+  --untrimmed-output sgRNA/demux/untrimmed.fastq.gz \
   -o '{name}.fastq.gz' \
   sgRNA_Undetermined_S0_R1_001.fastq.gz

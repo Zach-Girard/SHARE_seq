@@ -2,7 +2,7 @@
 """
 Build sgRNA_run.tsv for run_lsf / downstream steps after per-pool demultiplexing.
 
-Maps each sample to demux/<sample_name>/<sample_name>.R1.fastq.gz.
+Maps each sample to sgRNA/demux/<sample_name>/<sample_name>.R1.fastq.gz.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import sys
 def main() -> int:
     p = argparse.ArgumentParser(description="Build post-demux sgRNA run manifest.")
     p.add_argument("--sgrna-manifest", required=True, help="sgRNA.tsv from BUILD_SAMPLE_MANIFESTS")
-    p.add_argument("--demux-dir", required=True, help="Project demux/ directory")
+    p.add_argument("--demux-dir", required=True, help="Project sgRNA/demux/ directory")
     p.add_argument("--out", default="sgRNA_run.tsv")
     args = p.parse_args()
 
