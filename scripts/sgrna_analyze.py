@@ -37,7 +37,6 @@ def main() -> int:
         help="Shell script with sgRNA commands (see scripts/sgrna_run.sh)",
     )
     p.add_argument("--project-dir", required=True, help="Nextflow project directory")
-    p.add_argument("--pool", default="CROP_gRNA", help="LSF pool for run_lsf.py (-p)")
     p.add_argument(
         "--barcode-list",
         required=True,
@@ -64,18 +63,13 @@ def main() -> int:
 
     runner = os.path.abspath(args.runner)
     if not os.path.isfile(runner):
-        print(
-            f"WARNING: sgRNA runner not found ({runner}); "
-            "wrote manifest only. Add commands to scripts/sgrna_run.sh.",
-            file=sys.stderr,
-        )
-        return 0
+        print(f"ERROR: sgRNA runner not found: {runner}", file=sys.stderr)
+        return 1
 
     env = os.environ.copy()
     env["SGRNA_MANIFEST"] = os.path.abspath(work_manifest)
     env["SGRNA_OUT_DIR"] = os.path.abspath(args.out_dir)
     env["PROJECT_DIR"] = os.path.abspath(args.project_dir)
-    env["SGRNA_POOL"] = args.pool
     env["SGRNA_BARCODE_LIST"] = os.path.abspath(args.barcode_list)
 
     print(f"Running sgRNA runner: {runner}", flush=True)

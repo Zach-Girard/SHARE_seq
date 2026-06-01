@@ -209,7 +209,7 @@ def run_from_manifest(manifest: str, out_dir: str, max_mismatches: int) -> int:
             if not os.path.isfile(matched):
                 print(
                     f"ERROR: matched FASTQ not found for {sample} (tried {matched}). "
-                    "Run run_lsf.py and sgrna_rename_matched.py first.",
+                    "Run sgrna_rename_matched.py first.",
                     file=sys.stderr,
                 )
                 return 1

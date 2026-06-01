@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Run rename_fastq.py (SHARE-seq step 2) on run_lsf outputs to produce matched FASTQs.
+Run rename_fastq.py on cutadapt-demuxed R1 FASTQs to produce matched FASTQs.
 
-Expects per-sample inputs like {sample_name}_C3.fastq.gz (same file used for R1 and R2).
+Reads the `fastq` column from sgRNA_run.tsv (paths under sgRNA/demux/<sample>/).
 Writes {sample_name}.matched.R1.fastq.gz under sgRNA/<sample_name>/.
 """
 
@@ -16,51 +16,39 @@ import subprocess
 import sys
 
 
-def infer_c3_fastq(sample_name: str, fastq_manifest: str, search_dirs: list[str]) -> str:
-    """Locate {sample}_C3.fastq.gz produced by run_lsf.py."""
-    name = f"{sample_name}_C3.fastq.gz"
-    candidates: list[str] = []
-    for d in search_dirs:
-        if d:
-            candidates.append(os.path.join(d, name))
-    if fastq_manifest:
-        candidates.append(os.path.join(os.path.dirname(fastq_manifest), name))
-
-    seen: set[str] = set()
-    for path in candidates:
-        path = os.path.abspath(path)
-        if path in seen:
-            continue
-        seen.add(path)
-        if os.path.isfile(path):
-            return path
-
-    return os.path.abspath(candidates[0]) if candidates else name
+def resolve_demux_fastq(fastq_manifest: str, sample_name: str) -> str:
+    """Resolve demuxed R1 path from manifest fastq column."""
+    if not fastq_manifest:
+        raise FileNotFoundError(f"No fastq path in manifest for sample {sample_name}")
+    path = os.path.abspath(fastq_manifest)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Demuxed R1 not found for {sample_name}: {path}")
+    return path
 
 
 def rename_sample(
     sample_id: str,
-    c3_fastq: str,
+    input_fastq: str,
     barcode_list: str,
     rename_script: str,
     sample_out: str,
     error: int,
 ) -> None:
-    if not os.path.isfile(c3_fastq):
-        raise FileNotFoundError(f"C3 FASTQ not found for {sample_id}: {c3_fastq}")
+    if not os.path.isfile(input_fastq):
+        raise FileNotFoundError(f"Input FASTQ not found for {sample_id}: {input_fastq}")
     if not os.path.isfile(barcode_list):
         raise FileNotFoundError(f"Barcode list not found: {barcode_list}")
 
     os.makedirs(sample_out, exist_ok=True)
-    work_dir = os.path.dirname(c3_fastq) or os.getcwd()
+    work_dir = os.path.dirname(input_fastq) or os.getcwd()
 
     cmd = [
         sys.executable,
         rename_script,
         "-r1",
-        c3_fastq,
+        input_fastq,
         "-r2",
-        c3_fastq,
+        input_fastq,
         "--sample_ID",
         sample_id,
         "--barcode_list",
@@ -88,7 +76,7 @@ def rename_sample(
 
 def main() -> int:
     p = argparse.ArgumentParser(description="SHARE-seq rename (matched FASTQs) for sgRNA samples.")
-    p.add_argument("--manifest", required=True, help="sgRNA.tsv")
+    p.add_argument("--manifest", required=True, help="sgRNA_run.tsv")
     p.add_argument("--out-dir", required=True, help="Base output directory (sgRNA/)")
     p.add_argument("--barcode-list", required=True, help="8bp barcode whitelist (e.g. barcode1.list)")
     p.add_argument(
@@ -107,31 +95,29 @@ def main() -> int:
         return 1
 
     out_dir = os.path.abspath(args.out_dir)
-    manifest = os.path.abspath(args.manifest)
-    search_dirs = [os.getcwd(), out_dir, os.path.dirname(manifest)]
 
     n = 0
-    with open(manifest, newline="", errors="replace") as fh:
+    with open(args.manifest, newline="", errors="replace") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         for row in reader:
             sample = (row.get("sample_name") or "").strip()
             if not sample:
                 continue
             fastq = (row.get("fastq") or "").strip()
-            c3 = infer_c3_fastq(sample, fastq, search_dirs)
-            sample_out = os.path.join(out_dir, sample)
             try:
-                rename_sample(
-                    sample,
-                    c3,
-                    os.path.abspath(args.barcode_list),
-                    rename_script,
-                    sample_out,
-                    args.error,
-                )
+                input_r1 = resolve_demux_fastq(fastq, sample)
             except FileNotFoundError as exc:
                 print(f"ERROR: {exc}", file=sys.stderr)
                 return 1
+            sample_out = os.path.join(out_dir, sample)
+            rename_sample(
+                sample,
+                input_r1,
+                os.path.abspath(args.barcode_list),
+                rename_script,
+                sample_out,
+                args.error,
+            )
             n += 1
 
     if n == 0:

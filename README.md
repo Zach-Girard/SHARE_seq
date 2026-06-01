@@ -97,8 +97,8 @@ sgRNA_C1200	gcagagtc	sgRNA	C1200	C1200_gRNA_library.csv
 sgRNA_C6991	gagcagca	sgRNA	C6991	C6991_gRNA_library.csv
 ```
 
-On startup, `BUILD_SAMPLE_MANIFESTS` writes `manifests/` (`sgRNA.tsv`, `demux_barcodes.tsv`, `sgrna_demux_barcodes.tsv`, `sgrna_barcode.fa`). Cutadapt demux outputs go to `sgRNA/demux/` (including `untrimmed.fastq.gz`); `sgRNA/sgRNA_run.tsv` feeds analysis. See `scripts/sgrna_split.lsf` for manual `bsub`. Full docs deferred until tested.
-- Undetermined FASTQs are first split into chunks (`split_reads`) and demultiplexed in parallel, then merged per sample.
+On startup, `BUILD_SAMPLE_MANIFESTS` writes `manifests/` (`sgRNA.tsv`, `demux_barcodes.tsv`, `sgrna_demux_barcodes.tsv`, `sgrna_barcode.fa`). Cutadapt demux outputs go to **`sgRNA/demux/<sample>/`** (not `demux/` — that directory is for RNA/ATAC only). `SGRNA_ANALYSIS` runs barcode correction and gRNA counting; count matrices publish to **`sgRNA/<sample>/final_<sample>.gRNA.count.csv`**. See `scripts/sgrna_split.lsf` for manual cutadapt `bsub`. Full docs deferred until tested.
+- Undetermined FASTQs are first split into chunks (`split_reads`, default 4M reads) and demultiplexed in parallel (`demux_max_forks` caps concurrent chunk jobs), then merged per sample. sgRNA cutadapt demux uses `-j sgrna_cutadapt_jobs` (default 4). Lower `demux_max_forks` on a single node if I/O is saturated; raise slightly on a cluster if slots are idle.
 - `RENAME_FASTQ` validates the three SHARE-seq round barcodes embedded in R1's sequence, rewrites headers with error-corrected barcodes, and writes per-sample outputs to `demux/<sample>/`.
 - `FASTQC_DEMUX` writes per-sample reports to `fastqc_demux/<sample>/`.
 - ATAC samples then run through `BWA_INDEX`/`BWA_ALIGN_ATAC` and write outputs to `ATAC/<sample>/`:

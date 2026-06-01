@@ -10,7 +10,7 @@ nextflow.enable.dsl=2
  *   4. Route by sample type from sample_barcode_file (column 3):
  *      - ATAC: stop after FASTQC_DEMUX
  *      - RNA : continue through full RNA workflow below
- *      - sgRNA: cutadapt demux from gRNA Undetermined R1, then analysis (run_lsf, rename, count)
+ *      - sgRNA: cutadapt demux from gRNA Undetermined R1, then rename + gRNA count
  *   5. Poly-T filtering (R2 anchor, R1 synced) for RNA samples
  *   6. Optional fastp trimming (R1 standard; R2 with UMI protection)
  *   7. Barcode prepending (24bp cell barcode from R2 header → R2 sequence)
@@ -50,10 +50,11 @@ params.sgrna_undetermined_r1 = params.sgrna_undetermined_r1 ?: 'sgRNA_Undetermin
 params.sgrna_cutadapt_error_rate = params.sgrna_cutadapt_error_rate ?: 0.15
 params.sample_barcode_file = params.sample_barcode_file ?: null   // sample index barcode mapping (inside raw_fastq/)
 params.demux_mismatches    = params.demux_mismatches    ?: 1      // allowed mismatches for sample index matching
-params.split_reads         = params.split_reads         ?: 1000000
+params.split_reads         = params.split_reads         ?: 4000000
+params.demux_max_forks     = params.demux_max_forks     ?: 8
+params.sgrna_cutadapt_jobs = params.sgrna_cutadapt_jobs ?: 4
 params.split_fastq_bin     = params.split_fastq_bin     ?: '/home/yli11/HemTools/bin/splitFastq'
 params.sgrna_runner      = params.sgrna_runner      ?: "${projectDir}/scripts/sgrna_run.sh"
-params.sgrna_pool        = params.sgrna_pool        ?: 'CROP_gRNA'
 
 // Fixed reference + index paths (no genome/GTF/index building in pipeline)
 params.hybrid_fasta      = params.hybrid_fasta      ?: null
@@ -171,6 +172,8 @@ log.info "sgRNA Undetermined FASTQ (R1)  : explicit --sgrna_undetermined_r1 or a
 def sampleBarcodePath = params.sample_barcode_file ? "${rawDir}/${params.sample_barcode_file}" : 'not set'
 log.info "Sample barcode file           : ${sampleBarcodePath}"
 log.info "Split reads per chunk         : ${params.split_reads}"
+log.info "Max concurrent DEMULTIPLEX    : ${params.demux_max_forks}"
+log.info "sgRNA cutadapt parallel jobs  : ${params.sgrna_cutadapt_jobs}"
 log.info "splitFastq executable         : ${params.split_fastq_bin}"
 
 def loadSampleTypes = { barcodePathObj ->
@@ -253,7 +256,8 @@ process SGRNA_DEMULTIPLEX_CUTADAPT {
       --barcode-fa "${sgrna_barcode_fa}" \\
       --input "${r1_undetermined}" \\
       --out-dir "sgRNA/demux" \\
-      --error-rate "${params.sgrna_cutadapt_error_rate}"
+      --error-rate "${params.sgrna_cutadapt_error_rate}" \\
+      --jobs "${params.sgrna_cutadapt_jobs}"
     touch .sgrna_demux_complete
     """
 }
@@ -261,49 +265,56 @@ process SGRNA_DEMULTIPLEX_CUTADAPT {
 process BUILD_SGRNA_RUN_MANIFEST {
     tag "sgrna_run_manifest"
 
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
+    publishDir "${projectDir}/sgRNA", mode: 'copy', overwrite: true
 
     input:
     path(sgrna_manifest)
-    val _demux_done
+    path(demux_r1_files, optional: true)
 
     output:
-    path "sgRNA/sgRNA_run.tsv", emit: sgrna_run_manifest
+    path "sgRNA_run.tsv", emit: sgrna_run_manifest
 
+    script:
+    def demuxR1Args = ''
+    if (demux_r1_files) {
+        def demuxFiles = demux_r1_files instanceof List ? demux_r1_files : [demux_r1_files]
+        demuxR1Args = demuxFiles.collect { f -> "--demux-r1 \"${f}\"" }.join(' ')
+    }
     """
     set -euo pipefail
-    mkdir -p sgRNA
     python3 "${projectDir}/scripts/build_sgrna_run_manifest.py" \\
       --sgrna-manifest "${sgrna_manifest}" \\
-      --demux-dir "${projectDir}/sgRNA/demux" \\
-      --out "sgRNA/sgRNA_run.tsv"
+      --project-dir "${projectDir}" \\
+      ${demuxR1Args} \\
+      --out "sgRNA_run.tsv"
     """
 }
 
 process SGRNA_ANALYSIS {
     tag "sgrna"
 
-    publishDir "${projectDir}", mode: 'copy', overwrite: true
+    publishDir "${projectDir}/sgRNA", mode: 'copy', overwrite: true
 
     input:
     path(sgrna_manifest)
 
     output:
-    path "sgRNA/**", emit: sgrna_out, optional: true
+    path "sgRNA_run.tsv", emit: sgrna_run_copy, optional: true
+    path "*/final_*.gRNA.count.csv", emit: grna_count_matrix, optional: true
+    path "*/gRNA_counts_final.csv", emit: grna_counts_final, optional: true
+    path "**/*.matched.R1.fastq.gz", emit: matched_r1, optional: true
 
     """
     set -euo pipefail
-    mkdir -p sgRNA
     if [ ! -s "${sgrna_manifest}" ] || [ "\$(wc -l < "${sgrna_manifest}")" -le 1 ]; then
       echo "No sgRNA samples in manifest; skipping analysis."
       exit 0
     fi
     python3 "${projectDir}/scripts/sgrna_analyze.py" \\
       --manifest "${sgrna_manifest}" \\
-      --out-dir "sgRNA" \\
+      --out-dir "." \\
       --runner "${params.sgrna_runner}" \\
       --project-dir "${projectDir}" \\
-      --pool "${params.sgrna_pool}" \\
       --barcode-list "${effectiveCbWhitelistPath}"
     """
 }
@@ -334,10 +345,17 @@ process SPLIT_UNDETERMINED_FASTQ {
     ${params.split_fastq_bin} -n ${params.split_reads} -i ${r1_undetermined} -o split_r1/Split_${r1stem}
     ${params.split_fastq_bin} -n ${params.split_reads} -i ${r2_undetermined} -o split_r2/Split_${r2stem}
     # splitFastq may emit plain .fastq (not .gz); normalize to .fastq.gz for demultiplex.py.
-    for f in split_r1/*.fastq split_r2/*.fastq; do
-      [ -e "\$f" ] || continue
-      gzip -f "\$f"
-    done
+    if command -v pigz >/dev/null 2>&1; then
+      for f in split_r1/*.fastq split_r2/*.fastq; do
+        [ -e "\$f" ] || continue
+        pigz -p ${task.cpus} -f "\$f"
+      done
+    else
+      for f in split_r1/*.fastq split_r2/*.fastq; do
+        [ -e "\$f" ] || continue
+        gzip -f "\$f"
+      done
+    fi
     """
 }
 
@@ -1312,7 +1330,8 @@ process CELL_OVERLAP_BY_GROUP {
     publishDir "${projectDir}/multiome_overlap", mode: 'copy', overwrite: true
 
     input:
-    tuple val(trigger), val(overlap_mode), path(atac_pre_counts)
+    tuple val(trigger), val(overlap_mode)
+    path atac_pre_counts
     path(sample_barcode_file)
 
     output:
@@ -1448,7 +1467,7 @@ workflow {
 
         BUILD_SGRNA_RUN_MANIFEST(
             BUILD_SAMPLE_MANIFESTS.out.sgrna_manifest,
-            SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_done.collect()
+            SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r1.collect()
         )
 
         SGRNA_ANALYSIS(BUILD_SGRNA_RUN_MANIFEST.out.sgrna_run_manifest)
@@ -1861,9 +1880,8 @@ workflow {
     def ch_atac_pre_counts = ESTIMATE_ATAC_CELLS.out.atac_cell_counts_pre.collect()
     def ch_overlap_mode = Channel.value('pre_dedup_staged')
     CELL_OVERLAP_BY_GROUP(
-        ch_overlap_trigger
-            .combine(ch_overlap_mode)
-            .combine(ch_atac_pre_counts),
+        ch_overlap_trigger.combine(ch_overlap_mode),
+        ch_atac_pre_counts,
         barcodeFile
     )
     ch_report_barrier = ch_report_barrier.mix(CELL_OVERLAP_BY_GROUP.out.overlap_summary)

@@ -12,6 +12,7 @@ BARCODE_FA=""
 INPUT_FASTQ=""
 OUT_DIR="sgRNA/demux"
 ERROR_RATE="0.15"
+JOBS=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -20,6 +21,7 @@ while [[ $# -gt 0 ]]; do
     --input) INPUT_FASTQ="$2"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
     --error-rate) ERROR_RATE="$2"; shift 2 ;;
+    --jobs) JOBS="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "Unknown option: $1" >&2; usage ;;
   esac
@@ -47,9 +49,10 @@ else
   python3 "${BUILD_FA}" --barcode-table "${BARCODE_TABLE}" -o "${LOCAL_BARCODE_FA}"
 fi
 
-echo "Running cutadapt (sgRNA demux) on ${INPUT_FASTQ} ..."
+echo "Running cutadapt (sgRNA demux) on ${INPUT_FASTQ} with -j ${JOBS} ..."
 cutadapt \
   --no-indels \
+  -j "${JOBS}" \
   -e "${ERROR_RATE}" \
   -g "file:${LOCAL_BARCODE_FA}" \
   --no-trim \
