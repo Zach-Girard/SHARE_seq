@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import os
 import shutil
 import subprocess
@@ -24,6 +25,25 @@ def resolve_demux_fastq(fastq_manifest: str, sample_name: str) -> str:
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Demuxed R1 not found for {sample_name}: {path}")
     return path
+
+
+def count_reads_gz(path: str) -> int:
+    if not os.path.isfile(path):
+        return 0
+    try:
+        with gzip.open(path, "rt") as fh:
+            return sum(1 for _ in fh) // 4
+    except OSError:
+        return 0
+
+
+def passthrough_as_matched(sample_id: str, input_fastq: str, sample_out: str) -> str:
+    """Use cutadapt-demuxed R1 as matched when SHARE-seq header rename yields no reads."""
+    os.makedirs(sample_out, exist_ok=True)
+    dest = os.path.join(sample_out, f"{sample_id}.matched.R1.fastq.gz")
+    if os.path.abspath(input_fastq) != os.path.abspath(dest):
+        shutil.copy2(input_fastq, dest)
+    return dest
 
 
 def rename_sample(
@@ -110,14 +130,30 @@ def main() -> int:
                 print(f"ERROR: {exc}", file=sys.stderr)
                 return 1
             sample_out = os.path.join(out_dir, sample)
-            rename_sample(
-                sample,
-                input_r1,
-                os.path.abspath(args.barcode_list),
-                rename_script,
-                sample_out,
-                args.error,
-            )
+            matched_path = os.path.join(sample_out, f"{sample}.matched.R1.fastq.gz")
+            try:
+                rename_sample(
+                    sample,
+                    input_r1,
+                    os.path.abspath(args.barcode_list),
+                    rename_script,
+                    sample_out,
+                    args.error,
+                )
+            except subprocess.CalledProcessError as exc:
+                print(
+                    f"WARNING: rename_fastq failed for {sample} ({exc}); "
+                    "using demuxed R1 as matched.",
+                    file=sys.stderr,
+                )
+                passthrough_as_matched(sample, input_r1, sample_out)
+            elif count_reads_gz(matched_path) == 0:
+                print(
+                    f"WARNING: rename_fastq wrote no matched reads for {sample}; "
+                    "using demuxed R1 as matched (check FASTQ headers for SHARE-seq barcodes).",
+                    file=sys.stderr,
+                )
+                passthrough_as_matched(sample, input_r1, sample_out)
             n += 1
 
     if n == 0:

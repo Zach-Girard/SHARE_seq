@@ -300,6 +300,8 @@ process SGRNA_ANALYSIS {
 
     output:
     path "sgRNA_run.tsv", emit: sgrna_run_copy, optional: true
+    path "sgRNA_run.local.tsv", emit: sgrna_run_local, optional: true
+    path "demux/**/*.R1.fastq.gz", emit: staged_demux_r1, optional: true
     path "*/final_*.gRNA.count.csv", emit: grna_count_matrix, optional: true
     path "*/final_*.gRNA.count.csv.cell_with_gRNA.csv", emit: grna_cell_assignments, optional: true
     path "*/gRNA_counts_final.csv", emit: grna_counts_final, optional: true
