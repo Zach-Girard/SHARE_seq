@@ -147,13 +147,14 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 passthrough_as_matched(sample, input_r1, sample_out)
-            elif count_reads_gz(matched_path) == 0:
-                print(
-                    f"WARNING: rename_fastq wrote no matched reads for {sample}; "
-                    "using demuxed R1 as matched (check FASTQ headers for SHARE-seq barcodes).",
-                    file=sys.stderr,
-                )
-                passthrough_as_matched(sample, input_r1, sample_out)
+            else:
+                if count_reads_gz(matched_path) == 0:
+                    print(
+                        f"WARNING: rename_fastq wrote no matched reads for {sample}; "
+                        "using demuxed R1 as matched (check FASTQ headers for SHARE-seq barcodes).",
+                        file=sys.stderr,
+                    )
+                    passthrough_as_matched(sample, input_r1, sample_out)
             n += 1
 
     if n == 0:
