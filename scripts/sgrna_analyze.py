@@ -2,11 +2,10 @@
 """
 sgRNA analysis entrypoint.
 
-Stages sgRNA.tsv in the work directory, then runs a user-provided shell script
-(scripts/sgrna_run.sh by default) that may invoke one or more commands.
+Runs scripts/sgrna_run.sh (or --runner) on sgRNA_run.tsv from BUILD_SGRNA_RUN_MANIFEST.
 
 Environment passed to the runner:
-  SGRNA_MANIFEST  - absolute path to sgRNA.tsv in the work directory
+  SGRNA_MANIFEST  - absolute path to sgRNA_run.tsv in the work directory
   SGRNA_OUT_DIR   - absolute path to the output directory (sgRNA/)
   PROJECT_DIR     - Nextflow project directory
 """
@@ -16,7 +15,6 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import shutil
 import subprocess
 import sys
 
@@ -55,13 +53,12 @@ def main() -> int:
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    manifest_abs = os.path.abspath(args.manifest)
-    work_manifest = os.path.join(os.getcwd(), "sgRNA.tsv")
-    if manifest_abs != os.path.abspath(work_manifest):
-        shutil.copy2(manifest_abs, work_manifest)
-    shutil.copy2(work_manifest, os.path.join(args.out_dir, "sgRNA.tsv"))
+    work_manifest = os.path.abspath(args.manifest)
 
-    runner = os.path.abspath(args.runner)
+    runner = (args.runner or "").strip()
+    if not runner or runner.lower() == "null":
+        runner = os.path.join(os.path.abspath(args.project_dir), "scripts", "sgrna_run.sh")
+    runner = os.path.abspath(runner)
     if not os.path.isfile(runner):
         print(f"ERROR: sgRNA runner not found: {runner}", file=sys.stderr)
         return 1

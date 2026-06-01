@@ -305,6 +305,11 @@ process SGRNA_ANALYSIS {
     path "*/gRNA_counts_final.csv", emit: grna_counts_final, optional: true
     path "**/*.matched.R1.fastq.gz", emit: matched_r1, optional: true
 
+    script:
+    def sgrnaRunner = params.sgrna_runner?.toString()?.trim()
+    if (!sgrnaRunner || sgrnaRunner == 'null') {
+        sgrnaRunner = "${projectDir}/scripts/sgrna_run.sh"
+    }
     """
     set -euo pipefail
     if [ ! -s "${sgrna_manifest}" ] || [ "\$(wc -l < "${sgrna_manifest}")" -le 1 ]; then
@@ -314,7 +319,7 @@ process SGRNA_ANALYSIS {
     python3 "${projectDir}/scripts/sgrna_analyze.py" \\
       --manifest "${sgrna_manifest}" \\
       --out-dir "." \\
-      --runner "${params.sgrna_runner}" \\
+      --runner "${sgrnaRunner}" \\
       --project-dir "${projectDir}" \\
       --barcode-list "${effectiveCbWhitelistPath}"
     """
