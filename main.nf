@@ -269,7 +269,7 @@ process BUILD_SGRNA_RUN_MANIFEST {
 
     input:
     path(sgrna_manifest)
-    path demux_r1_files, optional: true
+    val(demux_r1_files)
 
     output:
     path "sgRNA_run.tsv", emit: sgrna_run_manifest
@@ -301,6 +301,7 @@ process SGRNA_ANALYSIS {
     output:
     path "sgRNA_run.tsv", emit: sgrna_run_copy, optional: true
     path "*/final_*.gRNA.count.csv", emit: grna_count_matrix, optional: true
+    path "*/final_*.gRNA.count.csv.cell_with_gRNA.csv", emit: grna_cell_assignments, optional: true
     path "*/gRNA_counts_final.csv", emit: grna_counts_final, optional: true
     path "**/*.matched.R1.fastq.gz", emit: matched_r1, optional: true
 
