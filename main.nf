@@ -269,7 +269,7 @@ process BUILD_SGRNA_RUN_MANIFEST {
 
     input:
     path(sgrna_manifest)
-    path(demux_r1_files, optional: true)
+    path demux_r1_files, optional: true
 
     output:
     path "sgRNA_run.tsv", emit: sgrna_run_manifest
