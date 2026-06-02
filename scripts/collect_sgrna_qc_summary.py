@@ -7,11 +7,10 @@ from __future__ import annotations
 
 import argparse
 import csv
-import gzip
 import os
 import statistics
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 def parse_args():
@@ -20,17 +19,6 @@ def parse_args():
     p.add_argument("--out-dir", required=True, help="sgRNA analysis output directory")
     p.add_argument("--out", default="sgrna_qc_summary.tsv", help="Output TSV")
     return p.parse_args()
-
-
-def count_fastq_reads(path: str) -> Optional[int]:
-    if not path or not os.path.isfile(path):
-        return None
-    try:
-        opener = gzip.open if path.endswith(".gz") else open
-        with opener(path, "rt", errors="replace") as fh:
-            return sum(1 for _ in fh) // 4
-    except Exception:
-        return None
 
 
 def load_matrix(path: str) -> tuple[int, int, int, float, float]:
@@ -111,19 +99,12 @@ def main() -> int:
             ).strip()
             if not sample:
                 continue
-            demux_fastq = (row.get("fastq") or "").strip()
             sample_dir = os.path.join(out_dir, sample)
-            matched_fastq = os.path.join(sample_dir, f"{sample}.matched.R1.fastq.gz")
             matrix = os.path.join(sample_dir, f"final_{sample}.gRNA.count.csv")
             counts = os.path.join(sample_dir, "gRNA_counts_final.csv")
 
             cells, cells_with_grna, assigned, mean_counts, median_counts = load_matrix(matrix)
             library_size, detected, top_grna, top_count = load_grna_counts(counts)
-            demux_reads = count_fastq_reads(demux_fastq)
-            matched_reads = count_fastq_reads(matched_fastq)
-            pct_cells_with_grna = (
-                100.0 * cells_with_grna / cells
-            ) if cells else None
             pct_guides_detected = (
                 100.0 * detected / library_size
             ) if library_size else None
@@ -132,12 +113,9 @@ def main() -> int:
                 {
                     "sample_name": sample,
                     "experimental_group": row.get("experimental_group", ""),
-                    "demux_reads": demux_reads,
-                    "matched_reads": matched_reads,
                     "assigned_gRNA_reads": assigned,
                     "cells": cells,
                     "cells_with_gRNA": cells_with_grna,
-                    "pct_cells_with_gRNA": pct_cells_with_grna,
                     "library_size": library_size,
                     "detected_gRNAs": detected,
                     "pct_gRNAs_detected": pct_guides_detected,
@@ -152,12 +130,9 @@ def main() -> int:
     fieldnames = [
         "sample_name",
         "experimental_group",
-        "demux_reads",
-        "matched_reads",
         "assigned_gRNA_reads",
         "cells",
         "cells_with_gRNA",
-        "pct_cells_with_gRNA",
         "library_size",
         "detected_gRNAs",
         "pct_gRNAs_detected",

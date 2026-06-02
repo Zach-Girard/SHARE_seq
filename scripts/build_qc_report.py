@@ -788,14 +788,9 @@ def build_sgrna_summary_fallback(count_matrices, sample_to_group):
             {
                 "sample_name": sample,
                 "experimental_group": group,
-                "demux_reads": "",
-                "matched_reads": "",
                 "assigned_gRNA_reads": stats["assigned_gRNA_reads"],
                 "cells": cells,
                 "cells_with_gRNA": cells_with_grna,
-                "pct_cells_with_gRNA": (
-                    f"{100.0 * cells_with_grna / cells:.2f}" if cells else ""
-                ),
                 "library_size": library_size,
                 "detected_gRNAs": detected,
                 "pct_gRNAs_detected": (
@@ -849,21 +844,55 @@ def sgrna_group_cell_cards(summary_path, count_matrices=None, sample_to_group=No
     cards.append("</div>")
     return "".join(cards)
 
+SGRNA_QC_HIDDEN_COLUMNS = frozenset(
+    {"demux_reads", "matched_reads", "pct_cells_with_gRNA"}
+)
+
+
+def _filter_sgrna_qc_table_rows(rows):
+    return [
+        {k: v for k, v in row.items() if k not in SGRNA_QC_HIDDEN_COLUMNS}
+        for row in rows
+    ]
+
+
 def sgrna_summary_table_html(summary_path, rows):
-    if summary_path and os.path.isfile(os.path.join(proj, summary_path)):
-        return read_table_preview(summary_path, max_rows=None)
+    rows = _filter_sgrna_qc_table_rows(rows)
     if not rows:
         return "<p><em>File is empty</em></p>"
-    fieldnames = list(rows[0].keys())
-    cells = []
-    cells.append(
-        "<tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in fieldnames) + "</tr>"
-    )
+    sample_col = "sample_name"
+    if sample_col not in rows[0]:
+        fieldnames = list(rows[0].keys())
+        cells = [
+            "<tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in fieldnames) + "</tr>"
+        ]
+        for row in rows:
+            cells.append(
+                "<tr>"
+                + "".join(
+                    f"<td>{html.escape(str(row.get(h, '')))}</td>" for h in fieldnames
+                )
+                + "</tr>"
+            )
+        return "<table>" + "".join(cells) + "</table>"
+
+    by_sample = {}
     for row in rows:
+        sample = (row.get(sample_col) or "").strip()
+        if sample:
+            by_sample[sample] = row
+    samples = sorted(by_sample.keys(), key=str.lower)
+    metric_cols = [f for f in rows[0].keys() if f != sample_col]
+    table_rows = [["Metric"] + samples]
+    for metric in metric_cols:
+        table_rows.append(
+            [metric] + [str(by_sample[s].get(metric, "")) for s in samples]
+        )
+    cells = []
+    for ridx, row in enumerate(table_rows):
+        tag = "th" if ridx == 0 else "td"
         cells.append(
-            "<tr>"
-            + "".join(f"<td>{html.escape(str(row.get(h, '')))}</td>" for h in fieldnames)
-            + "</tr>"
+            "<tr>" + "".join(f"<{tag}>{html.escape(c)}</{tag}>" for c in row) + "</tr>"
         )
     return "<table>" + "".join(cells) + "</table>"
 
@@ -872,7 +901,6 @@ def sgrna_qc_section(
     summary_path,
     count_matrices,
     cell_assignments,
-    grna_counts,
     sample_to_group=None,
 ):
     rows = load_sgrna_summary(summary_path, count_matrices, sample_to_group)
@@ -880,18 +908,10 @@ def sgrna_qc_section(
         return "<p><em>No sgRNA QC summary found. Requires SGRNA_ANALYSIS outputs.</em></p>"
 
     chunks = [
-        "<p>sgRNA QC summarizes cutadapt-demuxed reads, barcode-matched reads, "
-        "cell-by-gRNA count matrices, detected guides, and top guide counts. "
-        "Cell counts use barcodes with at least one assigned gRNA.</p>"
+        "<p>sgRNA QC summarizes cell-by-gRNA count matrices, detected guides, "
+        "and top guide counts. Cell counts use barcodes with at least one assigned gRNA.</p>"
     ]
-    if summary_path and os.path.isfile(os.path.join(proj, summary_path)):
-        chunks.append(sgrna_summary_table_html(summary_path, rows))
-    else:
-        chunks.append(
-            "<p><em>Built summary from published count matrices "
-            "(sgrna_qc_summary.tsv not found on disk).</em></p>"
-        )
-        chunks.append(sgrna_summary_table_html("", rows))
+    chunks.append(sgrna_summary_table_html(summary_path, rows))
 
     if count_matrices:
         chunks.append("<h3>Cell x gRNA Count Matrices</h3><ul>")
@@ -905,11 +925,6 @@ def sgrna_qc_section(
             chunks.append(f'<li><code>{html.escape(path)}</code></li>')
         chunks.append("</ul>")
 
-    if grna_counts:
-        chunks.append("<h3>Per-sample gRNA Count Tables</h3>")
-        for path in sorted(grna_counts):
-            chunks.append(f"<h4>{html.escape(path)}</h4>")
-            chunks.append(read_table_preview(path, max_rows=12))
     return "".join(chunks)
 
 def load_overlap_shared_cells(overlap_tsv_path):
@@ -952,8 +967,6 @@ def multiome_shared_cells_kpi_cards(overlap_tsv_path):
         group = row["group"]
         n = _parse_number(row.get("rna_atac"))
         val = _fmt_int(n) if n is not None else "N/A"
-        sgrna_n = _parse_number(row.get("sgrna_with_grna"))
-        sgrna_val = _fmt_int(sgrna_n) if sgrna_n is not None else "N/A"
         triple = _parse_number(row.get("triple"))
         triple_txt = _fmt_int(triple) if triple is not None else "N/A"
         cards.append(
@@ -961,8 +974,6 @@ def multiome_shared_cells_kpi_cards(overlap_tsv_path):
             f'<div class="kpi-label">{html.escape(group)} · RNA ∩ ATAC shared</div>'
             f'<div class="kpi-value">{html.escape(val)}</div>'
             f'<div class="kpi-label" style="margin-top:8px;font-size:0.82rem;">'
-            f'sgRNA cells (≥1 gRNA): <strong>{html.escape(sgrna_val)}</strong></div>'
-            f'<div class="kpi-label" style="font-size:0.82rem;">'
             f'RNA ∩ ATAC ∩ sgRNA: <strong>{html.escape(triple_txt)}</strong></div>'
             '</div>'
         )
@@ -2057,14 +2068,8 @@ parts[-1] = parts[-1].replace(
 parts.append('<section id="sec-overview">')
 parts.append("<h2>Overview</h2>")
 parts.append(overview_cards_html(sample_names, starsolo_by_sample, summary_by_sample))
-parts.append("<h3>Combined Cell Estimate by Experimental Group</h3>")
-parts.append(group_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary, sample_to_group))
 parts.append("<h3>Shared Cells by Experimental Group</h3>")
 parts.append(multiome_shared_cells_kpi_cards(overlap_by_group_tsv))
-parts.append("<h3>sgRNA Cells by Experimental Group</h3>")
-parts.append(sgrna_group_cell_cards(sgrna_qc_summary, sgrna_count_matrices, sample_to_group))
-parts.append("<h3>Sample Directory</h3>")
-parts.append(sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, atac_cell_summary))
 parts.append("</section>")
 
 parts.append('<section id="sec-demux">')
@@ -2123,7 +2128,6 @@ parts.append(
         sgrna_qc_summary,
         sgrna_count_matrices,
         sgrna_cell_assignments,
-        sgrna_grna_counts,
         sample_to_group,
     )
 )

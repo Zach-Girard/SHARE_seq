@@ -278,24 +278,20 @@ def plot_overlap(rows: List[dict], out_png: str) -> None:
     groups = [r["Experimental_Group"] for r in rows]
     rna_n = [int(r.get("RNA_Cells") or 0) for r in rows]
     atac_n = [int(r.get("ATAC_Cells") or 0) for r in rows]
-    sgrna_n = [
-        int(r.get("sgRNA_Cells_with_gRNA") or r.get("sgRNA_Cells") or 0) for r in rows
-    ]
     triple_n = [int(r.get("RNA_ATAC_sgRNA_Shared") or 0) for r in rows]
 
     x = range(len(groups))
-    width = 0.2
+    width = 0.25
     fig, ax = plt.subplots(figsize=(max(8, len(groups) * 1.4), 5))
-    ax.bar([i - 1.5 * width for i in x], rna_n, width=width, label="RNA cells", color="#3b82f6")
-    ax.bar([i - 0.5 * width for i in x], atac_n, width=width, label="ATAC cells (pre-dedup)", color="#f59e0b")
+    ax.bar([i - width for i in x], rna_n, width=width, label="RNA cells", color="#3b82f6")
+    ax.bar(list(x), atac_n, width=width, label="ATAC cells (pre-dedup)", color="#f59e0b")
     ax.bar(
-        [i + 0.5 * width for i in x],
-        sgrna_n,
+        [i + width for i in x],
+        triple_n,
         width=width,
-        label="sgRNA cells (≥1 gRNA)",
-        color="#8b5cf6",
+        label="RNA / ATAC / sgRNA shared",
+        color="#10b981",
     )
-    ax.bar([i + 1.5 * width for i in x], triple_n, width=width, label="RNA / ATAC / sgRNA shared", color="#10b981")
     ax.set_xticks(list(x))
     ax.set_xticklabels(groups, rotation=25, ha="right")
     ax.set_ylabel("Cell count")
