@@ -1484,13 +1484,11 @@ workflow {
 
         SGRNA_ANALYSIS(BUILD_SGRNA_RUN_MANIFEST.out.sgrna_run_manifest)
 
+        // Only sgrna_qc_summary goes to BUILD_QC_HTML: other SGRNA_ANALYSIS outputs share
+        // basenames across paths (e.g. *.matched.R1.fastq.gz in sample/ and demux/) or with
+        // sgRNA_run.tsv copies. Per-sample artifacts are published under sgRNA/ and read from
+        // projectDir by build_qc_report.py.
         ch_sgrna_report_inputs = SGRNA_ANALYSIS.out.sgrna_qc_summary
-            .mix(SGRNA_ANALYSIS.out.sgrna_run_copy)
-            .mix(SGRNA_ANALYSIS.out.sgrna_run_local)
-            .mix(SGRNA_ANALYSIS.out.grna_count_matrix)
-            .mix(SGRNA_ANALYSIS.out.grna_cell_assignments)
-            .mix(SGRNA_ANALYSIS.out.matched_r1)
-            .mix(SGRNA_ANALYSIS.out.staged_demux_r1)
         ch_sgrna_report_barrier = SGRNA_ANALYSIS.out.sgrna_qc_summary
     }
 
