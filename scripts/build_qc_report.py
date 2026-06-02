@@ -52,6 +52,11 @@ def hydrate_report_inputs():
                 break
         if rel is None:
             base = os.path.basename(src)
+            if base in ("sgrna_qc_summary.tsv", "sgRNA_run.tsv", "sgRNA_run.local.tsv"):
+                dst = os.path.join(proj, "sgRNA", base)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                continue
             if base.endswith("_knee_plot.png"):
                 sample = base[:-len("_knee_plot.png")]
                 candidate_roots = sorted(sample_roots.get(sample, set()))
@@ -690,20 +695,137 @@ def group_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary
     cards.append('</div>')
     return "".join(cards)
 
-def load_sgrna_summary(summary_path):
-    if not summary_path:
-        return []
-    abs_path = os.path.join(proj, summary_path)
+def resolve_sgrna_qc_summary_path():
+    for pattern in ("sgRNA/sgrna_qc_summary.tsv", "sgrna_qc_summary.tsv"):
+        hits = rel_list(pattern)
+        if hits:
+            return hits[0]
+    for rel in rel_list_recursive("**/sgrna_qc_summary.tsv"):
+        if rel.endswith("sgrna_qc_summary.tsv"):
+            return rel
+    for src in ("sgrna_qc_summary.tsv", os.path.join("sgRNA", "sgrna_qc_summary.tsv")):
+        if os.path.isfile(src):
+            return os.path.relpath(os.path.abspath(src), proj)
+    return ""
+
+
+def _sgrna_matrix_stats(matrix_rel_path):
+    """Per-sample matrix stats for sgRNA QC summary fallback."""
+    abs_path = os.path.join(proj, matrix_rel_path)
     if not os.path.isfile(abs_path):
-        return []
+        return None
+    base = os.path.basename(abs_path)
+    m = re.match(r"final_(.+?)\.gRNA\.count\.csv$", base)
+    if not m:
+        return None
+    sample = m.group(1)
+    row_sums = []
+    delim = ","
     try:
         with open(abs_path, newline="", errors="replace") as fh:
-            return list(csv.DictReader(fh, delimiter="\t"))
+            reader = csv.reader(fh, delimiter=delim)
+            header = next(reader, None)
+            if not header:
+                return None
+            for row in reader:
+                vals = []
+                for val in row[1:]:
+                    try:
+                        vals.append(int(float(val)))
+                    except (TypeError, ValueError):
+                        vals.append(0)
+                row_sums.append(sum(vals))
     except Exception:
-        return []
+        return None
+    cells = len(row_sums)
+    cells_with_grna = sum(1 for v in row_sums if v > 0)
+    assigned = sum(row_sums)
+    mean_counts = statistics.mean(row_sums) if row_sums else 0.0
+    median_counts = statistics.median(row_sums) if row_sums else 0.0
+    return {
+        "sample_name": sample,
+        "cells": cells,
+        "cells_with_gRNA": cells_with_grna,
+        "assigned_gRNA_reads": assigned,
+        "mean_gRNA_counts_per_cell": mean_counts,
+        "median_gRNA_counts_per_cell": median_counts,
+    }
 
-def sgrna_group_cell_cards(summary_path):
-    rows = load_sgrna_summary(summary_path)
+
+def build_sgrna_summary_fallback(count_matrices, sample_to_group):
+    rows = []
+    for matrix in sorted(count_matrices):
+        stats = _sgrna_matrix_stats(matrix)
+        if not stats:
+            continue
+        sample = stats["sample_name"]
+        group = sample_to_group.get(sample, "")
+        counts_rel = os.path.join("sgRNA", sample, "gRNA_counts_final.csv")
+        library_size = detected = 0
+        top_grna = ""
+        top_count = 0
+        counts_path = os.path.join(proj, counts_rel)
+        if os.path.isfile(counts_path):
+            try:
+                with open(counts_path, newline="", errors="replace") as fh:
+                    reader = csv.DictReader(fh)
+                    for row in reader:
+                        library_size += 1
+                        try:
+                            count = int(float(row.get("count", "0") or 0))
+                        except (TypeError, ValueError):
+                            count = 0
+                        if count > 0:
+                            detected += 1
+                        if count > top_count:
+                            top_grna = row.get("sgRNA_sequence", "")
+                            top_count = count
+            except Exception:
+                pass
+        cells = stats["cells"]
+        cells_with_grna = stats["cells_with_gRNA"]
+        rows.append(
+            {
+                "sample_name": sample,
+                "experimental_group": group,
+                "demux_reads": "",
+                "matched_reads": "",
+                "assigned_gRNA_reads": stats["assigned_gRNA_reads"],
+                "cells": cells,
+                "cells_with_gRNA": cells_with_grna,
+                "pct_cells_with_gRNA": (
+                    f"{100.0 * cells_with_grna / cells:.2f}" if cells else ""
+                ),
+                "library_size": library_size,
+                "detected_gRNAs": detected,
+                "pct_gRNAs_detected": (
+                    f"{100.0 * detected / library_size:.2f}" if library_size else ""
+                ),
+                "mean_gRNA_counts_per_cell": f"{stats['mean_gRNA_counts_per_cell']:.2f}",
+                "median_gRNA_counts_per_cell": f"{stats['median_gRNA_counts_per_cell']:.2f}",
+                "top_gRNA": top_grna,
+                "top_gRNA_count": top_count,
+            }
+        )
+    return rows
+
+
+def load_sgrna_summary(summary_path, count_matrices=None, sample_to_group=None):
+    rows = []
+    if summary_path:
+        abs_path = os.path.join(proj, summary_path)
+        if os.path.isfile(abs_path):
+            try:
+                with open(abs_path, newline="", errors="replace") as fh:
+                    rows = list(csv.DictReader(fh, delimiter="\t"))
+            except Exception:
+                rows = []
+    if not rows and count_matrices:
+        rows = build_sgrna_summary_fallback(count_matrices, sample_to_group or {})
+    return rows
+
+def sgrna_group_cell_cards(summary_path, count_matrices=None, sample_to_group=None):
+    rows = load_sgrna_summary(summary_path, count_matrices, sample_to_group)
     if not rows:
         return "<p><em>No sgRNA QC summary found.</em></p>"
     totals = {}
@@ -727,16 +849,49 @@ def sgrna_group_cell_cards(summary_path):
     cards.append("</div>")
     return "".join(cards)
 
-def sgrna_qc_section(summary_path, count_matrices, cell_assignments, grna_counts):
-    rows = load_sgrna_summary(summary_path)
+def sgrna_summary_table_html(summary_path, rows):
+    if summary_path and os.path.isfile(os.path.join(proj, summary_path)):
+        return read_table_preview(summary_path, max_rows=None)
+    if not rows:
+        return "<p><em>File is empty</em></p>"
+    fieldnames = list(rows[0].keys())
+    cells = []
+    cells.append(
+        "<tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in fieldnames) + "</tr>"
+    )
+    for row in rows:
+        cells.append(
+            "<tr>"
+            + "".join(f"<td>{html.escape(str(row.get(h, '')))}</td>" for h in fieldnames)
+            + "</tr>"
+        )
+    return "<table>" + "".join(cells) + "</table>"
+
+
+def sgrna_qc_section(
+    summary_path,
+    count_matrices,
+    cell_assignments,
+    grna_counts,
+    sample_to_group=None,
+):
+    rows = load_sgrna_summary(summary_path, count_matrices, sample_to_group)
     if not rows:
         return "<p><em>No sgRNA QC summary found. Requires SGRNA_ANALYSIS outputs.</em></p>"
 
     chunks = [
         "<p>sgRNA QC summarizes cutadapt-demuxed reads, barcode-matched reads, "
-        "cell-by-gRNA count matrices, detected guides, and top guide counts.</p>"
+        "cell-by-gRNA count matrices, detected guides, and top guide counts. "
+        "Cell counts use barcodes with at least one assigned gRNA.</p>"
     ]
-    chunks.append(read_table_preview(summary_path, max_rows=None))
+    if summary_path and os.path.isfile(os.path.join(proj, summary_path)):
+        chunks.append(sgrna_summary_table_html(summary_path, rows))
+    else:
+        chunks.append(
+            "<p><em>Built summary from published count matrices "
+            "(sgrna_qc_summary.tsv not found on disk).</em></p>"
+        )
+        chunks.append(sgrna_summary_table_html("", rows))
 
     if count_matrices:
         chunks.append("<h3>Cell x gRNA Count Matrices</h3><ul>")
@@ -776,6 +931,8 @@ def load_overlap_shared_cells(overlap_tsv_path):
                     {
                         "group": group,
                         "rna_atac": row.get("Shared_Cells", ""),
+                        "sgrna_with_grna": row.get("sgRNA_Cells_with_gRNA")
+                        or row.get("sgRNA_Cells", ""),
                         "triple": row.get("RNA_ATAC_sgRNA_Shared", ""),
                     }
                 )
@@ -795,18 +952,54 @@ def multiome_shared_cells_kpi_cards(overlap_tsv_path):
         group = row["group"]
         n = _parse_number(row.get("rna_atac"))
         val = _fmt_int(n) if n is not None else "N/A"
+        sgrna_n = _parse_number(row.get("sgrna_with_grna"))
+        sgrna_val = _fmt_int(sgrna_n) if sgrna_n is not None else "N/A"
         triple = _parse_number(row.get("triple"))
-        label = group
-        if triple is not None:
-            label = f"{group} RNA/ATAC shared; triple: {_fmt_int(triple)}"
+        triple_txt = _fmt_int(triple) if triple is not None else "N/A"
         cards.append(
             '<div class="kpi-card">'
-            f'<div class="kpi-label">{html.escape(label)}</div>'
+            f'<div class="kpi-label">{html.escape(group)} · RNA ∩ ATAC shared</div>'
             f'<div class="kpi-value">{html.escape(val)}</div>'
+            f'<div class="kpi-label" style="margin-top:8px;font-size:0.82rem;">'
+            f'sgRNA cells (≥1 gRNA): <strong>{html.escape(sgrna_val)}</strong></div>'
+            f'<div class="kpi-label" style="font-size:0.82rem;">'
+            f'RNA ∩ ATAC ∩ sgRNA: <strong>{html.escape(triple_txt)}</strong></div>'
             '</div>'
         )
     cards.append('</div>')
     return "".join(cards)
+
+
+def read_overlap_table_pivoted(rel_path):
+    """Render overlap_by_group.tsv with metrics as rows and groups as columns."""
+    abs_path = os.path.join(proj, rel_path)
+    if not os.path.isfile(abs_path):
+        return "<p><em>Missing file</em></p>"
+    try:
+        with open(abs_path, newline="", errors="replace") as fh:
+            rows = list(csv.DictReader(fh, delimiter="\t"))
+    except Exception as e:
+        return f"<p><em>Could not parse table: {html.escape(str(e))}</em></p>"
+    if not rows:
+        return "<p><em>File is empty</em></p>"
+    group_col = "Experimental_Group"
+    fieldnames = list(rows[0].keys())
+    if group_col not in fieldnames:
+        return read_table_preview(rel_path, max_rows=None)
+    metric_cols = [f for f in fieldnames if f != group_col]
+    groups = [r.get(group_col, "") for r in rows]
+    header = ["Metric"] + groups
+    table_rows = [header]
+    for metric in metric_cols:
+        table_rows.append([metric] + [r.get(metric, "") for r in rows])
+    cells = []
+    for ridx, row in enumerate(table_rows):
+        tag = "th" if ridx == 0 else "td"
+        cells.append(
+            "<tr>" + "".join(f"<{tag}>{html.escape(str(c))}</{tag}>" for c in row) + "</tr>"
+        )
+    return "<table>" + "".join(cells) + "</table>"
+
 
 def multiome_overlap_section(overlap_tsv_path, overlap_png_path):
     if not overlap_tsv_path or not os.path.isfile(os.path.join(proj, overlap_tsv_path)):
@@ -818,8 +1011,9 @@ def multiome_overlap_section(overlap_tsv_path, overlap_png_path):
         "<p>Cell barcodes are compared per experimental group: "
         "RNA from STARsolo <code>GeneFull/filtered/barcodes.tsv</code>, "
         "ATAC from ArchR <code>*.atac_cells.pre_dedup.counts.tsv</code> (pre-dedup BAM), "
-        "and sgRNA from <code>final_*.gRNA.count.csv</code>.</p>",
-        read_table_preview(overlap_tsv_path, max_rows=None),
+        "and sgRNA from cells with at least one assigned gRNA "
+        "(<code>final_*.gRNA.count.csv.cell_with_gRNA.csv</code> or nonzero rows in the count matrix).</p>",
+        read_overlap_table_pivoted(overlap_tsv_path),
     ]
     if overlap_png_path and os.path.isfile(os.path.join(proj, overlap_png_path)):
         asset = stage_asset(overlap_png_path)
@@ -1557,8 +1751,7 @@ overlap_by_group_tsv = rel_list("multiome_overlap/overlap_by_group.tsv")
 overlap_by_group_png = rel_list("multiome_overlap/overlap_by_group.png")
 overlap_by_group_tsv = overlap_by_group_tsv[0] if overlap_by_group_tsv else ""
 overlap_by_group_png = overlap_by_group_png[0] if overlap_by_group_png else ""
-sgrna_qc_summary = rel_list("sgRNA/sgrna_qc_summary.tsv")
-sgrna_qc_summary = sgrna_qc_summary[0] if sgrna_qc_summary else ""
+sgrna_qc_summary = resolve_sgrna_qc_summary_path()
 sgrna_count_matrices = sorted(set(rel_list("sgRNA/*/final_*.gRNA.count.csv")))
 sgrna_cell_assignments = sorted(set(rel_list("sgRNA/*/final_*.gRNA.count.csv.cell_with_gRNA.csv")))
 sgrna_grna_counts = sorted(set(rel_list("sgRNA/*/gRNA_counts_final.csv")))
@@ -1869,7 +2062,7 @@ parts.append(group_combined_cell_cards(sample_names, summary_by_sample, atac_cel
 parts.append("<h3>Shared Cells by Experimental Group</h3>")
 parts.append(multiome_shared_cells_kpi_cards(overlap_by_group_tsv))
 parts.append("<h3>sgRNA Cells by Experimental Group</h3>")
-parts.append(sgrna_group_cell_cards(sgrna_qc_summary))
+parts.append(sgrna_group_cell_cards(sgrna_qc_summary, sgrna_count_matrices, sample_to_group))
 parts.append("<h3>Sample Directory</h3>")
 parts.append(sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, atac_cell_summary))
 parts.append("</section>")
@@ -1925,7 +2118,15 @@ if species_model == 'hybrid':
 
 parts.append('<section id="sec-sgrna">')
 parts.append("<h2>sgRNA QC</h2>")
-parts.append(sgrna_qc_section(sgrna_qc_summary, sgrna_count_matrices, sgrna_cell_assignments, sgrna_grna_counts))
+parts.append(
+    sgrna_qc_section(
+        sgrna_qc_summary,
+        sgrna_count_matrices,
+        sgrna_cell_assignments,
+        sgrna_grna_counts,
+        sample_to_group,
+    )
+)
 parts.append("</section>")
 
 parts.append('<section id="sec-overlap">')

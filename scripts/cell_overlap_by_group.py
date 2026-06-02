@@ -191,7 +191,28 @@ def load_atac_barcodes(
 
 
 def load_sgrna_barcodes(project_dir: str, sample: str) -> Set[str]:
-    """Load sgRNA cell barcodes from the per-cell gRNA count matrix."""
+    """Load sgRNA cell barcodes with at least one detected gRNA."""
+    cell_list = os.path.join(
+        project_dir,
+        "sgRNA",
+        sample,
+        f"final_{sample}.gRNA.count.csv.cell_with_gRNA.csv",
+    )
+    if os.path.isfile(cell_list):
+        out: Set[str] = set()
+        with open(cell_list, newline="", errors="replace") as fh:
+            reader = csv.reader(fh)
+            for row in reader:
+                if row:
+                    bc = normalize_barcode(row[0])
+                    if bc:
+                        out.add(bc)
+        print(
+            f"sgRNA {sample}: {len(out)} cells with gRNA from {cell_list}",
+            file=sys.stderr,
+        )
+        return out
+
     candidates = [
         os.path.join(project_dir, "sgRNA", sample, f"final_{sample}.gRNA.count.csv"),
         os.path.join(project_dir, "sgRNA", sample, f"final_{sample}.gRNA.count.tsv"),
@@ -204,7 +225,7 @@ def load_sgrna_barcodes(project_dir: str, sample: str) -> Set[str]:
         )
         return set()
 
-    out: Set[str] = set()
+    out = set()
     delimiter = "," if path.lower().endswith(".csv") else "\t"
     with open(path, newline="", errors="replace") as fh:
         reader = csv.DictReader(fh, delimiter=delimiter)
@@ -217,12 +238,21 @@ def load_sgrna_barcodes(project_dir: str, sample: str) -> Set[str]:
                 break
         if not bc_col:
             bc_col = reader.fieldnames[0]
+        value_cols = [c for c in reader.fieldnames if c and c != bc_col]
         for row in reader:
             bc = normalize_barcode(row.get(bc_col, ""))
-            if bc:
+            if not bc:
+                continue
+            total = 0
+            for col in value_cols:
+                try:
+                    total += int(float(row.get(col, "0") or 0))
+                except (TypeError, ValueError):
+                    continue
+            if total > 0:
                 out.add(bc)
 
-    print(f"sgRNA {sample}: {len(out)} barcodes from {path}", file=sys.stderr)
+    print(f"sgRNA {sample}: {len(out)} cells with gRNA from {path}", file=sys.stderr)
     return out
 
 
@@ -248,7 +278,9 @@ def plot_overlap(rows: List[dict], out_png: str) -> None:
     groups = [r["Experimental_Group"] for r in rows]
     rna_n = [int(r.get("RNA_Cells") or 0) for r in rows]
     atac_n = [int(r.get("ATAC_Cells") or 0) for r in rows]
-    sgrna_n = [int(r.get("sgRNA_Cells") or 0) for r in rows]
+    sgrna_n = [
+        int(r.get("sgRNA_Cells_with_gRNA") or r.get("sgRNA_Cells") or 0) for r in rows
+    ]
     triple_n = [int(r.get("RNA_ATAC_sgRNA_Shared") or 0) for r in rows]
 
     x = range(len(groups))
@@ -256,7 +288,13 @@ def plot_overlap(rows: List[dict], out_png: str) -> None:
     fig, ax = plt.subplots(figsize=(max(8, len(groups) * 1.4), 5))
     ax.bar([i - 1.5 * width for i in x], rna_n, width=width, label="RNA cells", color="#3b82f6")
     ax.bar([i - 0.5 * width for i in x], atac_n, width=width, label="ATAC cells (pre-dedup)", color="#f59e0b")
-    ax.bar([i + 0.5 * width for i in x], sgrna_n, width=width, label="sgRNA cells", color="#8b5cf6")
+    ax.bar(
+        [i + 0.5 * width for i in x],
+        sgrna_n,
+        width=width,
+        label="sgRNA cells (≥1 gRNA)",
+        color="#8b5cf6",
+    )
     ax.bar([i + 1.5 * width for i in x], triple_n, width=width, label="RNA / ATAC / sgRNA shared", color="#10b981")
     ax.set_xticks(list(x))
     ax.set_xticklabels(groups, rotation=25, ha="right")
@@ -298,7 +336,7 @@ def main() -> int:
                     "sgRNA_Samples",
                     "RNA_Cells",
                     "ATAC_Cells",
-                    "sgRNA_Cells",
+                    "sgRNA_Cells_with_gRNA",
                     "Shared_Cells",
                     "RNA_ATAC_Shared",
                     "RNA_sgRNA_Shared",
@@ -375,7 +413,7 @@ def main() -> int:
             "sgRNA_Samples": ",".join(sgrna_samples),
             "RNA_Cells": len(rna_barcodes),
             "ATAC_Cells": len(atac_barcodes),
-            "sgRNA_Cells": len(sgrna_barcodes),
+            "sgRNA_Cells_with_gRNA": len(sgrna_barcodes),
             "Shared_Cells": len(shared),
             "RNA_ATAC_Shared": len(shared),
             "RNA_sgRNA_Shared": len(rna_sgrna_shared),
@@ -407,7 +445,7 @@ def main() -> int:
         "sgRNA_Samples",
         "RNA_Cells",
         "ATAC_Cells",
-        "sgRNA_Cells",
+        "sgRNA_Cells_with_gRNA",
         "Shared_Cells",
         "RNA_ATAC_Shared",
         "RNA_sgRNA_Shared",

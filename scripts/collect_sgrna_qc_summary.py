@@ -103,7 +103,12 @@ def main() -> int:
     with open(args.manifest, newline="", errors="replace") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         for row in reader:
-            sample = (row.get("sample_name") or "").strip()
+            sample = (
+                row.get("sample_name")
+                or row.get("Sample_Name")
+                or row.get("sample_id")
+                or ""
+            ).strip()
             if not sample:
                 continue
             demux_fastq = (row.get("fastq") or "").strip()
