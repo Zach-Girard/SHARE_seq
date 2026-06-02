@@ -190,6 +190,42 @@ def load_atac_barcodes(
     return out, path
 
 
+def load_sgrna_barcodes(project_dir: str, sample: str) -> Set[str]:
+    """Load sgRNA cell barcodes from the per-cell gRNA count matrix."""
+    candidates = [
+        os.path.join(project_dir, "sgRNA", sample, f"final_{sample}.gRNA.count.csv"),
+        os.path.join(project_dir, "sgRNA", sample, f"final_{sample}.gRNA.count.tsv"),
+    ]
+    path = next((p for p in candidates if os.path.isfile(p)), "")
+    if not path:
+        print(
+            f"WARNING: missing sgRNA count matrix for {sample}; expected final_{sample}.gRNA.count.csv",
+            file=sys.stderr,
+        )
+        return set()
+
+    out: Set[str] = set()
+    delimiter = "," if path.lower().endswith(".csv") else "\t"
+    with open(path, newline="", errors="replace") as fh:
+        reader = csv.DictReader(fh, delimiter=delimiter)
+        if not reader.fieldnames:
+            return out
+        bc_col = None
+        for name in reader.fieldnames:
+            if name and name.strip().lower() in ("cell_barcode", "barcode", "cell"):
+                bc_col = name
+                break
+        if not bc_col:
+            bc_col = reader.fieldnames[0]
+        for row in reader:
+            bc = normalize_barcode(row.get(bc_col, ""))
+            if bc:
+                out.add(bc)
+
+    print(f"sgRNA {sample}: {len(out)} barcodes from {path}", file=sys.stderr)
+    return out
+
+
 def write_shared_barcodes(path: str, barcodes: Set[str]) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as fh:
@@ -210,20 +246,22 @@ def plot_overlap(rows: List[dict], out_png: str) -> None:
     if not rows:
         return
     groups = [r["Experimental_Group"] for r in rows]
-    rna_n = [int(r["RNA_Cells"]) for r in rows]
-    atac_n = [int(r["ATAC_Cells"]) for r in rows]
-    shared_n = [int(r["Shared_Cells"]) for r in rows]
+    rna_n = [int(r.get("RNA_Cells") or 0) for r in rows]
+    atac_n = [int(r.get("ATAC_Cells") or 0) for r in rows]
+    sgrna_n = [int(r.get("sgRNA_Cells") or 0) for r in rows]
+    triple_n = [int(r.get("RNA_ATAC_sgRNA_Shared") or 0) for r in rows]
 
     x = range(len(groups))
-    width = 0.25
+    width = 0.2
     fig, ax = plt.subplots(figsize=(max(8, len(groups) * 1.4), 5))
-    ax.bar([i - width for i in x], rna_n, width=width, label="RNA cells", color="#3b82f6")
-    ax.bar(x, atac_n, width=width, label="ATAC cells (pre-dedup)", color="#f59e0b")
-    ax.bar([i + width for i in x], shared_n, width=width, label="Shared barcodes", color="#10b981")
+    ax.bar([i - 1.5 * width for i in x], rna_n, width=width, label="RNA cells", color="#3b82f6")
+    ax.bar([i - 0.5 * width for i in x], atac_n, width=width, label="ATAC cells (pre-dedup)", color="#f59e0b")
+    ax.bar([i + 0.5 * width for i in x], sgrna_n, width=width, label="sgRNA cells", color="#8b5cf6")
+    ax.bar([i + 1.5 * width for i in x], triple_n, width=width, label="RNA / ATAC / sgRNA shared", color="#10b981")
     ax.set_xticks(list(x))
     ax.set_xticklabels(groups, rotation=25, ha="right")
     ax.set_ylabel("Cell count")
-    ax.set_title("RNA / ATAC cell barcode overlap by experimental group")
+    ax.set_title("RNA / ATAC / sgRNA cell barcode overlap by experimental group")
     ax.legend()
     fig.tight_layout()
     fig.savefig(out_png, dpi=200)
@@ -260,16 +298,25 @@ def main() -> int:
                     "sgRNA_Samples",
                     "RNA_Cells",
                     "ATAC_Cells",
+                    "sgRNA_Cells",
                     "Shared_Cells",
+                    "RNA_ATAC_Shared",
+                    "RNA_sgRNA_Shared",
+                    "ATAC_sgRNA_Shared",
+                    "RNA_ATAC_sgRNA_Shared",
                     "RNA_Only",
                     "ATAC_Only",
+                    "sgRNA_Only",
                     "Pct_RNA_in_ATAC",
                     "Pct_ATAC_in_RNA",
+                    "Pct_sgRNA_in_RNA",
+                    "Pct_sgRNA_in_ATAC",
                     "Jaccard",
+                    "Jaccard_All",
                 ]
             )
             w.writerow(
-                ["", "", "", "", "", "", "", "", "", "", "", "No experimental groups defined"]
+                ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "No experimental groups defined"]
             )
         return 0
 
@@ -296,14 +343,30 @@ def main() -> int:
             )
             atac_barcodes |= sample_barcodes
 
+        sgrna_barcodes: Set[str] = set()
+        for s in sgrna_samples:
+            sgrna_barcodes |= load_sgrna_barcodes(project_dir, s)
+
         shared = rna_barcodes & atac_barcodes
+        rna_sgrna_shared = rna_barcodes & sgrna_barcodes
+        atac_sgrna_shared = atac_barcodes & sgrna_barcodes
+        triple_shared = rna_barcodes & atac_barcodes & sgrna_barcodes
         rna_only = rna_barcodes - atac_barcodes
         atac_only = atac_barcodes - rna_barcodes
+        sgrna_only = sgrna_barcodes - rna_barcodes - atac_barcodes
         union = rna_barcodes | atac_barcodes
+        union_all = rna_barcodes | atac_barcodes | sgrna_barcodes
 
         pct_rna_in_atac = (100.0 * len(shared) / len(rna_barcodes)) if rna_barcodes else ""
         pct_atac_in_rna = (100.0 * len(shared) / len(atac_barcodes)) if atac_barcodes else ""
+        pct_sgrna_in_rna = (
+            100.0 * len(rna_sgrna_shared) / len(sgrna_barcodes)
+        ) if sgrna_barcodes else ""
+        pct_sgrna_in_atac = (
+            100.0 * len(atac_sgrna_shared) / len(sgrna_barcodes)
+        ) if sgrna_barcodes else ""
         jaccard = (len(shared) / len(union)) if union else ""
+        jaccard_all = (len(triple_shared) / len(union_all)) if union_all else ""
 
         row = {
             "Experimental_Group": group,
@@ -312,12 +375,21 @@ def main() -> int:
             "sgRNA_Samples": ",".join(sgrna_samples),
             "RNA_Cells": len(rna_barcodes),
             "ATAC_Cells": len(atac_barcodes),
+            "sgRNA_Cells": len(sgrna_barcodes),
             "Shared_Cells": len(shared),
+            "RNA_ATAC_Shared": len(shared),
+            "RNA_sgRNA_Shared": len(rna_sgrna_shared),
+            "ATAC_sgRNA_Shared": len(atac_sgrna_shared),
+            "RNA_ATAC_sgRNA_Shared": len(triple_shared),
             "RNA_Only": len(rna_only),
             "ATAC_Only": len(atac_only),
+            "sgRNA_Only": len(sgrna_only),
             "Pct_RNA_in_ATAC": f"{pct_rna_in_atac:.2f}" if pct_rna_in_atac != "" else "",
             "Pct_ATAC_in_RNA": f"{pct_atac_in_rna:.2f}" if pct_atac_in_rna != "" else "",
+            "Pct_sgRNA_in_RNA": f"{pct_sgrna_in_rna:.2f}" if pct_sgrna_in_rna != "" else "",
+            "Pct_sgRNA_in_ATAC": f"{pct_sgrna_in_atac:.2f}" if pct_sgrna_in_atac != "" else "",
             "Jaccard": f"{jaccard:.4f}" if jaccard != "" else "",
+            "Jaccard_All": f"{jaccard_all:.4f}" if jaccard_all != "" else "",
         }
         summary_rows.append(row)
 
@@ -335,12 +407,21 @@ def main() -> int:
         "sgRNA_Samples",
         "RNA_Cells",
         "ATAC_Cells",
+        "sgRNA_Cells",
         "Shared_Cells",
+        "RNA_ATAC_Shared",
+        "RNA_sgRNA_Shared",
+        "ATAC_sgRNA_Shared",
+        "RNA_ATAC_sgRNA_Shared",
         "RNA_Only",
         "ATAC_Only",
+        "sgRNA_Only",
         "Pct_RNA_in_ATAC",
         "Pct_ATAC_in_RNA",
+        "Pct_sgRNA_in_RNA",
+        "Pct_sgRNA_in_ATAC",
         "Jaccard",
+        "Jaccard_All",
     ]
     with open(master_path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=fieldnames, delimiter="\t")

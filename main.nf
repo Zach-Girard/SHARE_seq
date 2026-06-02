@@ -301,6 +301,7 @@ process SGRNA_ANALYSIS {
     output:
     path "sgRNA_run.tsv", emit: sgrna_run_copy, optional: true
     path "sgRNA_run.local.tsv", emit: sgrna_run_local, optional: true
+    path "sgrna_qc_summary.tsv", emit: sgrna_qc_summary, optional: true
     path "demux/**/*.R1.fastq.gz", emit: staged_demux_r1, optional: true
     path "*/final_*.gRNA.count.csv", emit: grna_count_matrix, optional: true
     path "*/final_*.gRNA.count.csv.cell_with_gRNA.csv", emit: grna_cell_assignments, optional: true
@@ -1454,6 +1455,9 @@ workflow {
         error "No RNA, ATAC, or sgRNA samples found in ${barcodeFile}."
     }
 
+    def ch_sgrna_report_inputs = Channel.empty()
+    def ch_sgrna_report_barrier = Channel.empty()
+
     // sgRNA: cutadapt demux from one shared Undetermined R1 + sgrna_barcode.fa (Sample_Name / Sample_Index from input.tsv).
     if (nSGRNA > 0) {
         def sgrnaDemuxBarcodeFile = BUILD_SAMPLE_MANIFESTS.out.sgrna_demux_barcode_file
@@ -1479,6 +1483,15 @@ workflow {
         )
 
         SGRNA_ANALYSIS(BUILD_SGRNA_RUN_MANIFEST.out.sgrna_run_manifest)
+
+        ch_sgrna_report_inputs = SGRNA_ANALYSIS.out.sgrna_qc_summary
+            .mix(SGRNA_ANALYSIS.out.sgrna_run_copy)
+            .mix(SGRNA_ANALYSIS.out.sgrna_run_local)
+            .mix(SGRNA_ANALYSIS.out.grna_count_matrix)
+            .mix(SGRNA_ANALYSIS.out.grna_cell_assignments)
+            .mix(SGRNA_ANALYSIS.out.matched_r1)
+            .mix(SGRNA_ANALYSIS.out.staged_demux_r1)
+        ch_sgrna_report_barrier = SGRNA_ANALYSIS.out.sgrna_qc_summary
     }
 
     if (nRNA + nATAC == 0) {
@@ -1742,6 +1755,7 @@ workflow {
     def ch_report_inputs = BUILD_DEMUX_STATS_FROM_MERGED.out.merged_stats
         .mix(RENAME_FASTQ.out.rename_stats)
         .mix(FASTQC_DEMUX.out.demux_reports)
+        .mix(ch_sgrna_report_inputs)
         .mix(ch_trim_completion)
         .mix(BWA_ALIGN_ATAC.out.atac_align_out)
         .mix(ESTIMATE_ATAC_CELLS.out.atac_cell_summary)
@@ -1754,6 +1768,7 @@ workflow {
     def ch_report_barrier = BUILD_DEMUX_STATS_FROM_MERGED.out.merged_stats
         .mix(RENAME_FASTQ.out.rename_stats)
         .mix(FASTQC_DEMUX.out.demux_reports)
+        .mix(ch_sgrna_report_barrier)
         .mix(POLYT_FILTER.out.polyt_outputs)
         .mix(ch_trim_completion)
         .mix(PREPEND_HEADER_BARCODES.out.r2_with_barcodes)

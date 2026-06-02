@@ -2,6 +2,7 @@
 # sgRNA analysis after cutadapt demux (input: sgRNA_run.tsv with demuxed R1 paths):
 #   1. rename_fastq.py -> {sample}.matched.R1.fastq.gz
 #   2. gRNA counting on matched R1
+#   3. collect sgRNA QC summary
 #
 # Environment (set by scripts/sgrna_analyze.py):
 #   SGRNA_MANIFEST      - sgRNA_run.tsv (copied as sgRNA.tsv in work dir)
@@ -27,3 +28,9 @@ python3 "${PROJECT_DIR}/scripts/sgrna_count_grna.py" \
   --manifest "${SGRNA_MANIFEST}" \
   --out-dir "${SGRNA_OUT_DIR}" \
   --max-mismatches 2
+
+echo "Step 3: sgRNA QC summary"
+python3 "${PROJECT_DIR}/scripts/collect_sgrna_qc_summary.py" \
+  --manifest "${SGRNA_MANIFEST}" \
+  --out-dir "${SGRNA_OUT_DIR}" \
+  --out "sgrna_qc_summary.tsv"
