@@ -1530,12 +1530,9 @@ workflow {
             SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r2.collect()
         )
 
-        // sgrna_qc_summary + count outputs for BUILD_QC_HTML (matched FASTQs omitted: basename collisions).
-        // Full sgRNA tree is also published under projectDir/sgRNA/ for build_qc_report.py.
+        // Only sgrna_qc_summary: per-sample sgRNA files share basenames (gRNA_counts_final.csv, etc.)
+        // and collide when staged into BUILD_QC_HTML. build_qc_report.py reads projectDir/sgRNA/.
         ch_sgrna_report_inputs = SGRNA_ANALYSIS.out.sgrna_qc_summary
-            .mix(SGRNA_ANALYSIS.out.grna_count_matrix)
-            .mix(SGRNA_ANALYSIS.out.grna_counts_final)
-            .mix(SGRNA_ANALYSIS.out.grna_cell_assignments)
         ch_sgrna_report_barrier = SGRNA_ANALYSIS.out.sgrna_qc_summary
     }
 
