@@ -30,5 +30,7 @@ dependencies:
   - biopython
   - numpy
   - scipy
+  # SHARE_seq_pipeline utils.py (sgRNA share_seq_step2_rename_fastq.py / match_gRNA.py)
+  - python-levenshtein
   - pip:
     - regex
