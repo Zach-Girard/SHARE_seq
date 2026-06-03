@@ -3,6 +3,10 @@ work/
 .nextflow.*
 *.log
 *.out
+*.pyc
+*.pyo
+__pycache__/
+.pycache/
 
 docs/
 

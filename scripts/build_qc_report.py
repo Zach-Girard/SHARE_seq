@@ -297,18 +297,31 @@ def rel_list(pattern):
 def discover_atac_paths():
     """Collect ATAC QC files from projectDir (published) even if not staged into BUILD_QC_HTML work."""
     patterns = {
-        "flagstat_rmdup": "ATAC/*/*.q30.rmdup.flagstat.txt",
-        "idxstats_rmdup": "ATAC/*/*.q30.rmdup.idxstats.txt",
-        "stats_rmdup": "ATAC/*/*.q30.rmdup.stats.txt",
-        "flagstat_prededup": "ATAC/*/*.q30.mapped.flagstat.txt",
-        "idxstats_prededup": "ATAC/*/*.q30.mapped.idxstats.txt",
-        "stats_prededup": "ATAC/*/*.q30.mapped.stats.txt",
-        "cbtag_qc": "ATAC/*/*.cbtag_qc.tsv",
-        "cell_summary": "ATAC/*/*.atac_cells.summary.tsv",
+        "flagstat_rmdup": ["ATAC/*/*.q30.rmdup.flagstat.txt"],
+        "idxstats_rmdup": ["ATAC/*/*.q30.rmdup.idxstats.txt"],
+        "stats_rmdup": ["ATAC/*/*.q30.rmdup.stats.txt"],
+        "flagstat_prededup": [
+            "ATAC/*/*.q30.mapped.flagstat.txt",
+            "ATAC/*/*.q30.possort.flagstat.txt",
+        ],
+        "idxstats_prededup": [
+            "ATAC/*/*.q30.mapped.idxstats.txt",
+            "ATAC/*/*.q30.possort.idxstats.txt",
+        ],
+        "stats_prededup": [
+            "ATAC/*/*.q30.mapped.stats.txt",
+            "ATAC/*/*.q30.possort.stats.txt",
+        ],
+        "cbtag_qc": ["ATAC/*/*.cbtag_qc.tsv"],
+        "cell_summary": ["ATAC/*/*.atac_cells.summary.tsv"],
     }
     out = {}
-    for key, pat in patterns.items():
-        out[key] = sorted(set(rel_list(pat) + rel_list_recursive(pat.replace("ATAC/*/", "ATAC/**/"))))
+    for key, pats in patterns.items():
+        found = []
+        for pat in pats:
+            found.extend(rel_list(pat))
+            found.extend(rel_list_recursive(pat.replace("ATAC/*/", "ATAC/**/")))
+        out[key] = sorted(set(found))
     return out
 
 def rel_list_recursive(pattern):
@@ -465,6 +478,64 @@ def table_files_block(title, paths, max_rows=12):
     for p in paths:
         chunks.append(f"<h4>{html.escape(p)}</h4>")
         chunks.append(read_table_preview(p, max_rows=max_rows))
+    return "".join(chunks)
+
+
+def top_grna_counts_table(paths, top_n=20):
+    """Render top-N guides from gRNA_counts_final.csv sorted by count desc."""
+    if not paths:
+        return "<h3>gRNA counts (aggregated)</h3><p><em>No files found.</em></p>"
+    chunks = [f"<h3>gRNA counts (aggregated; top {int(top_n)})</h3>"]
+    rendered_any = False
+    for p in sorted(paths):
+        abs_path = os.path.join(proj, p)
+        if not os.path.isfile(abs_path):
+            continue
+        rows = []
+        try:
+            with open(abs_path, newline="", errors="replace") as fh:
+                reader = csv.DictReader(fh)
+                if not reader.fieldnames:
+                    continue
+                seq_col = next(
+                    (
+                        c
+                        for c in reader.fieldnames
+                        if str(c).strip().lower() in ("sgrna_sequence", "grna", "guide", "sequence")
+                    ),
+                    reader.fieldnames[0],
+                )
+                count_col = next(
+                    (c for c in reader.fieldnames if "count" in str(c).strip().lower()),
+                    reader.fieldnames[1] if len(reader.fieldnames) > 1 else reader.fieldnames[0],
+                )
+                for row in reader:
+                    seq = str(row.get(seq_col, "")).strip()
+                    if not seq:
+                        continue
+                    try:
+                        count = int(float(row.get(count_col, "0") or 0))
+                    except Exception:
+                        count = 0
+                    rows.append((seq, count))
+        except Exception:
+            continue
+        rows.sort(key=lambda x: x[1], reverse=True)
+        rows = rows[: max(1, int(top_n))]
+        if not rows:
+            continue
+        rendered_any = True
+        chunks.append(f"<h4>{html.escape(p)}</h4>")
+        table_rows = [["Rank", "sgRNA_sequence", "count"]]
+        for idx, (seq, count) in enumerate(rows, start=1):
+            table_rows.append([str(idx), seq, str(count)])
+        cells = []
+        for ridx, row in enumerate(table_rows):
+            tag = "th" if ridx == 0 else "td"
+            cells.append("<tr>" + "".join(f"<{tag}>{html.escape(c)}</{tag}>" for c in row) + "</tr>")
+        chunks.append("<table>" + "".join(cells) + "</table>")
+    if not rendered_any:
+        return "<h3>gRNA counts (aggregated)</h3><p><em>No readable files found.</em></p>"
     return "".join(chunks)
 
 def image_files_block(title, paths):
@@ -1018,6 +1089,8 @@ def multiome_shared_cells_kpi_cards(overlap_tsv_path):
         n = _parse_number(row.get("rna_atac"))
         val = _fmt_int(n) if n is not None else "N/A"
         triple = _parse_number(row.get("triple"))
+        if triple is None and _parse_number(row.get("sgrna_with_grna")) is not None:
+            triple = 0.0
         triple_txt = _fmt_int(triple) if triple is not None else "N/A"
         cards.append(
             '<div class="kpi-card">'
@@ -1418,10 +1491,10 @@ def atac_sample_key(rel_path):
     if s:
         return s
     b = os.path.basename(rel_path)
-    m = re.match(r"(.+?)\.q30(?:\.(?:rmdup|mapped|possort))?\.(?:flagstat|idxstats|stats)\.txt\$", b)
+    m = re.match(r"(.+?)\.q30(?:\.(?:rmdup|mapped|possort))?\.(?:flagstat|idxstats|stats)\.txt$", b)
     if m:
         return m.group(1)
-    m2 = re.match(r"(.+?)\.atac_cells\.(?:summary|pre_dedup\.counts|counts)\.tsv\$", b)
+    m2 = re.match(r"(.+?)\.atac_cells\.(?:summary|pre_dedup\.counts|counts)\.tsv$", b)
     if m2:
         return m2.group(1)
     return os.path.basename(os.path.dirname(rel_path))
@@ -2205,7 +2278,7 @@ def sample_from_atac_path(rel_path):
     return None
 
 all_sample_candidates = set()
-for p in starsolo_logs + knee_plots + barcodes_stats + summary_csv + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup + atac_cbtag_qc:
+for p in starsolo_logs + knee_plots + barcodes_stats + summary_csv + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup + atac_cbtag_qc + atac_cell_summary:
     s = sample_from_starsolo_path(p)
     if s:
         all_sample_candidates.add(s)
@@ -2268,9 +2341,8 @@ def sample_sgrna_section_html(sample: str) -> str:
         for path in matrices:
             chunks.append(f"<li><code>{html.escape(path)}</code></li>")
         chunks.append("</ul>")
-        chunks.append(table_files_block("Count matrix preview", matrices, max_rows=12))
     if grna_counts:
-        chunks.append(table_files_block("gRNA counts (aggregated)", grna_counts, max_rows=20))
+        chunks.append(top_grna_counts_table(grna_counts, top_n=20))
     if assignments:
         chunks.append("<h3>Cells with assigned gRNA</h3><ul>")
         for path in assignments:
