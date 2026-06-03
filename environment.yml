@@ -27,6 +27,7 @@ dependencies:
   - bedtools
   - matplotlib
   - pandas
+  - biopython
   - numpy
   - scipy
   - pip:

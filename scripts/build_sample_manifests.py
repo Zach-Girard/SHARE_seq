@@ -15,7 +15,7 @@ Example:
   sgRNA_C1200  gcagagtc  sgRNA  C1200  C1200_gRNA_library.csv
   sgRNA_C6991  gagcagca  sgRNA  C6991  C6991_gRNA_library.csv
 
-Undetermined input is a single R1 FASTQ via params (default: sgRNA_Undetermined_S0_R1_001.fastq.gz in RAW_FASTQ/).
+Undetermined input is paired R1+R2 FASTQs via params (defaults: sgRNA_Undetermined_S0_R1_001.fastq.gz and R2 in RAW_FASTQ/).
 
 RNA/ATAC rows (columns 1–4 minimum):
 

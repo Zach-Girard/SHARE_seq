@@ -2,7 +2,9 @@
 """
 Build sgRNA_run.tsv for rename + gRNA counting after cutadapt demultiplexing.
 
-Maps each sample to sgRNA/demux/<sample_name>/<sample_name>.R1.fastq.gz.
+Maps each sample to:
+  sgRNA/demux/<sample_name>/<sample_name>.R1.fastq.gz  (fastq)
+  sgRNA/demux/<sample_name>/<sample_name>.R2.fastq.gz  (fastq_r2)
 """
 
 from __future__ import annotations
@@ -14,11 +16,12 @@ import sys
 from typing import List, Optional
 
 
-def _staged_demux_for_sample(sample: str, staged_paths: List[str]) -> Optional[str]:
-    suffix = f"/{sample}/{sample}.R1.fastq.gz"
+def _staged_demux_for_sample(
+    sample: str, staged_paths: List[str], suffix: str
+) -> Optional[str]:
     for path in staged_paths:
         path = os.path.abspath(path)
-        if path.endswith(suffix) or path.endswith(f"{sample}.R1.fastq.gz"):
+        if path.endswith(f"/{sample}/{sample}{suffix}") or path.endswith(f"{sample}{suffix}"):
             return path
     return None
 
@@ -31,7 +34,13 @@ def main() -> int:
         "--demux-r1",
         action="append",
         default=[],
-        help="Staged demux R1 paths from SGRNA_DEMULTIPLEX_CUTADAPT (for validation before publish)",
+        help="Staged demux R1 paths from SGRNA_DEMULTIPLEX_CUTADAPT",
+    )
+    p.add_argument(
+        "--demux-r2",
+        action="append",
+        default=[],
+        help="Staged demux R2 paths from SGRNA_DEMULTIPLEX_CUTADAPT",
     )
     p.add_argument("--out", default="sgRNA_run.tsv")
     args = p.parse_args()
@@ -42,7 +51,15 @@ def main() -> int:
 
     project_dir = os.path.abspath(args.project_dir)
     demux_dir = os.path.join(project_dir, "sgRNA", "demux")
-    staged = [os.path.abspath(p) for p in args.demux_r1 if p]
+    staged_r1 = [os.path.abspath(p) for p in args.demux_r1 if p]
+    staged_r2 = [os.path.abspath(p) for p in args.demux_r2 if p]
+    fieldnames = [
+        "fastq",
+        "fastq_r2",
+        "sample_name",
+        "grna_library_csv",
+        "experimental_group",
+    ]
     rows_out = []
     with open(args.sgrna_manifest, newline="", errors="replace") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
@@ -51,12 +68,21 @@ def main() -> int:
             if not sample:
                 continue
             demux_r1 = os.path.join(demux_dir, sample, f"{sample}.R1.fastq.gz")
-            if not os.path.isfile(demux_r1) and not _staged_demux_for_sample(sample, staged):
+            demux_r2 = os.path.join(demux_dir, sample, f"{sample}.R2.fastq.gz")
+            if not os.path.isfile(demux_r1) and not _staged_demux_for_sample(
+                sample, staged_r1, ".R1.fastq.gz"
+            ):
                 print(f"ERROR: demuxed R1 not found: {demux_r1}", file=sys.stderr)
+                return 1
+            if not os.path.isfile(demux_r2) and not _staged_demux_for_sample(
+                sample, staged_r2, ".R2.fastq.gz"
+            ):
+                print(f"ERROR: demuxed R2 not found: {demux_r2}", file=sys.stderr)
                 return 1
             rows_out.append(
                 {
                     "fastq": demux_r1,
+                    "fastq_r2": demux_r2,
                     "sample_name": sample,
                     "grna_library_csv": row.get("grna_library_csv", ""),
                     "experimental_group": row.get("experimental_group", ""),
@@ -68,11 +94,7 @@ def main() -> int:
         return 0
 
     with open(args.out, "w", newline="") as out:
-        w = csv.DictWriter(
-            out,
-            fieldnames=["fastq", "sample_name", "grna_library_csv", "experimental_group"],
-            delimiter="\t",
-        )
+        w = csv.DictWriter(out, fieldnames=fieldnames, delimiter="\t")
         w.writeheader()
         w.writerows(rows_out)
 
