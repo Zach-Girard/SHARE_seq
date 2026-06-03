@@ -230,8 +230,32 @@ def ensure_multiome_overlap_files():
         except Exception:
             pass
 
+def _overlap_table_needs_regen() -> bool:
+    """Re-run overlap when the table is stale or sgRNA outputs are newer than the last overlap run."""
+    master = os.path.join(proj, "multiome_overlap", "overlap_by_group.tsv")
+    if not os.path.isfile(master):
+        return True
+    try:
+        with open(master, newline="", errors="replace") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            fields = reader.fieldnames or []
+            if "RNA_ATAC_sgRNA_Shared" not in fields:
+                return True
+    except Exception:
+        return True
+    sgrna_mats = glob.glob(os.path.join(proj, "sgRNA", "*", "final_*.gRNA.count.csv"))
+    if not sgrna_mats:
+        return False
+    try:
+        overlap_mtime = os.path.getmtime(master)
+        newest_sgrna = max(os.path.getmtime(p) for p in sgrna_mats)
+        return newest_sgrna > overlap_mtime
+    except OSError:
+        return True
+
+
 def ensure_multiome_overlap_results():
-    """Always regenerate overlap from pre-dedup ATAC ArchR counts on disk."""
+    """Regenerate overlap from projectDir RNA/ATAC/sgRNA artifacts (after hydrate/sgrna copy)."""
     out_dir = os.path.join(proj, "multiome_overlap")
     script = os.path.join(proj, "scripts", "cell_overlap_by_group.py")
     barcode_path = resolve_sample_barcode_path()
@@ -239,6 +263,8 @@ def ensure_multiome_overlap_results():
         return
     pre_files = glob.glob(os.path.join(proj, "ATAC", "*", "*.atac_cells.pre_dedup.counts.tsv"))
     if not pre_files:
+        return
+    if not _overlap_table_needs_regen():
         return
     os.makedirs(out_dir, exist_ok=True)
     subprocess.run(
@@ -266,6 +292,24 @@ def rel_list(pattern):
         for p in glob.glob(os.path.join(proj, pattern))
         if os.path.isfile(p)
     ])
+
+
+def discover_atac_paths() -> dict[str, List[str]]:
+    """Collect ATAC QC files from projectDir (published) even if not staged into BUILD_QC_HTML work."""
+    patterns = {
+        "flagstat_rmdup": "ATAC/*/*.q30.rmdup.flagstat.txt",
+        "idxstats_rmdup": "ATAC/*/*.q30.rmdup.idxstats.txt",
+        "stats_rmdup": "ATAC/*/*.q30.rmdup.stats.txt",
+        "flagstat_prededup": "ATAC/*/*.q30.mapped.flagstat.txt",
+        "idxstats_prededup": "ATAC/*/*.q30.mapped.idxstats.txt",
+        "stats_prededup": "ATAC/*/*.q30.mapped.stats.txt",
+        "cbtag_qc": "ATAC/*/*.cbtag_qc.tsv",
+        "cell_summary": "ATAC/*/*.atac_cells.summary.tsv",
+    }
+    out: dict[str, List[str]] = {}
+    for key, pat in patterns.items():
+        out[key] = sorted(set(rel_list(pat) + rel_list_recursive(pat.replace("ATAC/*/", "ATAC/**/"))))
+    return out
 
 def rel_list_recursive(pattern):
     return sorted([
@@ -911,6 +955,9 @@ def sgrna_qc_section(
         "<p>sgRNA QC summarizes cell-by-gRNA count matrices, detected guides, "
         "and top guide counts. Cell counts use barcodes with at least one assigned gRNA.</p>"
     ]
+    chunks.append("<h3>Cells with gRNA by experimental group</h3>")
+    chunks.append(sgrna_group_cell_cards(summary_path, count_matrices, sample_to_group))
+    chunks.append("<h3>Per-sample metrics</h3>")
     chunks.append(sgrna_summary_table_html(summary_path, rows))
 
     if count_matrices:
@@ -945,10 +992,13 @@ def load_overlap_shared_cells(overlap_tsv_path):
                 rows.append(
                     {
                         "group": group,
-                        "rna_atac": row.get("Shared_Cells", ""),
+                        "rna_atac": row.get("Shared_Cells", "")
+                        or row.get("RNA_ATAC_Shared", ""),
                         "sgrna_with_grna": row.get("sgRNA_Cells_with_gRNA")
                         or row.get("sgRNA_Cells", ""),
-                        "triple": row.get("RNA_ATAC_sgRNA_Shared", ""),
+                        "triple": row.get("RNA_ATAC_sgRNA_Shared")
+                        or row.get("RNA_ATAC_sgRNA_shared")
+                        or "",
                     }
                 )
     except Exception:
@@ -1371,7 +1421,7 @@ def atac_sample_key(rel_path):
     m = re.match(r"(.+?)\.q30(?:\.(?:rmdup|mapped|possort))?\.(?:flagstat|idxstats|stats)\.txt\$", b)
     if m:
         return m.group(1)
-    m2 = re.match(r"(.+?)\.atac_cells\.(?:summary|counts)\.tsv\$", b)
+    m2 = re.match(r"(.+?)\.atac_cells\.(?:summary|pre_dedup\.counts|counts)\.tsv\$", b)
     if m2:
         return m2.group(1)
     return os.path.basename(os.path.dirname(rel_path))
@@ -1735,17 +1785,15 @@ barnyard = sorted(set(
     p for root in active_starsolo_roots
     for p in rel_list(f"{root}/*/*collision_plot.png")
 ))
-atac_flagstat_rmdup = rel_list("ATAC/*/*.q30.rmdup.flagstat.txt")
-atac_idxstats_rmdup = rel_list("ATAC/*/*.q30.rmdup.idxstats.txt")
-atac_stats_rmdup = rel_list("ATAC/*/*.q30.rmdup.stats.txt")
-atac_flagstat_prededup = rel_list("ATAC/*/*.q30.mapped.flagstat.txt")
-atac_idxstats_prededup = rel_list("ATAC/*/*.q30.mapped.idxstats.txt")
-atac_stats_prededup = rel_list("ATAC/*/*.q30.mapped.stats.txt")
-atac_cbtag_qc = rel_list("ATAC/*/*.cbtag_qc.tsv")
-atac_cell_summary = sorted(set(
-    rel_list("ATAC/*/*.atac_cells.summary.tsv") +
-    rel_list_recursive("ATAC/**/*.atac_cells.summary.tsv")
-))
+_atac_discovered = discover_atac_paths()
+atac_flagstat_rmdup = sorted(set(_atac_discovered["flagstat_rmdup"]))
+atac_idxstats_rmdup = sorted(set(_atac_discovered["idxstats_rmdup"]))
+atac_stats_rmdup = sorted(set(_atac_discovered["stats_rmdup"]))
+atac_flagstat_prededup = sorted(set(_atac_discovered["flagstat_prededup"]))
+atac_idxstats_prededup = sorted(set(_atac_discovered["idxstats_prededup"]))
+atac_stats_prededup = sorted(set(_atac_discovered["stats_prededup"]))
+atac_cbtag_qc = sorted(set(_atac_discovered["cbtag_qc"]))
+atac_cell_summary = sorted(set(_atac_discovered["cell_summary"]))
 atac_multiqc_report = sorted(set(
     rel_list("multiqc_atac/ATAC_MultiQC.html") +
     rel_list("ATAC_MultiQC.html")
@@ -2165,6 +2213,71 @@ for p in starsolo_logs + knee_plots + barcodes_stats + summary_csv + barnyard + 
     if a:
         all_sample_candidates.add(a)
 all_sample_candidates.update(load_demux_sample_names(demux_stats))
+for matrix in sgrna_count_matrices:
+    bits = matrix.split("/")
+    if len(bits) >= 2 and bits[0] == "sgRNA":
+        all_sample_candidates.add(bits[1])
+for row in load_sgrna_summary(sgrna_qc_summary, sgrna_count_matrices, sample_to_group):
+    name = (row.get("sample_name") or "").strip()
+    if name:
+        all_sample_candidates.add(name)
+
+
+def sample_sgrna_matrix_paths(sample: str):
+    prefix = os.path.join("sgRNA", sample)
+    matrices = sorted(
+        p
+        for p in sgrna_count_matrices
+        if p.startswith(prefix + "/") or sample_name_matches(sample, p)
+    )
+    assignments = sorted(
+        p
+        for p in sgrna_cell_assignments
+        if p.startswith(prefix + "/") or sample_name_matches(sample, p)
+    )
+    grna_counts = sorted(
+        p
+        for p in sgrna_grna_counts
+        if p.startswith(prefix + "/") or sample_name_matches(sample, p)
+    )
+    return matrices, assignments, grna_counts
+
+
+def sample_sgrna_summary_row(sample: str) -> dict:
+    for row in load_sgrna_summary(sgrna_qc_summary, sgrna_count_matrices, sample_to_group):
+        if (row.get("sample_name") or "").strip() == sample:
+            return row
+    return {}
+
+
+def sample_sgrna_section_html(sample: str) -> str:
+    row = sample_sgrna_summary_row(sample)
+    matrices, assignments, grna_counts = sample_sgrna_matrix_paths(sample)
+    if not row and not matrices:
+        return "<p><em>No sgRNA outputs found for this sample.</em></p>"
+    chunks = []
+    if row:
+        chunks.append("<h3>QC summary</h3><table>")
+        for key, val in _filter_sgrna_qc_table_rows([row])[0].items():
+            chunks.append(
+                f"<tr><th>{html.escape(key)}</th><td>{html.escape(str(val))}</td></tr>"
+            )
+        chunks.append("</table>")
+    if matrices:
+        chunks.append("<h3>Cell x gRNA count matrix</h3><ul>")
+        for path in matrices:
+            chunks.append(f"<li><code>{html.escape(path)}</code></li>")
+        chunks.append("</ul>")
+        chunks.append(table_files_block("Count matrix preview", matrices, max_rows=12))
+    if grna_counts:
+        chunks.append(table_files_block("gRNA counts (aggregated)", grna_counts, max_rows=20))
+    if assignments:
+        chunks.append("<h3>Cells with assigned gRNA</h3><ul>")
+        for path in assignments:
+            chunks.append(f"<li><code>{html.escape(path)}</code></li>")
+        chunks.append("</ul>")
+    return "".join(chunks)
+
 
 for sample in sorted(all_sample_candidates):
     sample_root = os.path.join(per_sample_dir, sample)
@@ -2187,13 +2300,25 @@ for sample in sorted(all_sample_candidates):
     sample_atac_cbtag_qc = [p for p in atac_cbtag_qc if sample_matches_atac_path(sample, p)]
     sample_atac_cells = [p for p in atac_cell_summary if sample_matches_atac_path(sample, p)]
     sample_atac_multiqc_tables = atac_multiqc_tables
-    has_atac = bool(sample_atac_flagstat_rmdup or sample_atac_idxstats_rmdup or sample_atac_stats_rmdup or sample_atac_flagstat_prededup or sample_atac_idxstats_prededup or sample_atac_stats_prededup or sample_atac_cbtag_qc)
+    has_atac = bool(
+        sample_atac_flagstat_rmdup
+        or sample_atac_idxstats_rmdup
+        or sample_atac_stats_rmdup
+        or sample_atac_flagstat_prededup
+        or sample_atac_idxstats_prededup
+        or sample_atac_stats_prededup
+        or sample_atac_cbtag_qc
+        or sample_atac_cells
+    )
     has_rna = bool(sample_logs or sample_knee or sample_barcodes or sample_summary or sample_barnyard)
+    has_sgrna = bool(sample_sgrna_summary_row(sample) or sample_sgrna_matrix_paths(sample)[0])
     sample_tabs = [("sec-demux", "Demultiplexing")]
     if has_atac:
         sample_tabs.append(("sec-atac", "ATAC QC"))
     if has_rna:
         sample_tabs.append(("sec-rna", "RNA QC"))
+    if has_sgrna:
+        sample_tabs.append(("sec-sgrna", "sgRNA QC"))
 
     def sample_image_block(title, paths):
         if not paths:
@@ -2464,6 +2589,11 @@ for sample in sorted(all_sample_candidates):
         sample_parts.append(text_files_block("Barcodes.stats", sample_barcodes, max_lines=120))
         sample_parts.append(table_files_block("GeneFull Summary.csv", sample_summary, max_rows=20))
         sample_parts.append(sample_image_block("Barnyard plots (if hybrid)", sample_barnyard))
+        sample_parts.append("</section>")
+    if has_sgrna:
+        sample_parts.append('<section id="sec-sgrna">')
+        sample_parts.append("<h2>sgRNA QC</h2>")
+        sample_parts.append(sample_sgrna_section_html(sample))
         sample_parts.append("</section>")
     sample_parts.append("</body></html>")
 

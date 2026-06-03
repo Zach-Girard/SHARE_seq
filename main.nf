@@ -1530,11 +1530,12 @@ workflow {
             SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r2.collect()
         )
 
-        // Only sgrna_qc_summary goes to BUILD_QC_HTML: other SGRNA_ANALYSIS outputs share
-        // basenames across paths (e.g. *.matched.R1.fastq.gz in sample/ and demux/) or with
-        // sgRNA_run.tsv copies. Per-sample artifacts are published under sgRNA/ and read from
-        // projectDir by build_qc_report.py.
+        // sgrna_qc_summary + count outputs for BUILD_QC_HTML (matched FASTQs omitted: basename collisions).
+        // Full sgRNA tree is also published under projectDir/sgRNA/ for build_qc_report.py.
         ch_sgrna_report_inputs = SGRNA_ANALYSIS.out.sgrna_qc_summary
+            .mix(SGRNA_ANALYSIS.out.grna_count_matrix)
+            .mix(SGRNA_ANALYSIS.out.grna_counts_final)
+            .mix(SGRNA_ANALYSIS.out.grna_cell_assignments)
         ch_sgrna_report_barrier = SGRNA_ANALYSIS.out.sgrna_qc_summary
     }
 
@@ -1991,5 +1992,32 @@ workflow {
     BUILD_QC_HTML(ch_build_qc_report)
 
     } // end RNA/ATAC workflow (nRNA + nATAC > 0)
+
+    // sgRNA-only projects: still build HTML QC from published sgRNA/ outputs.
+    if (nRNA + nATAC == 0 && nSGRNA > 0) {
+        def ch_sgrna_report_done = ch_sgrna_report_barrier.collect().map { 1 }
+        def ch_sgrna_report_files = ch_sgrna_report_inputs
+            .flatMap { x ->
+                if (x == null) {
+                    return []
+                }
+                if (x instanceof java.nio.file.Path || x instanceof File) {
+                    return [x]
+                }
+                if (x instanceof List || x.getClass().isArray()) {
+                    return x.findAll { it instanceof java.nio.file.Path || it instanceof File }
+                }
+                return []
+            }
+            .collect()
+            .map { files -> tuple(1, files.unique { it.toString() }) }
+        ch_sgrna_report_done
+            .join(ch_sgrna_report_files)
+            .map { k, done, report_items ->
+                tuple(1, report_items, file("${projectDir}/scripts/build_qc_report.py"), barcodeFile)
+            }
+            .set { ch_build_qc_sgrna_only }
+        BUILD_QC_HTML(ch_build_qc_sgrna_only)
+    }
 }
 
