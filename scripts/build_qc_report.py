@@ -294,7 +294,7 @@ def rel_list(pattern):
     ])
 
 
-def discover_atac_paths() -> dict[str, List[str]]:
+def discover_atac_paths():
     """Collect ATAC QC files from projectDir (published) even if not staged into BUILD_QC_HTML work."""
     patterns = {
         "flagstat_rmdup": "ATAC/*/*.q30.rmdup.flagstat.txt",
@@ -306,7 +306,7 @@ def discover_atac_paths() -> dict[str, List[str]]:
         "cbtag_qc": "ATAC/*/*.cbtag_qc.tsv",
         "cell_summary": "ATAC/*/*.atac_cells.summary.tsv",
     }
-    out: dict[str, List[str]] = {}
+    out = {}
     for key, pat in patterns.items():
         out[key] = sorted(set(rel_list(pat) + rel_list_recursive(pat.replace("ATAC/*/", "ATAC/**/"))))
     return out
