@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import gzip
 import os
 import shutil
@@ -197,6 +198,59 @@ def infer_matched_fastq(
     return os.path.abspath(candidates[0])
 
 
+RENAME_OUTPUT_SUFFIXES = (
+    ".matched.R1.fastq.gz",
+    ".matched.R2.fastq.gz",
+    ".junk.R1.fastq.gz",
+    ".junk.R2.fastq.gz",
+    ".total_number_reads.tsv",
+)
+
+
+def _rename_output_files(work_dir: str, sample_id: str) -> List[str]:
+    """Paths produced by SHARE-seq rename in work_dir (demux/<sample>/)."""
+    found: List[str] = []
+    seen: set[str] = set()
+    for suffix in RENAME_OUTPUT_SUFFIXES:
+        path = os.path.join(work_dir, f"{sample_id}{suffix}")
+        if os.path.isfile(path):
+            abspath = os.path.abspath(path)
+            if abspath not in seen:
+                seen.add(abspath)
+                found.append(abspath)
+    for pattern in (
+        "*.matched.R1.fastq.gz",
+        "*.matched.R2.fastq.gz",
+        "*.junk.R1.fastq.gz",
+        "*.junk.R2.fastq.gz",
+        "*.total_number_reads.tsv",
+    ):
+        for path in glob.glob(os.path.join(work_dir, pattern)):
+            abspath = os.path.abspath(path)
+            if abspath not in seen:
+                seen.add(abspath)
+                found.append(abspath)
+    return found
+
+
+def _find_matched_r1(work_dir: str, sample_out: str, sample_id: str) -> str:
+    candidates: List[str] = [
+        os.path.join(sample_out, f"{sample_id}.matched.R1.fastq.gz"),
+        os.path.join(work_dir, f"{sample_id}.matched.R1.fastq.gz"),
+    ]
+    for directory in (sample_out, work_dir):
+        candidates.extend(glob.glob(os.path.join(directory, "*.matched.R1.fastq.gz")))
+    seen: set[str] = set()
+    for path in candidates:
+        path = os.path.abspath(path)
+        if path in seen:
+            continue
+        seen.add(path)
+        if os.path.isfile(path) and count_reads_gz(path) > 0:
+            return path
+    return os.path.abspath(candidates[0]) if candidates else ""
+
+
 def rename_sample(
     sample_id: str,
     input_r1: str,
@@ -232,25 +286,18 @@ def rename_sample(
     print(f"Step 1 rename_fastq [{sample_id}]: {' '.join(cmd)}", flush=True)
     subprocess.run(cmd, check=True, cwd=work_dir, env=env)
 
-    matched_r1 = os.path.join(sample_out, f"{sample_id}.matched.R1.fastq.gz")
+    for src in _rename_output_files(work_dir, sample_id):
+        dest = os.path.join(sample_out, os.path.basename(src))
+        if os.path.abspath(src) != os.path.abspath(dest):
+            shutil.copy2(src, dest)
+
+    matched_r1 = _find_matched_r1(work_dir, sample_out, sample_id)
     if count_reads_gz(matched_r1) == 0:
+        listing = ", ".join(sorted(os.listdir(work_dir))) if os.path.isdir(work_dir) else "?"
         raise RuntimeError(
             f"rename_fastq wrote no matched reads for {sample_id} "
-            f"(check SHARE-seq barcode headers in {input_r1} / {input_r2})"
+            f"(work_dir={work_dir}: {listing}; check barcode headers in {input_r1} / {input_r2})"
         )
-
-    for suffix in (
-        ".matched.R1.fastq.gz",
-        ".matched.R2.fastq.gz",
-        ".junk.R1.fastq.gz",
-        ".junk.R2.fastq.gz",
-        ".total_number_reads.tsv",
-    ):
-        src = os.path.join(work_dir, f"{sample_id}{suffix}")
-        if os.path.isfile(src):
-            dest = os.path.join(sample_out, os.path.basename(src))
-            if os.path.abspath(src) != os.path.abspath(dest):
-                shutil.copy2(src, dest)
 
 
 def run_match_grna(
