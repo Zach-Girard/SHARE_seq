@@ -3,6 +3,7 @@
 sgRNA analysis: stage demux FASTQs, SHARE-seq rename_fastq, match_gRNA, QC summary.
 
 Input: sgRNA_run.tsv from BUILD_SGRNA_RUN_MANIFEST (fastq, fastq_r2, sample_name, ...).
+For sgRNA, fastq_r2 is intentionally allowed to equal fastq (R1-only mode).
 """
 
 from __future__ import annotations
@@ -93,7 +94,7 @@ def stage_demux_manifest(
     staged_r1: Optional[List[str]] = None,
     staged_r2: Optional[List[str]] = None,
 ) -> str:
-    """Copy demux R1/R2 into work dir and return path to rewritten manifest."""
+    """Copy demux R1 into work dir and return path to rewritten manifest."""
     out_dir = os.path.abspath(out_dir)
     demux_root = os.path.join(out_dir, "demux")
     rows_out: List[dict[str, str]] = []
@@ -105,27 +106,27 @@ def stage_demux_manifest(
         for row in reader:
             sample = (row.get("sample_name") or "").strip()
             src_r1 = (row.get("fastq") or "").strip()
-            src_r2 = (row.get("fastq_r2") or "").strip()
-            if not sample or not src_r1 or not src_r2:
+            src_r2 = (row.get("fastq_r2") or "").strip() or src_r1
+            if not sample or not src_r1:
                 raise ValueError(
-                    f"sample {sample or '?'} missing sample_name, fastq, or fastq_r2"
+                    f"sample {sample or '?'} missing sample_name or fastq"
                 )
             src_r1 = _resolve_src_fastq(sample, "R1", src_r1, extra_r1, out_dir)
-            src_r2 = _resolve_src_fastq(sample, "R2", src_r2, extra_r2, out_dir)
+            if src_r2 != src_r1:
+                src_r2 = _resolve_src_fastq(sample, "R2", src_r2, extra_r2, out_dir)
+            else:
+                src_r2 = src_r1
 
             dest_dir = os.path.join(demux_root, sample)
             os.makedirs(dest_dir, exist_ok=True)
             dest_r1 = os.path.join(dest_dir, f"{sample}.R1.fastq.gz")
-            dest_r2 = os.path.join(dest_dir, f"{sample}.R2.fastq.gz")
             if os.path.abspath(src_r1) != os.path.abspath(dest_r1):
                 shutil.copy2(src_r1, dest_r1)
-            if os.path.abspath(src_r2) != os.path.abspath(dest_r2):
-                shutil.copy2(src_r2, dest_r2)
 
             rows_out.append(
                 {
                     "fastq": dest_r1,
-                    "fastq_r2": dest_r2,
+                    "fastq_r2": dest_r1,
                     "sample_name": sample,
                     "grna_library_csv": row.get("grna_library_csv", ""),
                     "experimental_group": row.get("experimental_group", ""),
@@ -200,9 +201,7 @@ def infer_matched_fastq(
 
 RENAME_OUTPUT_SUFFIXES = (
     ".matched.R1.fastq.gz",
-    ".matched.R2.fastq.gz",
     ".junk.R1.fastq.gz",
-    ".junk.R2.fastq.gz",
     ".total_number_reads.tsv",
 )
 
@@ -220,9 +219,7 @@ def _rename_output_files(work_dir: str, sample_id: str) -> List[str]:
                 found.append(abspath)
     for pattern in (
         "*.matched.R1.fastq.gz",
-        "*.matched.R2.fastq.gz",
         "*.junk.R1.fastq.gz",
-        "*.junk.R2.fastq.gz",
         "*.total_number_reads.tsv",
     ):
         for path in glob.glob(os.path.join(work_dir, pattern)):
@@ -269,13 +266,14 @@ def rename_sample(
     work_dir = os.path.dirname(input_r1) or os.getcwd()
     env = _pipeline_env(share_seq_pipeline_dir)
 
+    # R1-only sgRNA mode: pass demuxed R1 as both -r1 and -r2.
     cmd = [
         sys.executable,
         os.path.abspath(rename_script),
         "-r1",
         os.path.abspath(input_r1),
         "-r2",
-        os.path.abspath(input_r2),
+        os.path.abspath(input_r1),
         "--sample_ID",
         sample_id,
         "--barcode_list",
@@ -285,6 +283,19 @@ def rename_sample(
     ]
     print(f"Step 1 rename_fastq [{sample_id}]: {' '.join(cmd)}", flush=True)
     subprocess.run(cmd, check=True, cwd=work_dir, env=env)
+
+    # Ignore/delete R2 outputs from rename in sgRNA mode.
+    for r2_name in (
+        f"{sample_id}.matched.R2.fastq.gz",
+        f"{sample_id}.junk.R2.fastq.gz",
+    ):
+        for d in (work_dir, sample_out):
+            p = os.path.join(d, r2_name)
+            if os.path.isfile(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
     for src in _rename_output_files(work_dir, sample_id):
         dest = os.path.join(sample_out, os.path.basename(src))
@@ -296,7 +307,7 @@ def rename_sample(
         listing = ", ".join(sorted(os.listdir(work_dir))) if os.path.isdir(work_dir) else "?"
         raise RuntimeError(
             f"rename_fastq wrote no matched reads for {sample_id} "
-            f"(work_dir={work_dir}: {listing}; check barcode headers in {input_r1} / {input_r2})"
+            f"(work_dir={work_dir}: {listing}; check barcode headers in {input_r1})"
         )
 
 
@@ -442,7 +453,12 @@ def process_sample(
     sample = (row.get("sample_name") or "").strip()
     grna_library = (row.get("grna_library_csv") or "").strip()
     input_r1 = resolve_demux_fastq((row.get("fastq") or "").strip(), sample, "fastq (R1)")
-    input_r2 = resolve_demux_fastq((row.get("fastq_r2") or "").strip(), sample, "fastq_r2 (R2)")
+    raw_r2 = (row.get("fastq_r2") or "").strip()
+    input_r2 = (
+        resolve_demux_fastq(raw_r2, sample, "fastq_r2 (R2)")
+        if raw_r2 and raw_r2 != (row.get("fastq") or "").strip()
+        else input_r1
+    )
 
     if not grna_library:
         raise ValueError(f"sample {sample} missing grna_library_csv")

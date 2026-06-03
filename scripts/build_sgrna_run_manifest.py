@@ -4,7 +4,7 @@ Build sgRNA_run.tsv for rename + gRNA counting after cutadapt demultiplexing.
 
 Maps each sample to:
   sgRNA/demux/<sample_name>/<sample_name>.R1.fastq.gz  (fastq)
-  sgRNA/demux/<sample_name>/<sample_name>.R2.fastq.gz  (fastq_r2)
+  sgRNA/demux/<sample_name>/<sample_name>.R1.fastq.gz  (fastq_r2; intentionally same as R1)
 """
 
 from __future__ import annotations
@@ -51,12 +51,6 @@ def main() -> int:
         default=[],
         help="Staged demux R1 paths from SGRNA_DEMULTIPLEX_CUTADAPT",
     )
-    p.add_argument(
-        "--demux-r2",
-        action="append",
-        default=[],
-        help="Staged demux R2 paths from SGRNA_DEMULTIPLEX_CUTADAPT",
-    )
     p.add_argument("--out", default="sgRNA_run.tsv")
     args = p.parse_args()
 
@@ -67,7 +61,6 @@ def main() -> int:
     project_dir = os.path.abspath(args.project_dir)
     demux_dir = os.path.join(project_dir, "sgRNA", "demux")
     staged_r1 = [os.path.abspath(p) for p in args.demux_r1 if p]
-    staged_r2 = [os.path.abspath(p) for p in args.demux_r2 if p]
     fieldnames = [
         "fastq",
         "fastq_r2",
@@ -83,19 +76,14 @@ def main() -> int:
             if not sample:
                 continue
             project_r1 = os.path.join(demux_dir, sample, f"{sample}.R1.fastq.gz")
-            project_r2 = os.path.join(demux_dir, sample, f"{sample}.R2.fastq.gz")
             demux_r1 = _resolve_demux_path(sample, ".R1.fastq.gz", project_r1, staged_r1)
-            demux_r2 = _resolve_demux_path(sample, ".R2.fastq.gz", project_r2, staged_r2)
             if not os.path.isfile(demux_r1):
                 print(f"ERROR: demuxed R1 not found: {demux_r1}", file=sys.stderr)
-                return 1
-            if not os.path.isfile(demux_r2):
-                print(f"ERROR: demuxed R2 not found: {demux_r2}", file=sys.stderr)
                 return 1
             rows_out.append(
                 {
                     "fastq": demux_r1,
-                    "fastq_r2": demux_r2,
+                    "fastq_r2": demux_r1,
                     "sample_name": sample,
                     "grna_library_csv": row.get("grna_library_csv", ""),
                     "experimental_group": row.get("experimental_group", ""),

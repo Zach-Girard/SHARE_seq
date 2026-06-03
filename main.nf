@@ -21,7 +21,7 @@ nextflow.enable.dsl=2
  * Requires:
  *   - RAW_FASTQ/ directory with undetermined R1/R2 fastq.gz and sample barcode file
  *   - sample_barcode_file column 1 = sample name, column 3 = sample type (RNA/ATAC/sgRNA), optional column 4 = Experimental_Group
- *   - sgRNA rows: sample index + gRNA library CSV; demuxed from shared sgRNA Undetermined R1/R2 then analyzed
+ *   - sgRNA rows: sample index + gRNA library CSV; demuxed from shared sgRNA Undetermined R1 (R1-only) then analyzed
  *   - Reference FASTA/GTF and BWA/STAR indexes configured in nextflow.config
  *   - Python dependencies from environment.yml (no local utils.py required)
  */
@@ -47,8 +47,6 @@ params.raw_fastq           = params.raw_fastq           ?: 'RAW_FASTQ'
 params.undetermined_r1     = params.undetermined_r1     ?: null   // R1 fastq.gz filename (inside raw_fastq/)
 params.undetermined_r2     = params.undetermined_r2     ?: null   // R2 fastq.gz filename (inside raw_fastq/)
 params.sgrna_undetermined_r1 = params.sgrna_undetermined_r1 ?: 'sgRNA_Undetermined_S0_R1_001.fastq.gz'
-params.sgrna_undetermined_r2 = params.sgrna_undetermined_r2 ?: 'sgRNA_Undetermined_S0_R2_001.fastq.gz'
-params.sgrna_cutadapt_error_rate = params.sgrna_cutadapt_error_rate ?: 0.15
 params.sample_barcode_file = params.sample_barcode_file ?: null   // sample index barcode mapping (inside raw_fastq/)
 params.demux_mismatches    = params.demux_mismatches    ?: 1      // allowed mismatches for sample index matching
 params.split_reads         = params.split_reads         ?: 4000000
@@ -173,7 +171,7 @@ def rawDir = params.raw_fastq
 log.info "RAW_FASTQ directory           : ${rawDir}"
 log.info "Undetermined FASTQs           : explicit --undetermined_r1/--undetermined_r2 or auto-detect *Undetermined*R1*.fastq.gz in ${rawDir}"
 log.info "sgRNA Undetermined FASTQ (R1)  : explicit --sgrna_undetermined_r1 or auto-detect *gRNA*Undetermined*R1*.fastq.gz in ${rawDir}"
-log.info "sgRNA Undetermined FASTQ (R2)  : explicit --sgrna_undetermined_r2 or auto-detect *gRNA*Undetermined*R2*.fastq.gz in ${rawDir}"
+log.info "sgRNA Undetermined FASTQ (R2)  : not required (sgRNA demux is R1-only)"
 def sampleBarcodePath = params.sample_barcode_file ? "${rawDir}/${params.sample_barcode_file}" : 'not set'
 log.info "Sample barcode file           : ${sampleBarcodePath}"
 log.info "Split reads per chunk         : ${params.split_reads}"
@@ -242,7 +240,7 @@ process BUILD_SAMPLE_MANIFESTS {
     """
 }
 
-// sgRNA demultiplex: cutadapt on shared Undetermined R1 + R2 with sgrna_barcode.fa.
+// sgRNA demultiplex: cutadapt on shared Undetermined R1 with sgrna_barcode.fa.
 process SGRNA_DEMULTIPLEX_CUTADAPT {
     tag "sgrna_cutadapt_demux"
 
@@ -250,13 +248,11 @@ process SGRNA_DEMULTIPLEX_CUTADAPT {
 
     input:
     path(r1_undetermined)
-    path(r2_undetermined)
     path(sgrna_demux_barcodes)
     path(sgrna_barcode_fa)
 
     output:
     path "sgRNA/demux/**/*.R1.fastq.gz", emit: demux_r1, optional: true
-    path "sgRNA/demux/**/*.R2.fastq.gz", emit: demux_r2, optional: true
     path "sgRNA/demux/untrimmed_*.fastq.gz", emit: untrimmed, optional: true
     path ".sgrna_demux_complete", emit: demux_done
 
@@ -266,9 +262,7 @@ process SGRNA_DEMULTIPLEX_CUTADAPT {
       --barcode-table "${sgrna_demux_barcodes}" \\
       --barcode-fa "${sgrna_barcode_fa}" \\
       --input "${r1_undetermined}" \\
-      --input-r2 "${r2_undetermined}" \\
       --out-dir "sgRNA/demux" \\
-      --error-rate "${params.sgrna_cutadapt_error_rate}" \\
       --jobs "${params.sgrna_cutadapt_jobs}"
     touch .sgrna_demux_complete
     """
@@ -282,7 +276,6 @@ process BUILD_SGRNA_RUN_MANIFEST {
     input:
     path(sgrna_manifest)
     val(demux_r1_files)
-    val(demux_r2_files)
 
     output:
     path "sgRNA_run.tsv", emit: sgrna_run_manifest
@@ -293,18 +286,12 @@ process BUILD_SGRNA_RUN_MANIFEST {
         def demuxFiles = demux_r1_files instanceof List ? demux_r1_files : [demux_r1_files]
         demuxR1Args = demuxFiles.collect { f -> "--demux-r1 \"${f}\"" }.join(' ')
     }
-    def demuxR2Args = ''
-    if (demux_r2_files) {
-        def demuxFiles = demux_r2_files instanceof List ? demux_r2_files : [demux_r2_files]
-        demuxR2Args = demuxFiles.collect { f -> "--demux-r2 \"${f}\"" }.join(' ')
-    }
     """
     set -euo pipefail
     python3 "${projectDir}/scripts/build_sgrna_run_manifest.py" \\
       --sgrna-manifest "${sgrna_manifest}" \\
       --project-dir "${projectDir}" \\
       ${demuxR1Args} \\
-      ${demuxR2Args} \\
       --out "sgRNA_run.tsv"
     """
 }
@@ -317,7 +304,6 @@ process SGRNA_ANALYSIS {
     input:
     path(sgrna_manifest)
     path(demux_r1_files)
-    path(demux_r2_files)
 
     output:
     path "sgRNA_run.tsv", emit: sgrna_run_copy, optional: true
@@ -335,11 +321,6 @@ process SGRNA_ANALYSIS {
         def files = demux_r1_files instanceof List ? demux_r1_files : [demux_r1_files]
         demuxR1Args = files.collect { f -> "--demux-r1 \"${f}\"" }.join(' \\\n      ')
     }
-    def demuxR2Args = ''
-    if (demux_r2_files) {
-        def files = demux_r2_files instanceof List ? demux_r2_files : [demux_r2_files]
-        demuxR2Args = files.collect { f -> "--demux-r2 \"${f}\"" }.join(' \\\n      ')
-    }
     """
     set -euo pipefail
     if [ ! -s "${sgrna_manifest}" ] || [ "\$(wc -l < "${sgrna_manifest}")" -le 1 ]; then
@@ -355,8 +336,7 @@ process SGRNA_ANALYSIS {
       --match-grna-script "${params.match_grna_script}" \\
       --share-seq-pipeline-dir "${params.share_seq_pipeline_dir}" \\
       --match-grna-start ${params.match_grna_start} \\
-      ${demuxR1Args} \\
-      ${demuxR2Args}
+      ${demuxR1Args}
     """
 }
 
@@ -1490,7 +1470,7 @@ workflow {
     def ch_sgrna_report_inputs = Channel.empty()
     def ch_sgrna_report_barrier = Channel.empty()
 
-    // sgRNA: cutadapt demux from shared Undetermined R1 + R2 + sgrna_barcode.fa.
+    // sgRNA: cutadapt demux from shared Undetermined R1 + sgrna_barcode.fa.
     if (nSGRNA > 0) {
         def sgrnaDemuxBarcodeFile = BUILD_SAMPLE_MANIFESTS.out.sgrna_demux_barcode_file
         def sgrnaBarcodeFa = BUILD_SAMPLE_MANIFESTS.out.sgrna_barcode_fa
@@ -1503,31 +1483,20 @@ workflow {
                     error "No sgRNA Undetermined R1 FASTQ found in ${rawDir}. Provide --sgrna_undetermined_r1 or place sgRNA_Undetermined_S0_R1_001.fastq.gz in ${rawDir}."
                 }
 
-        def ch_sgrna_r2 = params.sgrna_undetermined_r2
-            ? Channel.of(file("${rawDir}/${params.sgrna_undetermined_r2}"))
-            : Channel
-                .fromPath("${rawDir}/*gRNA*Undetermined*R2*.fastq.gz")
-                .ifEmpty {
-                    error "No sgRNA Undetermined R2 FASTQ found in ${rawDir}. Provide --sgrna_undetermined_r2 or place sgRNA_Undetermined_S0_R2_001.fastq.gz in ${rawDir}."
-                }
-
         SGRNA_DEMULTIPLEX_CUTADAPT(
             ch_sgrna_r1,
-            ch_sgrna_r2,
             sgrnaDemuxBarcodeFile,
             sgrnaBarcodeFa
         )
 
         BUILD_SGRNA_RUN_MANIFEST(
             BUILD_SAMPLE_MANIFESTS.out.sgrna_manifest,
-            SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r1.collect(),
-            SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r2.collect()
+            SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r1.collect()
         )
 
         SGRNA_ANALYSIS(
             BUILD_SGRNA_RUN_MANIFEST.out.sgrna_run_manifest,
-            SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r1.collect(),
-            SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r2.collect()
+            SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r1.collect()
         )
 
         // Only sgrna_qc_summary: per-sample sgRNA files share basenames (gRNA_counts_final.csv, etc.)
