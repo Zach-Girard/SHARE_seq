@@ -56,13 +56,48 @@ def _require_utils(share_seq_pipeline_dir: str) -> None:
         )
 
 
+def _staged_demux_for_sample(
+    sample: str, staged_paths: List[str], suffix: str
+) -> Optional[str]:
+    for path in staged_paths:
+        path = os.path.abspath(path)
+        if path.endswith(f"/{sample}/{sample}{suffix}") or path.endswith(f"{sample}{suffix}"):
+            return path
+    return None
+
+
+def _resolve_src_fastq(
+    sample: str,
+    label: str,
+    manifest_path: str,
+    staged_paths: List[str],
+    out_dir: str,
+) -> str:
+    if os.path.isfile(manifest_path):
+        return os.path.abspath(manifest_path)
+    suffix = ".R1.fastq.gz" if label == "R1" else ".R2.fastq.gz"
+    staged = _staged_demux_for_sample(sample, staged_paths, suffix)
+    if staged and os.path.isfile(staged):
+        return staged
+    fallback = os.path.join(out_dir, "demux", sample, f"{sample}{suffix}")
+    if os.path.isfile(fallback):
+        return os.path.abspath(fallback)
+    raise FileNotFoundError(f"Demux {label} not found for {sample}: {manifest_path}")
+
+
 def stage_demux_manifest(
-    manifest: str, out_dir: str, local_manifest_name: str = "sgRNA_run.local.tsv"
+    manifest: str,
+    out_dir: str,
+    local_manifest_name: str = "sgRNA_run.local.tsv",
+    staged_r1: Optional[List[str]] = None,
+    staged_r2: Optional[List[str]] = None,
 ) -> str:
     """Copy demux R1/R2 into work dir and return path to rewritten manifest."""
     out_dir = os.path.abspath(out_dir)
     demux_root = os.path.join(out_dir, "demux")
     rows_out: List[dict[str, str]] = []
+    extra_r1 = [os.path.abspath(p) for p in (staged_r1 or []) if p]
+    extra_r2 = [os.path.abspath(p) for p in (staged_r2 or []) if p]
 
     with open(manifest, newline="", errors="replace") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
@@ -74,10 +109,8 @@ def stage_demux_manifest(
                 raise ValueError(
                     f"sample {sample or '?'} missing sample_name, fastq, or fastq_r2"
                 )
-            if not os.path.isfile(src_r1):
-                raise FileNotFoundError(f"Demux R1 not found: {src_r1}")
-            if not os.path.isfile(src_r2):
-                raise FileNotFoundError(f"Demux R2 not found: {src_r2}")
+            src_r1 = _resolve_src_fastq(sample, "R1", src_r1, extra_r1, out_dir)
+            src_r2 = _resolve_src_fastq(sample, "R2", src_r2, extra_r2, out_dir)
 
             dest_dir = os.path.join(demux_root, sample)
             os.makedirs(dest_dir, exist_ok=True)
@@ -450,6 +483,18 @@ def main() -> int:
         action="store_true",
         help="Use manifest paths as-is (do not copy demux into out-dir)",
     )
+    p.add_argument(
+        "--demux-r1",
+        action="append",
+        default=[],
+        help="Staged demux R1 from SGRNA_DEMULTIPLEX (when manifest paths are project-dir only)",
+    )
+    p.add_argument(
+        "--demux-r2",
+        action="append",
+        default=[],
+        help="Staged demux R2 from SGRNA_DEMULTIPLEX",
+    )
     args = p.parse_args()
 
     if not os.path.isfile(args.manifest):
@@ -467,7 +512,12 @@ def main() -> int:
         if args.skip_stage:
             work_manifest = os.path.abspath(args.manifest)
         else:
-            work_manifest = stage_demux_manifest(args.manifest, out_dir)
+            work_manifest = stage_demux_manifest(
+                args.manifest,
+                out_dir,
+                staged_r1=args.demux_r1,
+                staged_r2=args.demux_r2,
+            )
 
         manifest_rows = load_manifest_rows(work_manifest)
         samples = [r for r in manifest_rows if (r.get("sample_name") or "").strip()]

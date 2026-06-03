@@ -316,6 +316,8 @@ process SGRNA_ANALYSIS {
 
     input:
     path(sgrna_manifest)
+    path(demux_r1_files)
+    path(demux_r2_files)
 
     output:
     path "sgRNA_run.tsv", emit: sgrna_run_copy, optional: true
@@ -327,6 +329,17 @@ process SGRNA_ANALYSIS {
     path "*/gRNA_counts_final.csv", emit: grna_counts_final, optional: true
     path "**/*.matched.R1.fastq.gz", emit: matched_r1, optional: true
 
+    script:
+    def demuxR1Args = ''
+    if (demux_r1_files) {
+        def files = demux_r1_files instanceof List ? demux_r1_files : [demux_r1_files]
+        demuxR1Args = files.collect { f -> "--demux-r1 \"${f}\"" }.join(' \\\n      ')
+    }
+    def demuxR2Args = ''
+    if (demux_r2_files) {
+        def files = demux_r2_files instanceof List ? demux_r2_files : [demux_r2_files]
+        demuxR2Args = files.collect { f -> "--demux-r2 \"${f}\"" }.join(' \\\n      ')
+    }
     """
     set -euo pipefail
     if [ ! -s "${sgrna_manifest}" ] || [ "\$(wc -l < "${sgrna_manifest}")" -le 1 ]; then
@@ -341,7 +354,9 @@ process SGRNA_ANALYSIS {
       --rename-fastq-script "${params.rename_fastq_script}" \\
       --match-grna-script "${params.match_grna_script}" \\
       --share-seq-pipeline-dir "${params.share_seq_pipeline_dir}" \\
-      --match-grna-start ${params.match_grna_start}
+      --match-grna-start ${params.match_grna_start} \\
+      ${demuxR1Args} \\
+      ${demuxR2Args}
     """
 }
 
@@ -1509,7 +1524,11 @@ workflow {
             SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r2.collect()
         )
 
-        SGRNA_ANALYSIS(BUILD_SGRNA_RUN_MANIFEST.out.sgrna_run_manifest)
+        SGRNA_ANALYSIS(
+            BUILD_SGRNA_RUN_MANIFEST.out.sgrna_run_manifest,
+            SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r1.collect(),
+            SGRNA_DEMULTIPLEX_CUTADAPT.out.demux_r2.collect()
+        )
 
         // Only sgrna_qc_summary goes to BUILD_QC_HTML: other SGRNA_ANALYSIS outputs share
         // basenames across paths (e.g. *.matched.R1.fastq.gz in sample/ and demux/) or with

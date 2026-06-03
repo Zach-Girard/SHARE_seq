@@ -26,6 +26,21 @@ def _staged_demux_for_sample(
     return None
 
 
+def _resolve_demux_path(
+    sample: str,
+    suffix: str,
+    project_path: str,
+    staged_paths: List[str],
+) -> str:
+    """Prefer on-disk project demux; else Nextflow-staged demux from cutadapt work."""
+    if os.path.isfile(project_path):
+        return os.path.abspath(project_path)
+    staged = _staged_demux_for_sample(sample, staged_paths, suffix)
+    if staged and os.path.isfile(staged):
+        return staged
+    return os.path.abspath(project_path)
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Build post-demux sgRNA run manifest.")
     p.add_argument("--sgrna-manifest", required=True, help="sgRNA.tsv from BUILD_SAMPLE_MANIFESTS")
@@ -67,16 +82,14 @@ def main() -> int:
             sample = (row.get("sample_name") or "").strip()
             if not sample:
                 continue
-            demux_r1 = os.path.join(demux_dir, sample, f"{sample}.R1.fastq.gz")
-            demux_r2 = os.path.join(demux_dir, sample, f"{sample}.R2.fastq.gz")
-            if not os.path.isfile(demux_r1) and not _staged_demux_for_sample(
-                sample, staged_r1, ".R1.fastq.gz"
-            ):
+            project_r1 = os.path.join(demux_dir, sample, f"{sample}.R1.fastq.gz")
+            project_r2 = os.path.join(demux_dir, sample, f"{sample}.R2.fastq.gz")
+            demux_r1 = _resolve_demux_path(sample, ".R1.fastq.gz", project_r1, staged_r1)
+            demux_r2 = _resolve_demux_path(sample, ".R2.fastq.gz", project_r2, staged_r2)
+            if not os.path.isfile(demux_r1):
                 print(f"ERROR: demuxed R1 not found: {demux_r1}", file=sys.stderr)
                 return 1
-            if not os.path.isfile(demux_r2) and not _staged_demux_for_sample(
-                sample, staged_r2, ".R2.fastq.gz"
-            ):
+            if not os.path.isfile(demux_r2):
                 print(f"ERROR: demuxed R2 not found: {demux_r2}", file=sys.stderr)
                 return 1
             rows_out.append(
