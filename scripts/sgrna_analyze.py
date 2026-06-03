@@ -209,7 +209,7 @@ def rename_sample(
 ) -> None:
     _require_utils(share_seq_pipeline_dir)
     if not os.path.isfile(rename_script):
-        raise FileNotFoundError(f"rename_fastq.py not found: {rename_script}")
+        raise FileNotFoundError(f"rename script not found: {rename_script}")
 
     os.makedirs(sample_out, exist_ok=True)
     work_dir = os.path.dirname(input_r1) or os.getcwd()
@@ -472,7 +472,11 @@ def main() -> int:
     p.add_argument("--out-dir", default=".", help="Output directory (sgRNA/)")
     p.add_argument("--project-dir", required=True, help="Nextflow project directory")
     p.add_argument("--barcode-list", required=True, help="8bp barcode whitelist")
-    p.add_argument("--rename-fastq-script", required=True, help="SHARE_seq rename_fastq.py")
+    p.add_argument(
+        "--rename-fastq-script",
+        required=True,
+        help="SHARE_seq rename script (e.g. share_seq_step2_rename_fastq.py)",
+    )
     p.add_argument("--match-grna-script", required=True, help="SHARE_seq match_gRNA.py")
     p.add_argument("--share-seq-pipeline-dir", required=True, help="SHARE_seq_pipeline (utils.py)")
     p.add_argument("--match-grna-start", type=int, default=43, help="match_gRNA -s/--start")

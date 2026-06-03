@@ -56,7 +56,7 @@ params.demux_max_forks     = params.demux_max_forks     ?: 8
 params.sgrna_cutadapt_jobs = params.sgrna_cutadapt_jobs ?: 4
 params.split_fastq_bin     = params.split_fastq_bin     ?: '/home/yli11/HemTools/bin/splitFastq'
 params.share_seq_pipeline_dir = params.share_seq_pipeline_dir ?: '/home/yli11/Tools/SHARE_seq_pipeline'
-params.rename_fastq_script = params.rename_fastq_script ?: "${params.share_seq_pipeline_dir}/rename_fastq.py"
+params.rename_fastq_script = params.rename_fastq_script ?: "${params.share_seq_pipeline_dir}/share_seq_step2_rename_fastq.py"
 params.match_grna_script = params.match_grna_script ?: "${params.share_seq_pipeline_dir}/match_gRNA.py"
 params.match_grna_start  = params.match_grna_start  ?: 43
 
@@ -180,7 +180,7 @@ log.info "Split reads per chunk         : ${params.split_reads}"
 log.info "Max concurrent DEMULTIPLEX    : ${params.demux_max_forks}"
 log.info "sgRNA cutadapt parallel jobs  : ${params.sgrna_cutadapt_jobs}"
 log.info "SHARE_seq pipeline dir        : ${params.share_seq_pipeline_dir}"
-log.info "rename_fastq.py script        : ${params.rename_fastq_script}"
+log.info "sgRNA rename script           : ${params.rename_fastq_script}"
 log.info "match_gRNA.py script          : ${params.match_grna_script}"
 log.info "match_gRNA start position     : ${params.match_grna_start}"
 log.info "splitFastq executable         : ${params.split_fastq_bin}"
