@@ -746,10 +746,10 @@ def sample_directory_table(sample_names, starsolo_by_sample, summary_by_sample, 
         )
     return "<table>" + "".join(rows) + "</table>"
 
-def load_experimental_groups(sample_barcode_path):
-    groups = {}
+def _parse_sample_barcode_rows(sample_barcode_path):
+    """Yield (sample_name, sample_type, experimental_group) from the barcode sheet."""
     if not sample_barcode_path or not os.path.isfile(sample_barcode_path):
-        return groups
+        return
     try:
         with open(sample_barcode_path, "r", errors="replace") as fh:
             for raw in fh:
@@ -757,22 +757,41 @@ def load_experimental_groups(sample_barcode_path):
                 if not line or line.startswith("#"):
                     continue
                 cols = [c.strip() for c in re.split(r"\t|,", line)]
-                if len(cols) < 4:
+                if len(cols) < 3:
                     continue
                 sample = cols[0]
-                group = cols[3]
-                if not sample or not group:
+                stype = cols[2].upper()
+                group = cols[3] if len(cols) >= 4 else ""
+                if not sample:
                     continue
                 sample_l = sample.lower()
-                group_l = group.lower()
-                if sample_l in ("sample", "sample_name") and group_l in ("group", "experimental_group", "condition"):
+                if sample_l in ("sample", "sample_name", "sample_id"):
                     continue
-                stype = cols[2].upper() if len(cols) >= 3 else ""
-                if stype in ("RNA", "ATAC", "SGRNA"):
-                    groups[sample] = group
+                if stype in ("TYPE", "SAMPLE_TYPE"):
+                    continue
+                if stype == "SGRNA":
+                    stype = "sgRNA"
+                elif stype not in ("RNA", "ATAC"):
+                    continue
+                yield sample, stype, group
     except Exception:
-        return {}
+        return
+
+
+def load_experimental_groups(sample_barcode_path):
+    groups = {}
+    for sample, _stype, group in _parse_sample_barcode_rows(sample_barcode_path) or []:
+        if group:
+            groups[sample] = group
     return groups
+
+
+def load_sample_types(sample_barcode_path):
+    """Map sample name -> RNA | ATAC | sgRNA (column 3 of sample_barcode_file)."""
+    types = {}
+    for sample, stype, _group in _parse_sample_barcode_rows(sample_barcode_path) or []:
+        types[sample] = stype
+    return types
 
 def group_combined_cell_cards(sample_names, summary_by_sample, atac_cell_summary_paths, sample_to_group):
     if not sample_to_group:
@@ -1888,6 +1907,7 @@ sgrna_count_matrices = sorted(set(rel_list("sgRNA/*/final_*.gRNA.count.csv")))
 sgrna_cell_assignments = sorted(set(rel_list("sgRNA/*/final_*.gRNA.count.csv.cell_with_gRNA.csv")))
 sgrna_grna_counts = sorted(set(rel_list("sgRNA/*/gRNA_counts_final.csv")))
 sample_to_group = load_experimental_groups(resolve_sample_barcode_path())
+sample_types = load_sample_types(resolve_sample_barcode_path())
 sample_names = sorted(set(
     [sample_from_report_path(p) for p in (starsolo_logs + barcodes_stats + summary_csv + knee_plots + barnyard + atac_flagstat_rmdup + atac_idxstats_rmdup + atac_stats_rmdup + atac_flagstat_prededup + atac_idxstats_prededup + atac_stats_prededup + atac_cbtag_qc) if sample_from_report_path(p)]
     + list(load_demux_sample_names(demux_stats))
@@ -2297,23 +2317,24 @@ for row in load_sgrna_summary(sgrna_qc_summary, sgrna_count_matrices, sample_to_
 
 
 def sample_sgrna_matrix_paths(sample: str):
-    prefix = os.path.join("sgRNA", sample)
-    matrices = sorted(
-        p
-        for p in sgrna_count_matrices
-        if p.startswith(prefix + "/") or sample_name_matches(sample, p)
-    )
-    assignments = sorted(
-        p
-        for p in sgrna_cell_assignments
-        if p.startswith(prefix + "/") or sample_name_matches(sample, p)
-    )
-    grna_counts = sorted(
-        p
-        for p in sgrna_grna_counts
-        if p.startswith(prefix + "/") or sample_name_matches(sample, p)
-    )
+    """Paths under sgRNA/<sample>/ only (no fuzzy path matching)."""
+    prefix = os.path.join("sgRNA", sample) + "/"
+    matrices = sorted(p for p in sgrna_count_matrices if p.startswith(prefix))
+    assignments = sorted(p for p in sgrna_cell_assignments if p.startswith(prefix))
+    grna_counts = sorted(p for p in sgrna_grna_counts if p.startswith(prefix))
     return matrices, assignments, grna_counts
+
+
+def sample_has_sgrna_outputs(sample: str) -> bool:
+    matrices, _assignments, grna_counts = sample_sgrna_matrix_paths(sample)
+    return bool(sample_sgrna_summary_row(sample) or matrices or grna_counts)
+
+
+def should_show_per_sample_sgrna(sample: str) -> bool:
+    """Per-sample sgRNA tab/section only for sgRNA samples, not RNA/ATAC."""
+    if sample_types.get(sample, "") in ("RNA", "ATAC"):
+        return False
+    return sample_has_sgrna_outputs(sample)
 
 
 def sample_sgrna_summary_row(sample: str) -> dict:
@@ -2383,7 +2404,7 @@ for sample in sorted(all_sample_candidates):
         or sample_atac_cells
     )
     has_rna = bool(sample_logs or sample_knee or sample_barcodes or sample_summary or sample_barnyard)
-    has_sgrna = bool(sample_sgrna_summary_row(sample) or sample_sgrna_matrix_paths(sample)[0])
+    has_sgrna = should_show_per_sample_sgrna(sample)
     sample_tabs = [("sec-demux", "Demultiplexing")]
     if has_atac:
         sample_tabs.append(("sec-atac", "ATAC QC"))
