@@ -1,6 +1,12 @@
 ## SHARE-seq Nextflow Pipeline
 
-Nextflow workflow for SHARE-seq: scRNA, scATAC, optional sgRNA, and HTML QC Report.
+Nextflow workflow for SHARE-seq: scRNA, scATAC, optional sgRNA, and HTML QC Reporting.
+
+The following README.md is intended to provide details about the setup, configuration, and sample-type specific processes in this pipeline.  
+
+First-time users should put intentional focus on the Environment Setup, Running the Pipeline, and Pre-Run Checklist Sections. 
+
+See `main.nf` and `nextflow.config` for channel wiring and the full list of parameters.
 
 ### Pipeline Overview
 
@@ -17,19 +23,15 @@ Nextflow workflow for SHARE-seq: scRNA, scATAC, optional sgRNA, and HTML QC Repo
 | 11. QC + reports           | `KNEE_PLOT`, `BARNYARD_PLOT`, `HYBRID_SPLIT_SPECIES`, `CELL_OVERLAP_BY_GROUP`, `BUILD_QC_HTML`   | `multiome_overlap/`, `QC_Report*`                                |
 
 
-Column 3 routes each sample to the [RNA](#rna), [ATAC](#atac), or [sgRNA](#sgrna) branch. Optional column 4 (`Experimental_Group`) feeds QC group cards and multiome overlap (`CELL_OVERLAP_BY_GROUP`).
+### Environment Setup
 
-Final QC: `QC_Report.html`, per-sample pages under `QC_Report/`, assets, and `QC_Report_bundle.zip`.
-
-See `main.nf` and `nextflow.config` for channel wiring and parameters.
-
-### Environment
+A conda environment has been assembled for this pipeline's dependencies. Use the files below to create this environment. 
 
 - Conda environment: `environment.yml`; setup instructions: `ENVIRONMENT_SETUP.md`.
 
-### Reference and index configuration
+### Species reference and index file configuration
 
-Prebuilt reference paths in `nextflow.config` (FASTA, GTF, BWA prefix, STAR index):
+Prebuilt reference paths in `nextflow.config` (FASTA, GTF, BWA prefix, STAR index) have been set for this pipeline. Use `species_model` and `human_genome_build` parameters to change the default paths.
 
 
 | Set                 | Used when                                                         |
@@ -41,9 +43,9 @@ Prebuilt reference paths in `nextflow.config` (FASTA, GTF, BWA prefix, STAR inde
 
 ### Sample barcode file and inputs
 
-Place inputs under `RAW_FASTQ/` (or set `params.raw_fastq`). Pass **filenames only** for FASTQs and the barcode file; paths resolve under `raw_fastq/`.
+Place input files under `RAW_FASTQ/` (or set `params.raw_fastq`). Pass **filenames only** for FASTQs and the sample barcode file; paths resolve under `RAW_FASTQ/` directory.
 
-`--sample_barcode_file` is **required** for every run.
+The `--sample_barcode_file` parameter is **required** for every run.
 
 **RNA/ATAC rows** (≥3 columns):
 
@@ -77,23 +79,18 @@ Place inputs under `RAW_FASTQ/` (or set `params.raw_fastq`). Pass **filenames on
 | sgRNA    | `--sgrna_undetermined_r1`                                  | `sgRNA_Undetermined_S0_R1_001.fastq.gz` or `*gRNA*Undetermined*R1*.fastq.gz` |
 
 
-**Examples**
+**Example Sample Barcode File**
 
 ```tsv
-Sample_Name	Sample_Index	Sample_Type	Experimental_Group
-RNA_A	ACGTACGT	RNA	Group_1
-ATAC_A	TGCATGCA	ATAC	Group_1
+Sample_Name Sample_Index  Sample_Type Experimental_Group  gRNA library CSV
+RNA_A ACGTACGT  RNA Group_1
+ATAC_A  TGCATGCA  ATAC  Group_1
+sgRNA_A gcagagtc  sgRNA Group_1 Group_1_gRNA_library.csv
 ```
 
-```tsv
-sgRNA_C1200	gcagagtc	sgRNA	C1200	C1200_gRNA_library.csv
-```
+### Cell Barcode file configuration
 
-
-
-### Barcode configuration
-
-Default 8bp whitelist: `barcodes_RC.txt`. With `barcodes_rc = false`, barcodes are used as written; with `true`, each 8bp barcode is reverse-complemented before use.
+Default 8bp cell barcode whitelist: `barcodes_RC.txt`. With `barcodes_rc = false`, barcodes are used as written; with `true`, each 8bp barcode is reverse-complemented before use.
 
 The same whitelist drives `RENAME_FASTQ`, single-end STARsolo (`CB_UMI_Complex`), and the combinatorial 24bp whitelist for paired-end STARsolo.
 
@@ -102,15 +99,15 @@ barcodes_8bp_file = 'my_barcodes.txt'
 barcodes_rc       = true   // if barcodes are in sequencing orientation
 ```
 
-### RNA
+### RNA Branch
 
 RNA samples share steps 1–2 with ATAC (chunked demux, `scripts/rename_fastq.py`, FastQC on matched reads), then continue through Poly-T filtering and STARsolo.
 
-**Read structure after demux:** R1 = cDNA; R2 = UMI + PolyT + cDNA. `RENAME_FASTQ` error-corrects three 8bp round barcodes in R1 and places the 24bp cell barcode in read headers.
+**Read structure after demux:** R1 = cDNA; R2 = UMI + PolyT + cDNA. `RENAME_FASTQ` process error-corrects three 8bp cell barcodes in R1 and places the 24bp cell barcode in read headers.
 
 **Processing**
 
-1. **Poly-T filter** (`POLYT_FILTER`) — always run; R2 is the cutadapt anchor; R1 is synced. Outputs under `polyt_filtered/<sample>/` (`extracted` and `noPolyT` buckets).
+1. **Poly-T filter** (`POLYT_FILTER`) — always run; R2 is the cutadapt anchor; R1 reads are synced. Outputs under `polyt_filtered/<sample>/` (`extracted` and `noPolyT` buckets).
 2. **Trim** (optional) — `trim_reads = true` runs fastp on extracted R1 and on R2 with the first `umi_len` bases (UMI) protected (`TRIM_R1`, `TRIM_R2_PROTECTED`, `FASTQC_TRIMMED`). Default is `trim_reads = false`.
 3. **Barcode prepend** (`PREPEND_HEADER_BARCODES`) — 24bp cell barcode from the R2 header is prepended to R2 sequence → `withBarcodes_`* in `trimmed/<sample>/` or `polyt_filtered/<sample>/`.
 4. **STAR** — `STAR_INDEX` stages the configured index; alignment uses R1 (cDNA) + barcode-prepended R2.
@@ -124,13 +121,13 @@ RNA samples share steps 1–2 with ATAC (chunked demux, `scripts/rename_fastq.py
 | `paired`           | `BUILD_PAIRED_WHITELIST`, `STARSOLO_PAIRED` | `STARsolo_paired/<sample>/` | `CB_UMI_Simple` + 24bp combinatorial whitelist |
 
 
-Barcodes are already corrected at rename, so STARsolo does not perform additional barcode matching.
+Cell Barcodes are already corrected after rename process, so STARsolo does not perform additional barcode mismatch correction.
 
-**Hybrid** (`species_model = hybrid`): `BARNYARD_PLOT` and `HYBRID_SPLIT_SPECIES` run after STARsolo.
+**Hybrid** If `species_model = hybrid`: `BARNYARD_PLOT` and `HYBRID_SPLIT_SPECIES` processes run after STARsolo.
 
 **Downstream QC:** knee plots, `Barcodes.stats`, `GeneFull Summary.csv`, and per-sample RNA pages in `QC_Report/<sample>/`.
 
-### ATAC
+### ATAC Branch
 
 ATAC samples use matched demux R1/R2 from step 2, then the dedicated alignment branch (see [Pipeline Overview](#pipeline-overview) step 5).
 
@@ -143,9 +140,9 @@ ATAC samples use matched demux R1/R2 from step 2, then the dedicated alignment b
 
 ArchR thresholds: `atac_min_frags_for_cell`, `atac_min_tss_for_cell` in `nextflow.config`. Multiome overlap uses pre-dedup ArchR cell barcodes (`*.atac_cells.pre_dedup.counts.tsv`).
 
-### sgRNA
+### sgRNA Branch
 
-Independent of RNA/ATAC demux (`demultiplex.py`). Requires external SHARE-seq scripts under `share_seq_pipeline_dir` (see `nextflow.config`).
+Independent of RNA/ATAC demux (`demultiplex.py`). 
 
 
 |            | RNA/ATAC                         | sgRNA                                                    |
@@ -158,15 +155,13 @@ Independent of RNA/ATAC demux (`demultiplex.py`). Requires external SHARE-seq sc
 
 **Flow**
 
-1. `SGRNA_DEMULTIPLEX_CUTADAPT` — cutadapt `--no-indels`, `--no-trim`, `-g file:barcode.fa`, `-j ${sgrna_cutadapt_jobs}` (default 4); per sample `{sample}.R1.fastq.gz`; unassigned `untrimmed_R1.fastq.gz`.
+1. `SGRNA_DEMULTIPLEX_CUTADAPT` — Utilizes cutadapt `--no-indels`, `--no-trim`, `-g file:barcode.fa`, `-j ${sgrna_cutadapt_jobs}` (default 4); Processes per sample `{sample}.R1.fastq.gz`; unassigned reads == `untrimmed_R1.fastq.gz`.
 2. `BUILD_SGRNA_RUN_MANIFEST` — `sgRNA/sgRNA_run.tsv` (`fastq` and `fastq_r2` both point at demuxed R1).
-3. `SGRNA_ANALYSIS` — stage R1; rename with the same file as `-r1` and `-r2`; `match_gRNA.py` (`match_grna_start`, default 43). Requires SHARE-seq `utils.py` on `PYTHONPATH`.
+3. `SGRNA_ANALYSIS` — stage R1; rename with the same file as `-r1` and `-r2`; `match_gRNA.py` (`match_grna_start`, default 43).
 
 **Outputs:** `sgRNA/<sample>/final_<sample>.gRNA.count.csv`, `sgRNA/sgrna_qc_summary.tsv`, and related rename/match artifacts.
 
-**QC:** Combined sgRNA summary, per-group KPIs, top-20 guides per sample; per-sample **sgRNA** tab only on sgRNA sample pages; `RNA_ATAC_sgRNA_Shared` in `multiome_overlap/` when matrices exist.
-
-Manual cutadapt-only job: `scripts/sgrna_split.lsf`.
+**QC:** Combined sgRNA summary, per-group KPIs, top-20 guides per sample; `RNA_ATAC_sgRNA_Shared` in `multiome_overlap/` when matrices exist.
 
 ### Running the Pipeline
 
@@ -176,6 +171,7 @@ The pipeline uses the LSF executor and per-process resources in `nextflow.config
 nextflow run main.nf \
   --undetermined_r1 Undetermined_S0_R1_001.fastq.gz \
   --undetermined_r2 Undetermined_S0_R2_001.fastq.gz \
+  --sgrna_undetermined_r1 sgRNA_Undetermined_S0_R1_001.fastq.gz \
   --sample_barcode_file sample_barcodes.tsv
 ```
 
@@ -185,18 +181,22 @@ nextflow run main.nf \
 
 ```bash
 nextflow run main.nf \
+  --undetermined_r1 Undetermined_S0_R1_001.fastq.gz \
+  --undetermined_r2 Undetermined_S0_R2_001.fastq.gz \
+  --sgrna_undetermined_r1 sgRNA_Undetermined_S0_R1_001.fastq.gz \
+  --sample_barcode_file sample_barcodes.tsv \
   --species_model hybrid \
   --star_alignment_mode paired \
   --barcodes_8bp_file my_barcodes.txt \
   --barcodes_rc true
 ```
 
-**Pre-run checklist**
+### Pre-run Checklist
 
-- Barcode file in `RAW_FASTQ/` with valid `RNA`, `ATAC`, and/or `sgRNA` rows.
-- RNA/ATAC: undetermined R1+R2 (params or auto-detect); reference paths valid for `species_model` / `human_genome_build`.
-- RNA: `star_alignment_mode`, optional `trim_reads`, barcode whitelist settings.
-- ATAC: BWA/STAR index selection matches sample species.
-- sgRNA: shared Undetermined R1, gRNA library CSVs, `share_seq_pipeline_dir` and script paths.
 - Conda env created from `environment.yml`.
+- Sample Barcode file in `RAW_FASTQ/` with valid `RNA`, `ATAC`, and/or `sgRNA` rows.
+- RNA/ATAC: undetermined R1+R2 files (params or auto-detect) in `RAW_FASTQ/`; reference paths set for `species_model` / `human_genome_build`.
+- RNA: `star_alignment_mode`, optional `trim_reads`, cell barcode file in root and whitelist settings adjusted.
+- ATAC: BWA/STAR index selection matches sample species.
+- sgRNA: Undetermined R1 and gRNA library CSVs in `RAW_FASTQ/`.
 
