@@ -1,6 +1,7 @@
 ## Environment setup (without Homebrew)
 
 This document describes how to install Miniconda **without Homebrew** and create the master Conda environment for this project.
+For users with conda set up already; continue to Step 2. 
 
 ### 1. Install Miniconda
 
