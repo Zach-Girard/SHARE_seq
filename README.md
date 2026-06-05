@@ -70,13 +70,6 @@ The `--sample_barcode_file` parameter is **required** for every run.
 | 5   | gRNA library CSV (resolved under project dir or `RAW_FASTQ/`) |
 
 
-**Undetermined FASTQs**
-
-
-| Modality | Params                                                     | Default / auto-detect                                                        |
-| -------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| RNA/ATAC | `--undetermined_r1`, `--undetermined_r2` (both or neither) | `*Undetermined*R1*.fastq.gz` in `RAW_FASTQ/`, excluding `*gRNA`*             |
-| sgRNA    | `--sgrna_undetermined_r1`                                  | `sgRNA_Undetermined_S0_R1_001.fastq.gz` or `*gRNA*Undetermined*R1*.fastq.gz` |
 
 
 **Example Sample Barcode File**
@@ -87,6 +80,19 @@ RNA_A ACGTACGT  RNA Group_1
 ATAC_A  TGCATGCA  ATAC  Group_1
 sgRNA_A gcagagtc  sgRNA Group_1 Group_1_gRNA_library.csv
 ```
+
+
+
+
+**Undetermined FASTQs**
+
+
+| Modality | Params                                                     | Default / auto-detect                                                        |
+| -------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| RNA/ATAC | `--undetermined_r1`, `--undetermined_r2` (both or neither) | `*Undetermined*R1*.fastq.gz` in `RAW_FASTQ/`, excluding `*gRNA`*             |
+| sgRNA    | `--sgrna_undetermined_r1`                                  | `sgRNA_Undetermined_S0_R1_001.fastq.gz` or `*gRNA*Undetermined*R1*.fastq.gz` |
+
+
 
 ### Cell Barcode file configuration
 
