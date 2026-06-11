@@ -235,7 +235,7 @@ Standalone tools under `scripts/` are **not** run by Nextflow. Use them after a 
 
 #### `grna_cell_tracks.py` — per-cell BAM and BigWig for a target gRNA
 
-Finds cell barcodes with a given sgRNA (from `sgRNA/<sample>/final_<sample>.gRNA.count.csv`) and writes per-cell ATAC and RNA BAM + BigWig files by filtering published BAMs on the `CB` tag.
+Finds cell barcodes with a given sgRNA (from `sgRNA/<sample>/final_<sample>.gRNA.count.csv`) and writes per-cell ATAC and RNA BAM + BigWig files by filtering published BAMs on the `CB:Z:<24bp>` tag (e.g. `CB:Z:TGAAGCCATGACAGACCGATGTTT`).
 
 **Prerequisites**
 

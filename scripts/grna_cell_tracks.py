@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
@@ -436,7 +437,18 @@ def ensure_bam_index(bam_path: str, threads: int) -> None:
         )
 
 
+_QNAME_BC_RE = re.compile(r"[ACGTNacgtn]{24}")
+# Pipeline ATAC BAMs and STARsolo BAMs store the 24bp cell barcode as CB:Z:<sequence>.
+CB_TAG_PREFIX = "CB:Z:"
+
+
+def cb_tag_field(barcode: str) -> str:
+    return f"{CB_TAG_PREFIX}{barcode}"
+
+
 def count_bam_reads(bam_path: str) -> int:
+    if not os.path.isfile(bam_path) or os.path.getsize(bam_path) == 0:
+        return 0
     result = subprocess.run(
         ["samtools", "view", "-c", bam_path],
         check=True,
@@ -446,39 +458,52 @@ def count_bam_reads(bam_path: str) -> int:
     return int(result.stdout.strip() or 0)
 
 
-def extract_cell_bam(
-    source_bam: str,
-    barcode: str,
+def _cb_from_sam_optional_fields(fields: List[str]) -> Optional[str]:
+    for field in fields:
+        if field.startswith(CB_TAG_PREFIX):
+            return normalize_barcode(field[len(CB_TAG_PREFIX) :])
+    return None
+
+
+def _cb_from_qname(qname: str) -> Optional[str]:
+    candidate = qname.rsplit("_", 1)[-1] if "_" in qname else qname
+    candidate = candidate.strip().split()[0].split("/")[0]
+    matches = _QNAME_BC_RE.findall(candidate) or _QNAME_BC_RE.findall(qname)
+    if not matches:
+        return None
+    return normalize_barcode(matches[-1])
+
+
+def _sam_line_matches_barcode(sam_line: str, barcode: str) -> bool:
+    # Fast path: exact CB:Z:<24bp> auxiliary field (e.g. CB:Z:TGAAGCCATGACAGACCGATGTTT).
+    if cb_tag_field(barcode) in sam_line:
+        return True
+    cols = sam_line.split("\t")
+    if len(cols) < 11:
+        return False
+    cb = _cb_from_sam_optional_fields(cols[11:])
+    if cb == barcode:
+        return True
+    qname_bc = _cb_from_qname(cols[0])
+    if qname_bc == barcode:
+        return True
+    return barcode in cols[0]
+
+
+def _write_sorted_bam_from_stream(
+    bam_stream: bytes,
     out_bam: str,
     threads: int,
 ) -> int:
-    os.makedirs(os.path.dirname(out_bam) or ".", exist_ok=True)
-    expr = f'tag("CB") == "{barcode}"'
-    view = subprocess.run(
-        [
-            "samtools",
-            "view",
-            "-@",
-            str(threads),
-            "-b",
-            "-e",
-            expr,
-            source_bam,
-        ],
-        check=True,
-        capture_output=True,
-    )
-    if not view.stdout:
+    if not bam_stream:
         open(out_bam, "wb").close()
         return 0
-
-    sort_proc = subprocess.run(
+    subprocess.run(
         ["samtools", "sort", "-@", str(threads), "-o", out_bam, "-"],
-        input=view.stdout,
+        input=bam_stream,
         check=True,
         capture_output=True,
     )
-    del sort_proc
     read_count = count_bam_reads(out_bam)
     if read_count > 0:
         subprocess.run(
@@ -488,13 +513,91 @@ def extract_cell_bam(
     return read_count
 
 
-def extract_cell_bam_qname_fallback(
+def extract_cell_bam_by_tag(
+    source_bam: str,
+    barcode: str,
+    out_bam: str,
+    threads: int,
+) -> Tuple[int, str]:
+    """Filter reads with CB:Z:<barcode> via samtools -D / -d / -e."""
+    os.makedirs(os.path.dirname(out_bam) or ".", exist_ok=True)
+    attempts: List[Tuple[str, List[str]]] = []
+
+    # samtools documents barcode lists via -D TAG:file (matches CB:Z values in file).
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".barcodes.txt",
+        delete=False,
+    ) as fh:
+        fh.write(barcode + "\n")
+        barcode_file = fh.name
+    try:
+        attempts.append(
+            (
+                "CB:-D",
+                [
+                    "samtools",
+                    "view",
+                    "-@",
+                    str(threads),
+                    "-b",
+                    "-D",
+                    f"CB:{barcode_file}",
+                    source_bam,
+                ],
+            )
+        )
+        attempts.extend(
+            [
+                (
+                    "CB:-d",
+                    [
+                        "samtools",
+                        "view",
+                        "-@",
+                        str(threads),
+                        "-b",
+                        "-d",
+                        f"CB:{barcode}",
+                        source_bam,
+                    ],
+                ),
+                (
+                    "CB:-e",
+                    [
+                        "samtools",
+                        "view",
+                        "-@",
+                        str(threads),
+                        "-b",
+                        "-e",
+                        f'CB == "{barcode}"',
+                        source_bam,
+                    ],
+                ),
+            ]
+        )
+        for label, cmd in attempts:
+            view = subprocess.run(cmd, capture_output=True)
+            if view.returncode != 0:
+                continue
+            if view.stdout:
+                return _write_sorted_bam_from_stream(view.stdout, out_bam, threads), label
+    finally:
+        try:
+            os.remove(barcode_file)
+        except OSError:
+            pass
+    return 0, ""
+
+
+def extract_cell_bam_by_stream(
     source_bam: str,
     barcode: str,
     out_bam: str,
     threads: int,
 ) -> int:
-    """Fallback when CB tag filter yields zero reads: match barcode in QNAME."""
+    """Scan BAM and keep reads whose CB tag or QNAME matches the cell barcode."""
     os.makedirs(os.path.dirname(out_bam) or ".", exist_ok=True)
     view = subprocess.Popen(
         ["samtools", "view", "-@", str(threads), "-h", source_bam],
@@ -507,7 +610,8 @@ def extract_cell_bam_qname_fallback(
         if raw.startswith(b"@"):
             header_lines.append(raw)
             continue
-        if barcode.encode() in raw.split(b"\t", 1)[0]:
+        line = raw.decode("utf-8", errors="replace")
+        if _sam_line_matches_barcode(line, barcode):
             matched.append(raw)
     view.wait()
     if view.returncode != 0:
@@ -517,20 +621,23 @@ def extract_cell_bam_qname_fallback(
         open(out_bam, "wb").close()
         return 0
 
-    sort_proc = subprocess.run(
-        ["samtools", "sort", "-@", str(threads), "-o", out_bam, "-"],
-        input=b"".join(header_lines + matched),
-        check=True,
-        capture_output=True,
-    )
-    del sort_proc
-    read_count = count_bam_reads(out_bam)
-    if read_count > 0:
-        subprocess.run(
-            ["samtools", "index", "-@", str(threads), out_bam],
-            check=True,
-        )
-    return read_count
+    return _write_sorted_bam_from_stream(b"".join(header_lines + matched), out_bam, threads)
+
+
+def extract_cell_bam(
+    source_bam: str,
+    barcode: str,
+    out_bam: str,
+    threads: int,
+) -> Tuple[int, str]:
+    """Return (read_count, method_label)."""
+    reads, method = extract_cell_bam_by_tag(source_bam, barcode, out_bam, threads)
+    if reads > 0:
+        return reads, method
+    reads = extract_cell_bam_by_stream(source_bam, barcode, out_bam, threads)
+    if reads > 0:
+        return reads, "stream"
+    return 0, ""
 
 
 def make_bigwig(
@@ -585,13 +692,9 @@ def process_one_cell(
     if cfg.modality in ("atac", "both"):
         atac_src = atac_bam_path(cfg.project_dir, cfg.samples.atac_sample, cfg.atac_bam_type)
         atac_out = os.path.join(cell_dir, f"ATAC.{cell.cell_barcode}.bam")
-        reads = extract_cell_bam(atac_src, cell.cell_barcode, atac_out, cfg.threads)
-        if reads == 0:
-            reads = extract_cell_bam_qname_fallback(
-                atac_src, cell.cell_barcode, atac_out, cfg.threads
-            )
-            if reads > 0:
-                result["warnings"].append("ATAC: used QNAME fallback (CB tag miss)")
+        reads, method = extract_cell_bam(atac_src, cell.cell_barcode, atac_out, cfg.threads)
+        if method == "stream":
+            result["warnings"].append("ATAC: used streaming CB/QNAME filter")
         result["atac_reads"] = reads
         result["atac_bam"] = atac_out if reads > 0 else ""
         if reads == 0:
@@ -610,13 +713,9 @@ def process_one_cell(
     if cfg.modality in ("rna", "both"):
         rna_src = rna_bam_path(cfg.project_dir, cfg.samples.rna_sample, cfg.star_alignment_mode)
         rna_out = os.path.join(cell_dir, f"RNA.{cell.cell_barcode}.bam")
-        reads = extract_cell_bam(rna_src, cell.cell_barcode, rna_out, cfg.threads)
-        if reads == 0:
-            reads = extract_cell_bam_qname_fallback(
-                rna_src, cell.cell_barcode, rna_out, cfg.threads
-            )
-            if reads > 0:
-                result["warnings"].append("RNA: used QNAME fallback (CB tag miss)")
+        reads, method = extract_cell_bam(rna_src, cell.cell_barcode, rna_out, cfg.threads)
+        if method == "stream":
+            result["warnings"].append("RNA: used streaming CB/QNAME filter")
         result["rna_reads"] = reads
         result["rna_bam"] = rna_out if reads > 0 else ""
         if reads == 0:
