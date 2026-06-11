@@ -10,6 +10,7 @@ First-time users should put intentional focus on the Environment Setup, Running 
 
 ### Example Starting Repo File Tree
 
+```text
 .
 ├── README.md
 ├── ENVIRONMENT_SETUP.md
@@ -28,7 +29,7 @@ First-time users should put intentional focus on the Environment Setup, Running 
     ├── C6991_gRNA_library.csv
     └── input.tsv
 
-
+```
 
 
 
