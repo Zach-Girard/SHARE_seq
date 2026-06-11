@@ -229,3 +229,43 @@ nextflow run main.nf \
 - sgRNA: Undetermined R1 file and gRNA library CSVs placed in `RAW_FASTQ/`.
 - LSF script created. Submit script from project root directory. For best practices, manually input all input file parameters and non-default parameters (e.g. `--barcodes_rc` true instead of `--barcodes_rc` false).
 
+### Post-pipeline scripts
+
+Standalone tools under `scripts/` are **not** run by Nextflow. Use them after a completed pipeline run.
+
+#### `grna_cell_tracks.py` — per-cell BAM and BigWig for a target gRNA
+
+Finds cell barcodes with a given sgRNA (from `sgRNA/<sample>/final_<sample>.gRNA.count.csv`) and writes per-cell ATAC and RNA BAM + BigWig files by filtering published BAMs on the `CB` tag.
+
+**Prerequisites**
+
+- Completed run with sgRNA, ATAC, and RNA branches for the target `Experimental_Group`.
+- Outputs present: `sgRNA/<sample>/final_*.gRNA.count.csv`, `ATAC/<sample>/*.q30.rmdup.sorted.bam`, `STARsolo/<sample>/Aligned.sortedByCoord.out.bam` (or `STARsolo_paired/` when paired).
+- Conda env includes `deeptools` (see `environment.yml`) for BigWig generation.
+- Reference FASTA available via `nextflow.config` or `--reference-fasta`.
+
+**Example**
+
+```bash
+python scripts/grna_cell_tracks.py \
+  --project-dir . \
+  --sample-barcode-file RAW_FASTQ/input.tsv \
+  --experimental-group Group_1 \
+  --grna-sequence GACCGGAACGATCTCGAGCTTTACAGATCGGAAGAGCACACGTCT \
+  --out-dir grna_tracks/Group_1_guide \
+  --star-alignment-mode single \
+  --min-grna-count 1 \
+  --threads 8 \
+  --jobs 4
+```
+
+**Outputs** (`--out-dir`)
+
+| File / dir | Description |
+| ---------- | ----------- |
+| `selected_cells.tsv` | Cell barcodes, gRNA counts, modality call flags |
+| `run_manifest.json` | Run metadata and per-cell output paths |
+| `cells/<barcode>/` | `ATAC.<barcode>.bam`, `RNA.<barcode>.bam`, matching `.bw` files |
+
+Use `--max-cells` to cap runtime when many cells match. Use `--skip-bigwig` for BAM-only output. Cluster example: `scripts/grna_cell_tracks.lsf`.
+

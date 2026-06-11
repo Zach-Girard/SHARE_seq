@@ -25,6 +25,7 @@ dependencies:
   - bioconductor-bsgenome.hsapiens.ucsc.hg38
   - bioconductor-bsgenome.mmusculus.ucsc.mm10
   - bedtools
+  - deeptools
   - matplotlib
   - pandas
   - biopython

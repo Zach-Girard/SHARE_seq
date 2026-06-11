@@ -18,6 +18,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import matplotlib.pyplot as plt
 
+from barcode_utils import normalize_barcode
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="RNA/ATAC cell barcode overlap per experimental group.")
@@ -69,23 +71,6 @@ def load_sample_metadata(path: str) -> Tuple[Dict[str, str], Dict[str, str]]:
             if group and group.lower() not in ("group", "experimental_group", "condition"):
                 sample_group[sample] = group
     return sample_type, sample_group
-
-
-def normalize_barcode(bc: str, length: int = 24) -> Optional[str]:
-    if bc is None:
-        return None
-    s = str(bc).strip().upper()
-    if not s:
-        return None
-    # ArchR / STAR may append sample suffix after '#'
-    if "#" in s:
-        s = s.split("#")[-1]
-    s = re.sub(r"[^ACGTN]", "", s)
-    if len(s) < length:
-        return None
-    if len(s) > length:
-        s = s[:length]
-    return s
 
 
 def load_rna_barcodes(project_dir: str, sample: str, starsolo_root: str) -> Set[str]:
