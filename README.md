@@ -8,6 +8,32 @@ First-time users should put intentional focus on the Environment Setup, Running 
 
 **See `main.nf` and `nextflow.config` for channel wiring and the full list of parameters.**
 
+### Example Starting Repo File Tree
+
+.
+├── README.md
+├── ENVIRONMENT_SETUP.md
+├── environment.yml
+├── main.nf
+├── nextflow.config
+├── barcodes_RC.txt
+├── run_shareseq.lsf
+├── scripts/
+└── RAW_FASTQ/
+    ├── Undetermined_S0_001_R1.fastq.gz
+    ├── Undetermined_S0_001_R2.fastq.gz
+    ├── sgRNA_Undetermined_S0_R1_001.fastq.gz
+    ├── sgRNA_Undetermined_S0_R2_001.fastq.gz
+    ├── C1200_gRNA_library.csv
+    ├── C6991_gRNA_library.csv
+    └── input.tsv
+
+
+
+
+
+
+
 ### Pipeline Overview
 
 
@@ -38,7 +64,7 @@ Prebuilt reference paths in `nextflow.config` (FASTA, GTF, BWA prefix, STAR inde
 | ------------------- | ----------------------------------------------------------------- |
 | `hybrid_`*          | `species_model = hybrid`                                          |
 | `mm10_`*            | `species_model = mouse`                                           |
-| `hg19_`* / `hg38_*` | `species_model = human` and `human_genome_build` (default `hg19`) |
+| `hg19_`* / `hg38_`* | `species_model = human` and `human_genome_build` (default `hg19`) |
 
 
 ### Sample barcode file and inputs
@@ -70,8 +96,6 @@ The `--sample_barcode_file` parameter is **required** for every run.
 | 5   | gRNA library CSV (resolved under project dir or `RAW_FASTQ/`) |
 
 
-
-
 **Example Sample Barcode File**
 
 ```tsv
@@ -80,9 +104,6 @@ RNA_A ACGTACGT  RNA Group_1
 ATAC_A  TGCATGCA  ATAC  Group_1
 sgRNA_A gcagagtc  sgRNA Group_1 Group_1_gRNA_library.csv
 ```
-
-
-
 
 **Undetermined FASTQs**
 
@@ -93,10 +114,9 @@ sgRNA_A gcagagtc  sgRNA Group_1 Group_1_gRNA_library.csv
 | sgRNA    | `--sgrna_undetermined_r1`                                  | `sgRNA_Undetermined_S0_R1_001.fastq.gz` or `*gRNA*Undetermined*R1*.fastq.gz` |
 
 
-
 ### Cell Barcode file configuration
 
-A default 8bp cell barcode whitelist has been set: `barcodes_RC.txt`. This is a reverse complemented cell barcode list. Change `barcodes_8bp_file` if a new cell barcode file is required. The cell barcode file should be placed in the root directory. With `barcodes_rc = false`, barcodes are used as written; with `true`, each 8bp barcode is reverse-complemented before use.
+A default 8bp cell barcode whitelist has been set: `barcodes_RC.txt`. This is a reverse complemented cell barcode list. Change `barcodes_8bp_file` if a new cell barcode file is required. **The cell barcode file should be placed in the root directory**. With `barcodes_rc = false`, barcodes are used as written; with `true`, each 8bp barcode is reverse-complemented before use.
 
 The same whitelist drives the `RENAME_FASTQ` process, single-end STARsolo (`CB_UMI_Complex`), and the combinatorial 24bp whitelist for paired-end STARsolo.
 
