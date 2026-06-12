@@ -68,6 +68,7 @@ class NegativeGuide:
     name: str
     sequence: str
     label: str
+    matrix_sequence: str = ""
 
 
 @dataclass
@@ -162,6 +163,73 @@ def parse_args() -> argparse.Namespace:
 
 def normalize_sequence(seq: str) -> str:
     return re.sub(r"[^ACGTN]", "", (seq or "").strip().upper())
+
+
+def sequence_matches_with_n(pattern: str, candidate: str) -> bool:
+    """True when candidate matches pattern, treating N in pattern as any ACGT base."""
+    pattern = normalize_sequence(pattern)
+    candidate = normalize_sequence(candidate)
+    if not pattern or not candidate or len(pattern) != len(candidate):
+        return False
+    for p, c in zip(pattern, candidate):
+        if p == "N":
+            if c not in "ACGT":
+                return False
+            continue
+        if p != c:
+            return False
+    return True
+
+
+def find_matrix_column_for_guide(
+    pattern: str,
+    headers: List[str],
+) -> Optional[Tuple[int, str]]:
+    """
+    Map a library guide sequence to a count-matrix column index.
+
+    Tries exact header match first, then N-aware matching (library N -> any base).
+    """
+    pattern_norm = normalize_sequence(pattern)
+    if not pattern_norm:
+        return None
+
+    for idx, header in enumerate(headers):
+        if idx == 0:
+            continue
+        candidate = normalize_sequence(header)
+        if candidate == pattern_norm:
+            return idx, candidate
+
+    matches: List[Tuple[int, str]] = []
+    for idx, header in enumerate(headers):
+        if idx == 0 or not header:
+            continue
+        candidate = normalize_sequence(header)
+        if sequence_matches_with_n(pattern_norm, candidate):
+            matches.append((idx, candidate))
+
+    if not matches:
+        return None
+    if len(matches) > 1:
+        fixed_bases = sum(1 for base in pattern_norm if base != "N")
+        matches.sort(
+            key=lambda item: (
+                -sum(
+                    1
+                    for p, c in zip(pattern_norm, item[1])
+                    if p != "N" and p == c
+                ),
+                -fixed_bases,
+                item[1],
+            )
+        )
+        print(
+            f"WARNING: guide {pattern_norm!r} matched multiple matrix columns; "
+            f"using {matches[0][1]!r}",
+            file=sys.stderr,
+        )
+    return matches[0]
 
 
 def _pick_column(fieldnames: List[str], candidates: Tuple[str, ...]) -> Optional[str]:
@@ -297,18 +365,29 @@ def map_guides_to_matrix_columns(
     headers: List[str],
     guides: List[NegativeGuide],
 ) -> Dict[str, int]:
-    header_upper = {h.strip().upper(): i for i, h in enumerate(headers) if h}
     mapping: Dict[str, int] = {}
     missing: List[str] = []
+    used_columns: Set[int] = set()
     for guide in guides:
-        idx = header_upper.get(guide.sequence.upper())
-        if idx is None:
+        match = find_matrix_column_for_guide(guide.sequence, headers)
+        if match is None:
             missing.append(guide.sequence)
             continue
+        idx, matrix_seq = match
+        if idx in used_columns:
+            print(
+                f"WARNING: matrix column {matrix_seq!r} already matched; "
+                f"skipping duplicate guide {guide.name!r}",
+                file=sys.stderr,
+            )
+            continue
+        used_columns.add(idx)
+        guide.matrix_sequence = matrix_seq
         mapping[guide.sequence] = idx
     if not mapping:
         raise ValueError(
             "None of the negative-control sequences were found as columns in the count matrix. "
+            "Library sequences with N are matched to resolved matrix columns (N matches any ACGT). "
             f"Missing: {', '.join(missing[:5])}"
             + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
         )
@@ -317,6 +396,10 @@ def map_guides_to_matrix_columns(
             f"WARNING: {len(missing)} negative-control sequence(s) not in count matrix; skipping.",
             file=sys.stderr,
         )
+    print(
+        f"Matched {len(mapping)} negative-control guide(s) to count matrix columns",
+        file=sys.stderr,
+    )
     return mapping
 
 
@@ -382,9 +465,11 @@ def write_negative_guides(path: str, guides: List[NegativeGuide]) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", newline="") as fh:
         writer = csv.writer(fh, delimiter="\t")
-        writer.writerow(["guide_name", "sequence", "label"])
+        writer.writerow(["guide_name", "library_sequence", "matrix_sequence", "label"])
         for g in guides:
-            writer.writerow([g.name, g.sequence, g.label])
+            if not g.matrix_sequence:
+                continue
+            writer.writerow([g.name, g.sequence, g.matrix_sequence, g.label])
 
 
 def write_selected_cells(path: str, cells: List[NegativeCtrlCell]) -> None:
