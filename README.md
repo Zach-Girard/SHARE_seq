@@ -296,5 +296,5 @@ python scripts/negative_ctrl_merged_tracks.py \
 | `merged/` | `ATAC.negative_ctrl.merged.bam`, `RNA.negative_ctrl.merged.bam`, matching `.bw` files |
 | `run_manifest.json` | Run metadata and merge read counts |
 
-Use `--require-modality-call` to restrict to ATAC/RNA-called cells. **Pass `--grna-library-csv` explicitly** (or `--sample-barcode-file` with column 5) so the script does not silently use a different path from `manifests/sgRNA.tsv`. Check `library_audit.tsv` in the output dir to verify which file and sequences were read. Cluster example: `scripts/negative_ctrl_merged_tracks.lsf`.
+Required: `--sample-barcode-file` and `--experimental-group`. Sample IDs are auto-resolved from the group, and the gRNA library CSV is auto-resolved from column 5 of the sgRNA row in the sample barcode file. Reference FASTA and effective genome size are read from `<project-dir>/nextflow.config`. Use `--require-modality-call` to restrict to ATAC/RNA-called cells. Check `library_audit.tsv` in the output dir to verify which file and sequences were read. Cluster example: `scripts/negative_ctrl_merged_tracks.lsf`.
 

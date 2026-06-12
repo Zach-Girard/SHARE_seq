@@ -21,45 +21,35 @@ cd "$LS_SUBCWD"
 # source "$(conda info --base)/etc/profile.d/conda.sh"
 # conda activate nextflow-master
 
-# --- Required / primary settings ---
+# --- Required ---
 PROJECT_DIR="."
 SAMPLE_BARCODE_FILE="RAW_FASTQ/input.tsv"
 EXPERIMENTAL_GROUP="C1200"
 OUT_DIR="negative_ctrl_tracks/${EXPERIMENTAL_GROUP}"
 
-# --- Optional: explicit sample IDs (leave empty to resolve from EXPERIMENTAL_GROUP) ---
-SGRNA_SAMPLE=""
-ATAC_SAMPLE=""
-RNA_SAMPLE=""
-
-# --- gRNA library (recommended: set explicitly to avoid wrong file from manifests/) ---
-# Must match the library used when the pipeline ran (sample barcode file column 5).
-GRNA_LIBRARY_CSV="RAW_FASTQ/YOUR_gRNA_library.csv"
+# --- Optional ---
 CONTROL_LABEL="negative_ctrl"
-
-# --- Alignment / filtering ---
 STAR_MODE="single"              # single | paired
 MODALITY="both"                 # atac | rna | both
 MIN_GRNA_COUNT=1
 ATAC_BAM_TYPE="rmdup"           # rmdup | mapped
-REQUIRE_MODALITY_CALL=0         # 1 = only ATAC+RNA-called cells
+REQUIRE_MODALITY_CALL=1         # 1 = only ATAC+RNA-called cells
 SKIP_BIGWIG=0                   # 1 = BAM only, no BigWig
-
-# --- BigWig / performance ---
 BIGWIG_BIN_SIZE=10
 THREADS=8
 
-# --- Reference (leave empty to read from nextflow.config) ---
-REFERENCE_FASTA=""
-EFFECTIVE_GENOME_SIZE=0         # 0 = auto from species
-SPECIES_MODEL=""                # human | mouse | hybrid
-HUMAN_GENOME_BUILD=""           # hg19 | hg38
-NEXTFLOW_CONFIG=""              # default: ${PROJECT_DIR}/nextflow.config
+for var in SAMPLE_BARCODE_FILE EXPERIMENTAL_GROUP OUT_DIR; do
+  if [[ -z "${!var}" ]]; then
+    echo "ERROR: set ${var} before submitting." >&2
+    exit 1
+  fi
+done
 
-# --- Build command ---
 CMD=(
   python3 scripts/negative_ctrl_merged_tracks.py
   --project-dir "${PROJECT_DIR}"
+  --sample-barcode-file "${SAMPLE_BARCODE_FILE}"
+  --experimental-group "${EXPERIMENTAL_GROUP}"
   --out-dir "${OUT_DIR}"
   --star-alignment-mode "${STAR_MODE}"
   --modality "${MODALITY}"
@@ -70,44 +60,11 @@ CMD=(
   --control-label "${CONTROL_LABEL}"
 )
 
-if [[ -n "${SAMPLE_BARCODE_FILE}" ]]; then
-  CMD+=(--sample-barcode-file "${SAMPLE_BARCODE_FILE}")
-fi
-if [[ -n "${EXPERIMENTAL_GROUP}" ]]; then
-  CMD+=(--experimental-group "${EXPERIMENTAL_GROUP}")
-fi
-if [[ -n "${SGRNA_SAMPLE}" ]]; then
-  CMD+=(--sgrna-sample "${SGRNA_SAMPLE}")
-fi
-if [[ -n "${ATAC_SAMPLE}" ]]; then
-  CMD+=(--atac-sample "${ATAC_SAMPLE}")
-fi
-if [[ -n "${RNA_SAMPLE}" ]]; then
-  CMD+=(--rna-sample "${RNA_SAMPLE}")
-fi
-if [[ -n "${GRNA_LIBRARY_CSV}" ]]; then
-  CMD+=(--grna-library-csv "${GRNA_LIBRARY_CSV}")
-fi
 if [[ "${REQUIRE_MODALITY_CALL}" -eq 1 ]]; then
   CMD+=(--require-modality-call)
 fi
 if [[ "${SKIP_BIGWIG}" -eq 1 ]]; then
   CMD+=(--skip-bigwig)
-fi
-if [[ -n "${REFERENCE_FASTA}" ]]; then
-  CMD+=(--reference-fasta "${REFERENCE_FASTA}")
-fi
-if [[ "${EFFECTIVE_GENOME_SIZE}" -gt 0 ]]; then
-  CMD+=(--effective-genome-size "${EFFECTIVE_GENOME_SIZE}")
-fi
-if [[ -n "${SPECIES_MODEL}" ]]; then
-  CMD+=(--species-model "${SPECIES_MODEL}")
-fi
-if [[ -n "${HUMAN_GENOME_BUILD}" ]]; then
-  CMD+=(--human-genome-build "${HUMAN_GENOME_BUILD}")
-fi
-if [[ -n "${NEXTFLOW_CONFIG}" ]]; then
-  CMD+=(--nextflow-config "${NEXTFLOW_CONFIG}")
 fi
 
 echo "Running: ${CMD[*]}"

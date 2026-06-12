@@ -2,7 +2,8 @@
 """
 Post-pipeline: merged ATAC/RNA BAM + BigWig for cells with negative-control gRNAs.
 
-Reads guide labels from the gRNA library CSV (default label: negative_ctrl), finds
+Reads guide labels from the gRNA library CSV listed in sample metadata
+(column 5 for the sgRNA sample in the selected experimental group), finds
 matching cells in final_<sample>.gRNA.count.csv, and writes merged tracks.
 """
 
@@ -25,7 +26,6 @@ from barcode_utils import normalize_barcode
 from cell_overlap_by_group import (
     load_atac_barcodes,
     load_rna_barcodes,
-    load_sample_metadata,
 )
 from grna_cell_tracks import (
     SampleSet,
@@ -39,6 +39,7 @@ from grna_cell_tracks import (
     resolve_effective_genome_size,
     resolve_reference_fasta,
     resolve_sample_barcode_file,
+    resolve_samples,
     rna_bam_path,
     write_barcode_list,
 )
@@ -73,21 +74,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--project-dir", required=True, help="Nextflow project / launch directory.")
     p.add_argument(
         "--sample-barcode-file",
-        default="",
-        help="Sample metadata TSV/CSV (required unless sample IDs are explicit).",
+        required=True,
+        help="Sample metadata TSV/CSV with gRNA library in column 5 for sgRNA rows.",
     )
     p.add_argument(
         "--experimental-group",
-        default="",
-        help="Experimental_Group to resolve sgRNA/ATAC/RNA samples.",
-    )
-    p.add_argument("--sgrna-sample", default="", help="Explicit sgRNA sample ID.")
-    p.add_argument("--atac-sample", default="", help="Explicit ATAC sample ID.")
-    p.add_argument("--rna-sample", default="", help="Explicit RNA sample ID.")
-    p.add_argument(
-        "--grna-library-csv",
-        default="",
-        help="gRNA library CSV (default: from manifests/sgRNA.tsv for the sgRNA sample).",
+        required=True,
+        help="Experimental_Group used to resolve sgRNA/ATAC/RNA sample IDs.",
     )
     p.add_argument(
         "--control-label",
@@ -127,24 +120,23 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--bigwig-bin-size", type=int, default=10, help="BigWig bin size (bp).")
     p.add_argument("--threads", type=int, default=4, help="Threads for samtools/bamCoverage.")
-    p.add_argument("--reference-fasta", default="", help="Reference FASTA override.")
-    p.add_argument("--effective-genome-size", type=int, default=0)
-    p.add_argument(
-        "--species-model",
-        default="",
-        choices=["", "human", "mouse", "hybrid"],
-    )
-    p.add_argument(
-        "--human-genome-build",
-        default="",
-        choices=["", "hg19", "hg38"],
-    )
-    p.add_argument(
-        "--nextflow-config",
-        default="",
-        help="Path to nextflow.config (default: <project-dir>/nextflow.config).",
-    )
     return p.parse_args()
+
+
+def resolve_reference_from_nextflow(project_dir: str) -> Tuple[str, int, str]:
+    """Reference FASTA and effective genome size from <project-dir>/nextflow.config."""
+    config_path = os.path.join(project_dir, "nextflow.config")
+    nf_config = parse_nextflow_config(config_path)
+    nf_ref_args = argparse.Namespace(
+        reference_fasta="",
+        species_model="",
+        human_genome_build="",
+    )
+    reference_fasta, species_key = resolve_reference_fasta(
+        project_dir, nf_ref_args, nf_config
+    )
+    effective_genome_size = resolve_effective_genome_size(species_key, 0)
+    return reference_fasta, effective_genome_size, config_path
 
 
 def normalize_sequence(seq: str) -> str:
@@ -356,14 +348,24 @@ def _resolve_library_path_value(project_dir: str, lib_value: str) -> Optional[st
     return None
 
 
-def _library_from_sample_barcode_file(
+def resolve_grna_library_path(project_dir: str, library_path: str) -> str:
+    """Resolve --grna-library-csv to an existing file."""
+    resolved = _resolve_library_path_value(project_dir, library_path)
+    if resolved:
+        return resolved
+    raise FileNotFoundError(f"gRNA library not found: {library_path}")
+
+
+def resolve_grna_library_from_sample_barcode(
     project_dir: str,
     sample_barcode_file: str,
     sgrna_sample: str,
-) -> Tuple[Optional[str], str]:
+) -> str:
+    """Resolve gRNA library path from sample barcode file column 5."""
     barcode_path = resolve_sample_barcode_file(project_dir, sample_barcode_file)
     if not barcode_path or not os.path.isfile(barcode_path):
-        return None, ""
+        raise FileNotFoundError(f"Sample barcode file not found: {sample_barcode_file}")
+
     with open(barcode_path, "r", errors="replace") as fh:
         for raw in fh:
             line = raw.strip()
@@ -376,104 +378,53 @@ def _library_from_sample_barcode_file(
                 continue
             if cols[0] != sgrna_sample:
                 continue
-            resolved = _resolve_library_path_value(project_dir, cols[-1])
-            if resolved:
-                return resolved, f"sample_barcode_file {barcode_path!r} column 5"
-    return None, ""
+            library_raw = cols[4]
+            if not library_raw:
+                raise ValueError(
+                    f"Column 5 (gRNA library CSV) is empty for sgRNA sample {sgrna_sample!r} "
+                    f"in {barcode_path}"
+                )
+            resolved = resolve_grna_library_path(project_dir, library_raw)
+            print(
+                f"Resolved gRNA library from sample barcode file: {library_raw} -> {resolved}",
+                flush=True,
+            )
+            return resolved
 
-
-def _library_from_manifest(
-    project_dir: str,
-    sgrna_sample: str,
-) -> Tuple[Optional[str], str]:
-    manifest = os.path.join(project_dir, "manifests", "sgRNA.tsv")
-    if not os.path.isfile(manifest):
-        return None, ""
-    with open(manifest, newline="", errors="replace") as fh:
-        for row in csv.DictReader(fh, delimiter="\t"):
-            if (row.get("sample_name") or "").strip() != sgrna_sample:
-                continue
-            lib = (row.get("grna_library_csv") or "").strip()
-            resolved = _resolve_library_path_value(project_dir, lib)
-            if resolved:
-                return resolved, f"manifests/sgRNA.tsv ({manifest})"
-    return None, ""
-
-
-def resolve_grna_library_csv(
-    project_dir: str,
-    sgrna_sample: str,
-    explicit_path: str,
-    sample_barcode_file: str = "",
-) -> Tuple[str, str]:
-    """
-    Resolve gRNA library CSV path.
-
-    Priority:
-      1. --grna-library-csv
-      2. sample_barcode_file column 5 for the sgRNA sample
-      3. manifests/sgRNA.tsv from the Nextflow run
-    """
-    if explicit_path:
-        resolved = _resolve_library_path_value(project_dir, explicit_path)
-        if resolved:
-            return resolved, f"--grna-library-csv ({explicit_path})"
-        raise FileNotFoundError(f"gRNA library not found: {explicit_path}")
-
-    if sample_barcode_file:
-        resolved, source = _library_from_sample_barcode_file(
-            project_dir, sample_barcode_file, sgrna_sample
-        )
-        if resolved:
-            return resolved, source
-
-    resolved, source = _library_from_manifest(project_dir, sgrna_sample)
-    if resolved:
-        print(
-            f"WARNING: using library from {source}. "
-            "If this is not the file you expect, pass --grna-library-csv explicitly.",
-            file=sys.stderr,
-        )
-        return resolved, source
-
-    raise FileNotFoundError(
-        f"Could not resolve gRNA library for sgRNA sample {sgrna_sample!r}. "
-        "Pass --grna-library-csv or --sample-barcode-file with column 5 set."
+    raise ValueError(
+        f"Could not find sgRNA sample {sgrna_sample!r} with a column-5 gRNA library "
+        f"in sample barcode file {barcode_path}"
     )
+
+
+def resolve_samples_from_group(args: argparse.Namespace, project_dir: str) -> SampleSet:
+    """Resolve sample IDs from sample barcode file and experimental group."""
+    group_args = argparse.Namespace(
+        sgrna_sample="",
+        atac_sample="",
+        rna_sample="",
+        sample_barcode_file=args.sample_barcode_file,
+        experimental_group=args.experimental_group,
+    )
+    return resolve_samples(group_args, project_dir)
 
 
 def write_library_audit(
     out_dir: str,
     library_path: str,
-    library_source: str,
     guides: List[NegativeGuide],
 ) -> str:
-    """Record which library file was read (for debugging path mismatches)."""
+    """Record which library file was read."""
     audit_path = os.path.join(out_dir, "library_audit.tsv")
     os.makedirs(out_dir, exist_ok=True)
     with open(audit_path, "w", newline="") as fh:
         writer = csv.writer(fh, delimiter="\t")
         writer.writerow(["library_path", library_path])
-        writer.writerow(["library_source", library_source])
         writer.writerow([])
         writer.writerow(["guide_name", "library_sequence", "label"])
         for guide in guides:
             writer.writerow([guide.name, guide.sequence, guide.label])
     return audit_path
-
-
-def resolve_samples_from_args(args: argparse.Namespace, project_dir: str) -> SampleSet:
-    """Thin wrapper matching grna_cell_tracks.resolve_samples without grna-sequence arg."""
-    ns = argparse.Namespace(
-        sgrna_sample=args.sgrna_sample,
-        atac_sample=args.atac_sample,
-        rna_sample=args.rna_sample,
-        sample_barcode_file=args.sample_barcode_file,
-        experimental_group=args.experimental_group,
-    )
-    from grna_cell_tracks import resolve_samples
-
-    return resolve_samples(ns, project_dir)
 
 
 def map_guides_to_matrix_columns(
@@ -698,21 +649,25 @@ def main() -> int:
     os.makedirs(out_dir, exist_ok=True)
 
     try:
-        samples = resolve_samples_from_args(args, project_dir)
-        library_path, library_source = resolve_grna_library_csv(
+        samples = resolve_samples_from_group(args, project_dir)
+        library_path = resolve_grna_library_from_sample_barcode(
             project_dir,
-            samples.sgrna_sample,
-            args.grna_library_csv,
             args.sample_barcode_file,
+            samples.sgrna_sample,
         )
         print(f"Using gRNA library: {library_path}", flush=True)
-        print(f"Library resolved from: {library_source}", flush=True)
+        print(
+            "Resolved samples from experimental group "
+            f"{samples.experimental_group!r}: "
+            f"sgRNA={samples.sgrna_sample}, ATAC={samples.atac_sample}, RNA={samples.rna_sample}",
+            flush=True,
+        )
         guides = load_negative_control_guides(library_path, args.control_label)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    audit_path = write_library_audit(out_dir, library_path, library_source, guides)
+    audit_path = write_library_audit(out_dir, library_path, guides)
     print(f"Wrote {audit_path}", flush=True)
 
     matrix_path = grna_count_matrix_path(project_dir, samples.sgrna_sample)
@@ -749,8 +704,11 @@ def main() -> int:
         manifest = {
             "control_label": args.control_label,
             "grna_library_csv": library_path,
-            "grna_library_source": library_source,
             "library_audit": audit_path,
+            "experimental_group": samples.experimental_group,
+            "sgrna_sample": samples.sgrna_sample,
+            "atac_sample": samples.atac_sample,
+            "rna_sample": samples.rna_sample,
             "n_negative_guides": len(guides),
             "n_cells": 0,
             "merged": {},
@@ -759,17 +717,15 @@ def main() -> int:
             json.dump(manifest, fh, indent=2)
         return 0
 
-    config_path = args.nextflow_config or os.path.join(project_dir, "nextflow.config")
-    nf_config = parse_nextflow_config(config_path)
     try:
-        reference_fasta, species_key = resolve_reference_fasta(project_dir, args, nf_config)
-        effective_genome_size = resolve_effective_genome_size(
-            species_key, args.effective_genome_size
+        reference_fasta, effective_genome_size, config_path = resolve_reference_from_nextflow(
+            project_dir
         )
     except (FileNotFoundError, ValueError) as exc:
         if args.skip_bigwig:
             reference_fasta = ""
-            effective_genome_size = args.effective_genome_size or 2_864_785_220
+            effective_genome_size = 0
+            config_path = os.path.join(project_dir, "nextflow.config")
         else:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
@@ -799,9 +755,7 @@ def main() -> int:
     manifest = {
         "control_label": args.control_label,
         "grna_library_csv": library_path,
-        "grna_library_source": library_source,
         "library_audit": audit_path,
-        "experimental_group": samples.experimental_group,
         "sgrna_sample": samples.sgrna_sample,
         "atac_sample": samples.atac_sample,
         "rna_sample": samples.rna_sample,
@@ -810,6 +764,7 @@ def main() -> int:
         "n_negative_guides": len(guides),
         "n_negative_guides_in_matrix": len(col_indices),
         "n_cells": len(cells),
+        "nextflow_config": config_path,
         "reference_fasta": reference_fasta,
         "effective_genome_size": effective_genome_size,
         "merged": merged,
