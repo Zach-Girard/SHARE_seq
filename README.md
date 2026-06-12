@@ -264,8 +264,9 @@ python scripts/grna_cell_tracks.py \
 | File / dir | Description |
 | ---------- | ----------- |
 | `selected_cells.tsv` | Cell barcodes, gRNA counts, modality call flags |
-| `run_manifest.json` | Run metadata and per-cell output paths |
+| `run_manifest.json` | Run metadata, per-cell results, and `merged` summary |
 | `cells/<barcode>/` | `ATAC.<barcode>.bam`, `RNA.<barcode>.bam`, matching `.bw` files |
+| `merged/` | Combined `ATAC.merged.bam`, `RNA.merged.bam`, matching `.bw` files, and `merged_barcodes.txt` |
 
-Use `--max-cells` to cap runtime when many cells match. Use `--skip-bigwig` for BAM-only output. Cluster example: `scripts/grna_cell_tracks.lsf`.
+Merged tracks include **all cells in `selected_cells.tsv`** (same set used for per-cell outputs). With `--require-modality-call`, only modality-called cells are in that list. Use `--skip-merged` to omit combined files. Use `--max-cells` to cap runtime when many cells match. Use `--skip-bigwig` for BAM-only output. Cluster example: `scripts/grna_cell_tracks.lsf`.
 

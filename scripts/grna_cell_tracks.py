@@ -113,6 +113,11 @@ def parse_args() -> argparse.Namespace:
         help="Keep only cells also called in ATAC (ArchR) and RNA (STARsolo filtered).",
     )
     p.add_argument("--max-cells", type=int, default=0, help="Safety cap on cells processed (0 = no cap).")
+    p.add_argument(
+        "--skip-merged",
+        action="store_true",
+        help="Skip merged BAM/BigWig across all selected cells.",
+    )
     p.add_argument("--skip-bigwig", action="store_true", help="Emit BAMs only.")
     p.add_argument(
         "--atac-bam-type",
@@ -475,19 +480,23 @@ def _cb_from_qname(qname: str) -> Optional[str]:
 
 
 def _sam_line_matches_barcode(sam_line: str, barcode: str) -> bool:
-    # Fast path: exact CB:Z:<24bp> auxiliary field (e.g. CB:Z:TGAAGCCATGACAGACCGATGTTT).
-    if cb_tag_field(barcode) in sam_line:
-        return True
+    return _sam_line_matches_barcodes(sam_line, {barcode})
+
+
+def _sam_line_matches_barcodes(sam_line: str, barcodes: Set[str]) -> bool:
+    if not barcodes:
+        return False
     cols = sam_line.split("\t")
     if len(cols) < 11:
         return False
     cb = _cb_from_sam_optional_fields(cols[11:])
-    if cb == barcode:
+    if cb and cb in barcodes:
         return True
     qname_bc = _cb_from_qname(cols[0])
-    if qname_bc == barcode:
+    if qname_bc and qname_bc in barcodes:
         return True
-    return barcode in cols[0]
+    qname = cols[0]
+    return any(bc in qname for bc in barcodes)
 
 
 def _write_sorted_bam_from_stream(
@@ -638,6 +647,183 @@ def extract_cell_bam(
     if reads > 0:
         return reads, "stream"
     return 0, ""
+
+
+def write_barcode_list(path: str, barcodes: List[str]) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as fh:
+        for bc in sorted(barcodes):
+            fh.write(bc + "\n")
+
+
+def extract_merged_bam_by_tag(
+    source_bam: str,
+    barcodes: List[str],
+    out_bam: str,
+    threads: int,
+) -> Tuple[int, str]:
+    """Filter source BAM to reads from any listed CB:Z barcode."""
+    if not barcodes:
+        return 0, ""
+    os.makedirs(os.path.dirname(out_bam) or ".", exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".barcodes.txt",
+        delete=False,
+    ) as fh:
+        for bc in barcodes:
+            fh.write(bc + "\n")
+        barcode_file = fh.name
+    try:
+        view = subprocess.run(
+            [
+                "samtools",
+                "view",
+                "-@",
+                str(threads),
+                "-b",
+                "-D",
+                f"CB:{barcode_file}",
+                source_bam,
+            ],
+            capture_output=True,
+        )
+        if view.returncode == 0 and view.stdout:
+            reads = _write_sorted_bam_from_stream(view.stdout, out_bam, threads)
+            return reads, "CB:-D"
+    finally:
+        try:
+            os.remove(barcode_file)
+        except OSError:
+            pass
+    return 0, ""
+
+
+def extract_merged_bam_by_stream(
+    source_bam: str,
+    barcodes: Set[str],
+    out_bam: str,
+    threads: int,
+) -> int:
+    """Scan BAM and keep reads matching any selected cell barcode."""
+    if not barcodes:
+        return 0
+    os.makedirs(os.path.dirname(out_bam) or ".", exist_ok=True)
+    view = subprocess.Popen(
+        ["samtools", "view", "-@", str(threads), "-h", source_bam],
+        stdout=subprocess.PIPE,
+    )
+    assert view.stdout is not None
+    header_lines: List[bytes] = []
+    matched: List[bytes] = []
+    for raw in view.stdout:
+        if raw.startswith(b"@"):
+            header_lines.append(raw)
+            continue
+        line = raw.decode("utf-8", errors="replace")
+        if _sam_line_matches_barcodes(line, barcodes):
+            matched.append(raw)
+    view.wait()
+    if view.returncode != 0:
+        raise subprocess.CalledProcessError(view.returncode, "samtools view")
+    if not matched:
+        open(out_bam, "wb").close()
+        return 0
+    return _write_sorted_bam_from_stream(b"".join(header_lines + matched), out_bam, threads)
+
+
+def extract_merged_bam(
+    source_bam: str,
+    barcodes: List[str],
+    out_bam: str,
+    threads: int,
+) -> Tuple[int, str]:
+    """Return (read_count, method_label) for all cells combined."""
+    barcode_set = set(barcodes)
+    reads, method = extract_merged_bam_by_tag(source_bam, barcodes, out_bam, threads)
+    if reads > 0:
+        return reads, method
+    reads = extract_merged_bam_by_stream(source_bam, barcode_set, out_bam, threads)
+    if reads > 0:
+        return reads, "stream"
+    return 0, ""
+
+
+def build_merged_tracks(cfg: RunConfig, cells: List[CellHit]) -> dict:
+    """
+    Build merged ATAC/RNA BAM and BigWig across all selected cells.
+
+    Uses the same cell list as per-cell extraction (already filtered by
+    --require-modality-call when that flag is set).
+    """
+    merged_dir = os.path.join(cfg.out_dir, "merged")
+    os.makedirs(merged_dir, exist_ok=True)
+    barcodes = [c.cell_barcode for c in cells]
+    barcodes_path = os.path.join(merged_dir, "merged_barcodes.txt")
+    write_barcode_list(barcodes_path, barcodes)
+
+    merged: dict = {
+        "n_cells": len(barcodes),
+        "barcodes_file": barcodes_path,
+        "require_modality_call": cfg.require_modality_call,
+        "atac_reads": 0,
+        "rna_reads": 0,
+        "atac_bam": "",
+        "rna_bam": "",
+        "atac_bw": "",
+        "rna_bw": "",
+        "warnings": [],
+    }
+
+    if not barcodes:
+        merged["warnings"].append("no cells selected for merge")
+        return merged
+
+    if cfg.modality in ("atac", "both"):
+        atac_src = atac_bam_path(cfg.project_dir, cfg.samples.atac_sample, cfg.atac_bam_type)
+        atac_out = os.path.join(merged_dir, "ATAC.merged.bam")
+        reads, method = extract_merged_bam(atac_src, barcodes, atac_out, cfg.threads)
+        if method == "stream":
+            merged["warnings"].append("ATAC merged: used streaming CB/QNAME filter")
+        merged["atac_reads"] = reads
+        if reads > 0:
+            merged["atac_bam"] = atac_out
+            if not cfg.skip_bigwig:
+                bw_out = os.path.join(merged_dir, "ATAC.merged.bw")
+                if make_bigwig(
+                    atac_out,
+                    bw_out,
+                    cfg.bigwig_bin_size,
+                    cfg.effective_genome_size,
+                    cfg.threads,
+                ):
+                    merged["atac_bw"] = bw_out
+        else:
+            merged["warnings"].append("ATAC merged: zero reads")
+
+    if cfg.modality in ("rna", "both"):
+        rna_src = rna_bam_path(cfg.project_dir, cfg.samples.rna_sample, cfg.star_alignment_mode)
+        rna_out = os.path.join(merged_dir, "RNA.merged.bam")
+        reads, method = extract_merged_bam(rna_src, barcodes, rna_out, cfg.threads)
+        if method == "stream":
+            merged["warnings"].append("RNA merged: used streaming CB/QNAME filter")
+        merged["rna_reads"] = reads
+        if reads > 0:
+            merged["rna_bam"] = rna_out
+            if not cfg.skip_bigwig:
+                bw_out = os.path.join(merged_dir, "RNA.merged.bw")
+                if make_bigwig(
+                    rna_out,
+                    bw_out,
+                    cfg.bigwig_bin_size,
+                    cfg.effective_genome_size,
+                    cfg.threads,
+                ):
+                    merged["rna_bw"] = bw_out
+        else:
+            merged["warnings"].append("RNA merged: zero reads")
+
+    return merged
 
 
 def make_bigwig(
@@ -896,6 +1082,16 @@ def main() -> int:
                 manifest_rows.append(fut.result())
 
     manifest_rows.sort(key=lambda r: (-int(r["grna_count"]), r["cell_barcode"]))
+
+    merged_tracks: dict = {}
+    if not args.skip_merged:
+        print(
+            f"Building merged tracks for {len(cells)} cell(s)"
+            + (" (require-modality-call)" if args.require_modality_call else ""),
+            flush=True,
+        )
+        merged_tracks = build_merged_tracks(cfg, cells)
+
     manifest = {
         "grna_sequence": args.grna_sequence,
         "experimental_group": samples.experimental_group,
@@ -903,9 +1099,11 @@ def main() -> int:
         "atac_sample": samples.atac_sample,
         "rna_sample": samples.rna_sample,
         "modality": args.modality,
+        "require_modality_call": args.require_modality_call,
         "cells_processed": len(manifest_rows),
         "reference_fasta": reference_fasta,
         "effective_genome_size": effective_genome_size,
+        "merged": merged_tracks,
         "results": manifest_rows,
     }
     manifest_path = os.path.join(out_dir, "run_manifest.json")
@@ -913,6 +1111,8 @@ def main() -> int:
         json.dump(manifest, fh, indent=2)
 
     print(f"Wrote {len(cells)} cell(s) under {out_dir}/cells/")
+    if merged_tracks:
+        print(f"Wrote merged tracks under {out_dir}/merged/")
     print(f"Wrote {manifest_path}")
     return 0
 
