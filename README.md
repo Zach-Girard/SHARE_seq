@@ -272,7 +272,7 @@ Merged tracks include **all cells in `selected_cells.tsv`** (same set used for p
 
 #### `negative_ctrl_merged_tracks.py` — merged tracks for negative-control gRNAs
 
-Reads the gRNA library CSV, selects guides labeled `negative_ctrl` (or `--control-label`), finds cells with those guides in `final_<sample>.gRNA.count.csv`, and writes merged ATAC/RNA BAM + BigWig files (no per-cell outputs).
+Reads the gRNA library CSV (format: `guide_name,sequence,label` — label column 3, sequence column 2), selects rows labeled `negative_ctrl` (or `--control-label`), finds cells with those guides in `final_<sample>.gRNA.count.csv`, and writes merged ATAC/RNA BAM + BigWig files (no per-cell outputs).
 
 **Example**
 
@@ -296,5 +296,5 @@ python scripts/negative_ctrl_merged_tracks.py \
 | `merged/` | `ATAC.negative_ctrl.merged.bam`, `RNA.negative_ctrl.merged.bam`, matching `.bw` files |
 | `run_manifest.json` | Run metadata and merge read counts |
 
-Use `--require-modality-call` to restrict to ATAC/RNA-called cells. Pass `--grna-library-csv` if the library path is not in `manifests/sgRNA.tsv`. Cluster example: `scripts/negative_ctrl_merged_tracks.lsf`.
+Use `--require-modality-call` to restrict to ATAC/RNA-called cells. **Pass `--grna-library-csv` explicitly** (or `--sample-barcode-file` with column 5) so the script does not silently use a different path from `manifests/sgRNA.tsv`. Check `library_audit.tsv` in the output dir to verify which file and sequences were read. Cluster example: `scripts/negative_ctrl_merged_tracks.lsf`.
 

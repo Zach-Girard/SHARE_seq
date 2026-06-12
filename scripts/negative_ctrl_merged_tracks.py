@@ -38,30 +38,16 @@ from grna_cell_tracks import (
     parse_nextflow_config,
     resolve_effective_genome_size,
     resolve_reference_fasta,
+    resolve_sample_barcode_file,
     rna_bam_path,
     write_barcode_list,
 )
 
-SEQUENCE_COL_CANDIDATES = (
-    "sequence",
-    "sgRNA_sequence",
-    "sgrna_sequence",
-    "grna_sequence",
-    "guide_sequence",
-    "grna",
-    "sgrna",
-    "protospacer",
-)
-NAME_COL_CANDIDATES = (
-    "guide",
-    "guide_id",
-    "name",
-    "id",
-    "grna_id",
-    "sgrna_id",
-    "guide_name",
-)
-
+# SHARE-seq library default layout (no header):
+#   col1 = guide name, col2 = sequence, col3 = label (e.g. negative_ctrl)
+DEFAULT_NAME_COL = 0
+DEFAULT_SEQUENCE_COL = 1
+DEFAULT_LABEL_COL = 2
 
 @dataclass
 class NegativeGuide:
@@ -181,15 +167,25 @@ def sequence_matches_with_n(pattern: str, candidate: str) -> bool:
     return True
 
 
+def library_sequence_matches_matrix(library_seq: str, matrix_header: str) -> bool:
+    """Match library protospacer to count-matrix column (exact, N-aware, or substring)."""
+    lib = normalize_sequence(library_seq)
+    mat = normalize_sequence(matrix_header)
+    if not lib or not mat:
+        return False
+    if lib == mat or sequence_matches_with_n(lib, mat):
+        return True
+    # Matrix columns may contain the full construct; library col2 is often the protospacer.
+    if len(lib) >= 8 and lib in mat:
+        return True
+    return False
+
+
 def find_matrix_column_for_guide(
     pattern: str,
     headers: List[str],
 ) -> Optional[Tuple[int, str]]:
-    """
-    Map a library guide sequence to a count-matrix column index.
-
-    Tries exact header match first, then N-aware matching (library N -> any base).
-    """
+    """Map a library guide sequence (column 2) to a count-matrix column index."""
     pattern_norm = normalize_sequence(pattern)
     if not pattern_norm:
         return None
@@ -197,60 +193,108 @@ def find_matrix_column_for_guide(
     for idx, header in enumerate(headers):
         if idx == 0:
             continue
-        candidate = normalize_sequence(header)
-        if candidate == pattern_norm:
-            return idx, candidate
+        if library_sequence_matches_matrix(pattern_norm, header):
+            return idx, normalize_sequence(header)
 
-    matches: List[Tuple[int, str]] = []
-    for idx, header in enumerate(headers):
-        if idx == 0 or not header:
-            continue
-        candidate = normalize_sequence(header)
-        if sequence_matches_with_n(pattern_norm, candidate):
-            matches.append((idx, candidate))
-
-    if not matches:
-        return None
-    if len(matches) > 1:
-        fixed_bases = sum(1 for base in pattern_norm if base != "N")
-        matches.sort(
-            key=lambda item: (
-                -sum(
-                    1
-                    for p, c in zip(pattern_norm, item[1])
-                    if p != "N" and p == c
-                ),
-                -fixed_bases,
-                item[1],
-            )
-        )
-        print(
-            f"WARNING: guide {pattern_norm!r} matched multiple matrix columns; "
-            f"using {matches[0][1]!r}",
-            file=sys.stderr,
-        )
-    return matches[0]
-
-
-def _pick_column(fieldnames: List[str], candidates: Tuple[str, ...]) -> Optional[str]:
-    if not fieldnames:
-        return None
-    lower_map = {name.strip().lower(): name for name in fieldnames if name}
-    for cand in candidates:
-        if cand in lower_map:
-            return lower_map[cand]
     return None
 
 
-def _row_matches_control_label(row: Dict[str, str], control_label: str) -> Tuple[bool, str]:
-    target = control_label.strip().lower()
-    for key, value in row.items():
-        if value is None or not key:
-            continue
-        val = str(value).strip().lower()
-        if val == target:
-            return True, str(value).strip()
-    return False, ""
+def _split_library_line(line: str) -> List[str]:
+    return [c.strip() for c in re.split(r",|\t", line.strip())]
+
+
+def _looks_like_header_row(cols: List[str]) -> bool:
+    if len(cols) < 3:
+        return False
+    c0, c2 = cols[0].lower(), cols[2].lower()
+    if c0 in ("guide", "guide_name", "name", "id", "grna_id"):
+        return True
+    if c2 in ("label", "type", "category", "control", "guide_type", "class"):
+        return True
+    return False
+
+
+def _looks_like_data_row(cols: List[str], control_label: str) -> bool:
+    """True for SHARE-seq rows like name,ACGT...,negative_ctrl."""
+    if len(cols) < 3:
+        return False
+    if cols[2].strip().lower() == control_label.strip().lower():
+        return True
+    seq = normalize_sequence(cols[1])
+    return len(seq) >= 8 and bool(re.fullmatch(r"[ACGTN]+", seq))
+
+
+def parse_grna_library_rows(
+    library_path: str,
+) -> Tuple[List[Dict[str, str]], str]:
+    """
+    Parse gRNA library CSV.
+
+    Default SHARE-seq layout (with or without header row):
+      guide_name, sequence, label
+    """
+    with open(library_path, newline="", errors="replace") as fh:
+        raw_lines = [ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")]
+
+    if not raw_lines:
+        raise ValueError(f"Empty gRNA library: {library_path}")
+
+    first_cols = _split_library_line(raw_lines[0])
+    has_header = _looks_like_header_row(first_cols) and not _looks_like_data_row(
+        first_cols, "negative_ctrl"
+    )
+
+    rows: List[Dict[str, str]] = []
+    if has_header:
+        with open(library_path, newline="", errors="replace") as fh:
+            reader = csv.DictReader(fh)
+            if not reader.fieldnames:
+                raise ValueError(f"Empty gRNA library: {library_path}")
+            fieldnames = list(reader.fieldnames)
+            if len(fieldnames) < 3:
+                raise ValueError(
+                    f"gRNA library must have at least 3 columns (name, sequence, label). "
+                    f"Found headers: {fieldnames}"
+                )
+            # SHARE-seq layout is always positional: col1=name, col2=sequence, col3=label.
+            # Header names are ignored so a column named 'grna' in col1 cannot be mistaken
+            # for the sequence column.
+            name_col = fieldnames[DEFAULT_NAME_COL]
+            seq_col = fieldnames[DEFAULT_SEQUENCE_COL]
+            label_col = fieldnames[DEFAULT_LABEL_COL]
+            for row in reader:
+                if not any((v or "").strip() for v in row.values()):
+                    continue
+                rows.append(
+                    {
+                        "guide_name": (row.get(name_col) or "").strip(),
+                        "sequence": (row.get(seq_col) or "").strip(),
+                        "label": (row.get(label_col) or "").strip(),
+                    }
+                )
+        mode = (
+            f"3-column layout (col2=sequence, col3=label); "
+            f"headers: [{name_col!r}, {seq_col!r}, {label_col!r}]"
+        )
+    else:
+        start = 1 if _looks_like_header_row(first_cols) else 0
+        for line in raw_lines[start:]:
+            cols = _split_library_line(line)
+            if len(cols) < 3:
+                continue
+            rows.append(
+                {
+                    "guide_name": cols[DEFAULT_NAME_COL],
+                    "sequence": cols[DEFAULT_SEQUENCE_COL],
+                    "label": cols[DEFAULT_LABEL_COL],
+                }
+            )
+        mode = "positional columns: guide_name (col1), sequence (col2), label (col3)"
+
+    if not rows:
+        raise ValueError(f"No guide rows in gRNA library: {library_path}")
+    print(f"Parsed gRNA library ({mode}): {len(rows)} row(s)", file=sys.stderr)
+    return rows, mode
 
 
 def load_negative_control_guides(
@@ -260,91 +304,162 @@ def load_negative_control_guides(
     if not os.path.isfile(library_path):
         raise FileNotFoundError(f"gRNA library not found: {library_path}")
 
-    with open(library_path, newline="", errors="replace") as fh:
-        reader = csv.DictReader(fh)
-        if not reader.fieldnames:
-            raise ValueError(f"Empty gRNA library: {library_path}")
-        fieldnames = list(reader.fieldnames)
-        rows = [row for row in reader if any((v or "").strip() for v in row.values())]
-
-    if not rows:
-        raise ValueError(f"No guide rows in gRNA library: {library_path}")
-
-    seq_col = _pick_column(fieldnames, SEQUENCE_COL_CANDIDATES)
-    name_col = _pick_column(fieldnames, NAME_COL_CANDIDATES)
-
-    if not seq_col:
-        raise ValueError(
-            f"Could not find a sequence column in {library_path}. "
-            f"Expected one of: {', '.join(SEQUENCE_COL_CANDIDATES)}"
-        )
+    rows, _mode = parse_grna_library_rows(library_path)
+    target = control_label.strip().lower()
 
     guides: List[NegativeGuide] = []
     seen_sequences: Set[str] = set()
     for row in rows:
-        matched, matched_label = _row_matches_control_label(row, control_label)
-        if not matched:
+        label_val = (row.get("label") or "").strip()
+        if label_val.lower() != target:
             continue
-        seq = normalize_sequence(row.get(seq_col, ""))
+        seq = normalize_sequence(row.get("sequence", ""))
         if not seq:
             continue
         if seq in seen_sequences:
             continue
         seen_sequences.add(seq)
-        name = (row.get(name_col, "") if name_col else "").strip() or matched_label or seq[:16]
-        guides.append(NegativeGuide(name=name, sequence=seq, label=matched_label or control_label))
+        name = (row.get("guide_name") or "").strip() or seq[:16]
+        guides.append(NegativeGuide(name=name, sequence=seq, label=label_val or control_label))
 
     if not guides:
         raise ValueError(
-            f"No guides labeled {control_label!r} in {library_path}. "
-            "Check --control-label or library CSV columns."
+            f"No guides with label {control_label!r} in column 3 of {library_path}. "
+            "Expected format: guide_name,sequence,label"
         )
+    print(
+        f"Loaded {len(guides)} negative-control guide(s) from library label column",
+        file=sys.stderr,
+    )
+    example = guides[0]
+    print(
+        f"Example negative control: name={example.name!r}, "
+        f"sequence={example.sequence!r}",
+        file=sys.stderr,
+    )
     return guides
+
+
+def _resolve_library_path_value(project_dir: str, lib_value: str) -> Optional[str]:
+    if not lib_value:
+        return None
+    if os.path.isabs(lib_value) and os.path.isfile(lib_value):
+        return os.path.abspath(lib_value)
+    for base in (
+        lib_value,
+        project_dir,
+        os.path.join(project_dir, "RAW_FASTQ"),
+    ):
+        candidate = os.path.abspath(os.path.join(base, lib_value))
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _library_from_sample_barcode_file(
+    project_dir: str,
+    sample_barcode_file: str,
+    sgrna_sample: str,
+) -> Tuple[Optional[str], str]:
+    barcode_path = resolve_sample_barcode_file(project_dir, sample_barcode_file)
+    if not barcode_path or not os.path.isfile(barcode_path):
+        return None, ""
+    with open(barcode_path, "r", errors="replace") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            cols = [c.strip() for c in re.split(r"\t|,", line)]
+            if len(cols) < 5:
+                continue
+            if cols[0].lower() in ("sample", "sample_name"):
+                continue
+            if cols[0] != sgrna_sample:
+                continue
+            resolved = _resolve_library_path_value(project_dir, cols[-1])
+            if resolved:
+                return resolved, f"sample_barcode_file {barcode_path!r} column 5"
+    return None, ""
+
+
+def _library_from_manifest(
+    project_dir: str,
+    sgrna_sample: str,
+) -> Tuple[Optional[str], str]:
+    manifest = os.path.join(project_dir, "manifests", "sgRNA.tsv")
+    if not os.path.isfile(manifest):
+        return None, ""
+    with open(manifest, newline="", errors="replace") as fh:
+        for row in csv.DictReader(fh, delimiter="\t"):
+            if (row.get("sample_name") or "").strip() != sgrna_sample:
+                continue
+            lib = (row.get("grna_library_csv") or "").strip()
+            resolved = _resolve_library_path_value(project_dir, lib)
+            if resolved:
+                return resolved, f"manifests/sgRNA.tsv ({manifest})"
+    return None, ""
 
 
 def resolve_grna_library_csv(
     project_dir: str,
     sgrna_sample: str,
     explicit_path: str,
-) -> str:
+    sample_barcode_file: str = "",
+) -> Tuple[str, str]:
+    """
+    Resolve gRNA library CSV path.
+
+    Priority:
+      1. --grna-library-csv
+      2. sample_barcode_file column 5 for the sgRNA sample
+      3. manifests/sgRNA.tsv from the Nextflow run
+    """
     if explicit_path:
-        for base in (
-            explicit_path,
-            os.path.join(project_dir, explicit_path),
-            os.path.join(project_dir, "RAW_FASTQ", explicit_path),
-        ):
-            if os.path.isfile(base):
-                return os.path.abspath(base)
+        resolved = _resolve_library_path_value(project_dir, explicit_path)
+        if resolved:
+            return resolved, f"--grna-library-csv ({explicit_path})"
         raise FileNotFoundError(f"gRNA library not found: {explicit_path}")
 
-    manifest = os.path.join(project_dir, "manifests", "sgRNA.tsv")
-    if os.path.isfile(manifest):
-        with open(manifest, newline="", errors="replace") as fh:
-            for row in csv.DictReader(fh, delimiter="\t"):
-                if (row.get("sample_name") or "").strip() == sgrna_sample:
-                    lib = (row.get("grna_library_csv") or "").strip()
-                    if lib and os.path.isfile(lib):
-                        return os.path.abspath(lib)
+    if sample_barcode_file:
+        resolved, source = _library_from_sample_barcode_file(
+            project_dir, sample_barcode_file, sgrna_sample
+        )
+        if resolved:
+            return resolved, source
 
-    barcode_file = os.path.join(project_dir, "RAW_FASTQ", "input.tsv")
-    if os.path.isfile(barcode_file):
-        sample_type, _ = load_sample_metadata(barcode_file)
-        with open(barcode_file, "r", errors="replace") as fh:
-            for raw in fh:
-                cols = re.split(r"\t|,", raw.strip())
-                if len(cols) >= 5 and cols[0].strip() == sgrna_sample:
-                    lib_name = cols[-1].strip()
-                    for base in (
-                        project_dir,
-                        os.path.join(project_dir, "RAW_FASTQ"),
-                    ):
-                        candidate = os.path.join(base, lib_name)
-                        if os.path.isfile(candidate):
-                            return os.path.abspath(candidate)
+    resolved, source = _library_from_manifest(project_dir, sgrna_sample)
+    if resolved:
+        print(
+            f"WARNING: using library from {source}. "
+            "If this is not the file you expect, pass --grna-library-csv explicitly.",
+            file=sys.stderr,
+        )
+        return resolved, source
 
     raise FileNotFoundError(
-        f"Could not resolve gRNA library for {sgrna_sample!r}. Pass --grna-library-csv."
+        f"Could not resolve gRNA library for sgRNA sample {sgrna_sample!r}. "
+        "Pass --grna-library-csv or --sample-barcode-file with column 5 set."
     )
+
+
+def write_library_audit(
+    out_dir: str,
+    library_path: str,
+    library_source: str,
+    guides: List[NegativeGuide],
+) -> str:
+    """Record which library file was read (for debugging path mismatches)."""
+    audit_path = os.path.join(out_dir, "library_audit.tsv")
+    os.makedirs(out_dir, exist_ok=True)
+    with open(audit_path, "w", newline="") as fh:
+        writer = csv.writer(fh, delimiter="\t")
+        writer.writerow(["library_path", library_path])
+        writer.writerow(["library_source", library_source])
+        writer.writerow([])
+        writer.writerow(["guide_name", "library_sequence", "label"])
+        for guide in guides:
+            writer.writerow([guide.name, guide.sequence, guide.label])
+    return audit_path
 
 
 def resolve_samples_from_args(args: argparse.Namespace, project_dir: str) -> SampleSet:
@@ -386,8 +501,9 @@ def map_guides_to_matrix_columns(
         mapping[guide.sequence] = idx
     if not mapping:
         raise ValueError(
-            "None of the negative-control sequences were found as columns in the count matrix. "
-            "Library sequences with N are matched to resolved matrix columns (N matches any ACGT). "
+            "None of the negative-control sequences (library column 2) were found in the "
+            "count matrix column headers. "
+            "Check library_audit.tsv for the file/sequences actually read. "
             f"Missing: {', '.join(missing[:5])}"
             + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
         )
@@ -583,15 +699,24 @@ def main() -> int:
 
     try:
         samples = resolve_samples_from_args(args, project_dir)
-        library_path = resolve_grna_library_csv(
-            project_dir, samples.sgrna_sample, args.grna_library_csv
+        library_path, library_source = resolve_grna_library_csv(
+            project_dir,
+            samples.sgrna_sample,
+            args.grna_library_csv,
+            args.sample_barcode_file,
         )
+        print(f"Using gRNA library: {library_path}", flush=True)
+        print(f"Library resolved from: {library_source}", flush=True)
         guides = load_negative_control_guides(library_path, args.control_label)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
+    audit_path = write_library_audit(out_dir, library_path, library_source, guides)
+    print(f"Wrote {audit_path}", flush=True)
+
     matrix_path = grna_count_matrix_path(project_dir, samples.sgrna_sample)
+    print(f"Using count matrix: {matrix_path}", flush=True)
     with open(matrix_path, newline="", errors="replace") as fh:
         header = next(csv.reader(fh), [])
     if header and header[0].strip().lower() not in ("cell_barcode", "barcode", "cell"):
@@ -624,6 +749,8 @@ def main() -> int:
         manifest = {
             "control_label": args.control_label,
             "grna_library_csv": library_path,
+            "grna_library_source": library_source,
+            "library_audit": audit_path,
             "n_negative_guides": len(guides),
             "n_cells": 0,
             "merged": {},
@@ -672,6 +799,8 @@ def main() -> int:
     manifest = {
         "control_label": args.control_label,
         "grna_library_csv": library_path,
+        "grna_library_source": library_source,
+        "library_audit": audit_path,
         "experimental_group": samples.experimental_group,
         "sgrna_sample": samples.sgrna_sample,
         "atac_sample": samples.atac_sample,

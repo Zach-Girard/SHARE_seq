@@ -32,8 +32,9 @@ SGRNA_SAMPLE=""
 ATAC_SAMPLE=""
 RNA_SAMPLE=""
 
-# --- Optional: gRNA library (leave empty to use manifests/sgRNA.tsv) ---
-GRNA_LIBRARY_CSV=""
+# --- gRNA library (recommended: set explicitly to avoid wrong file from manifests/) ---
+# Must match the library used when the pipeline ran (sample barcode file column 5).
+GRNA_LIBRARY_CSV="RAW_FASTQ/YOUR_gRNA_library.csv"
 CONTROL_LABEL="negative_ctrl"
 
 # --- Alignment / filtering ---
