@@ -93,7 +93,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--atac-sample", default="", help="Explicit ATAC sample ID.")
     p.add_argument("--rna-sample", default="", help="Explicit RNA sample ID.")
     p.add_argument("--grna-sequence", required=True, help="Full sgRNA sequence (matrix column).")
-    p.add_argument("--out-dir", required=True, help="Output directory.")
+    p.add_argument(
+        "--out-dir",
+        default="",
+        help="Output directory. If omitted, use --output-name to place outputs under "
+        "grna_tracks/<experimental_group>/<output_name>/.",
+    )
+    p.add_argument(
+        "--output-name",
+        default="",
+        help="Custom run folder name under grna_tracks/<experimental_group>/ (used when --out-dir is omitted).",
+    )
     p.add_argument(
         "--star-alignment-mode",
         default="single",
@@ -336,6 +346,31 @@ def resolve_samples(args: argparse.Namespace, project_dir: str) -> SampleSet:
         rna_sample=resolved["RNA"],
         experimental_group=group,
     )
+
+
+def _sanitize_output_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", (value or "").strip()).strip("._-")
+
+
+def resolve_out_dir(args: argparse.Namespace, project_dir: str, samples: SampleSet) -> str:
+    """
+    Resolve output directory.
+
+    Priority:
+      1) --out-dir (explicit absolute/relative path)
+      2) --output-name under grna_tracks/<experimental_group>/<output_name>
+    """
+    if args.out_dir:
+        return os.path.abspath(args.out_dir)
+
+    output_name = _sanitize_output_name(args.output_name)
+    if not output_name:
+        raise ValueError("Provide --out-dir or --output-name.")
+    if not samples.experimental_group:
+        raise ValueError(
+            "--output-name requires --experimental-group to build group-specific output path."
+        )
+    return os.path.join(project_dir, "grna_tracks", samples.experimental_group, output_name)
 
 
 def grna_count_matrix_path(project_dir: str, sgrna_sample: str) -> str:
@@ -959,14 +994,15 @@ def validate_inputs(cfg: RunConfig) -> None:
 def main() -> int:
     args = parse_args()
     project_dir = os.path.abspath(args.project_dir)
-    out_dir = os.path.abspath(args.out_dir)
-    os.makedirs(out_dir, exist_ok=True)
 
     try:
         samples = resolve_samples(args, project_dir)
+        out_dir = resolve_out_dir(args, project_dir, samples)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"Using output directory: {out_dir}", flush=True)
 
     config_path = args.nextflow_config or os.path.join(project_dir, "nextflow.config")
     nf_config = parse_nextflow_config(config_path)

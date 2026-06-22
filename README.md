@@ -252,14 +252,14 @@ python scripts/grna_cell_tracks.py \
   --sample-barcode-file RAW_FASTQ/input.tsv \
   --experimental-group Group_1 \
   --grna-sequence GACCGGAACGATCTCGAGCTTTACAGATCGGAAGAGCACACGTCT \
-  --out-dir grna_tracks/Group_1_guide \
+  --output-name guide_1 \
   --star-alignment-mode single \
   --min-grna-count 1 \
   --threads 8 \
   --jobs 4
 ```
 
-**Outputs** (`--out-dir`)
+**Outputs** (`--out-dir` or auto path from `--output-name`)
 
 | File / dir | Description |
 | ---------- | ----------- |
@@ -268,7 +268,7 @@ python scripts/grna_cell_tracks.py \
 | `cells/<barcode>/` | `ATAC.<barcode>.bam`, `RNA.<barcode>.bam`, matching `.bw` files |
 | `merged/` | Combined `ATAC.merged.bam`, `RNA.merged.bam`, matching `.bw` files, and `merged_barcodes.txt` |
 
-Merged tracks include **all cells in `selected_cells.tsv`** (same set used for per-cell outputs). With `--require-modality-call`, only modality-called cells are in that list. Use `--skip-merged` to omit combined files. Use `--max-cells` to cap runtime when many cells match. Use `--skip-bigwig` for BAM-only output. Cluster example: `scripts/grna_cell_tracks.lsf`.
+When using `--output-name`, outputs go under `grna_tracks/<experimental_group>/<output_name>/`, which makes it easy to run multiple guides in one group without collisions. Merged tracks include **all cells in `selected_cells.tsv`** (same set used for per-cell outputs). With `--require-modality-call`, only modality-called cells are in that list. Use `--skip-merged` to omit combined files. Use `--max-cells` to cap runtime when many cells match. Use `--skip-bigwig` for BAM-only output. Cluster example: `scripts/grna_cell_tracks.lsf`.
 
 #### `negative_ctrl_merged_tracks.py` — merged tracks for negative-control gRNAs
 

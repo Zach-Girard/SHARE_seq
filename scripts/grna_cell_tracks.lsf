@@ -23,9 +23,9 @@ cd "$LS_SUBCWD"
 
 PROJECT_DIR="."
 SAMPLE_BARCODE_FILE="RAW_FASTQ/input.tsv"
-EXPERIMENTAL_GROUP="Group_1"
-GRNA_SEQUENCE="GACCGGAACGATCTCGAGCTTTACAGATCGGAAGAGCACACGTCT"
-OUT_DIR="grna_tracks/${EXPERIMENTAL_GROUP}_guide"
+EXPERIMENTAL_GROUP="C1200"
+GRNA_SEQUENCE="GGATCCAGGTGTGATAGCCG"
+OUTPUT_NAME="guide_1"
 STAR_MODE="single"
 
 python3 scripts/grna_cell_tracks.py \
@@ -33,7 +33,7 @@ python3 scripts/grna_cell_tracks.py \
   --sample-barcode-file "${SAMPLE_BARCODE_FILE}" \
   --experimental-group "${EXPERIMENTAL_GROUP}" \
   --grna-sequence "${GRNA_SEQUENCE}" \
-  --out-dir "${OUT_DIR}" \
+  --output-name "${OUTPUT_NAME}" \
   --star-alignment-mode "${STAR_MODE}" \
   --min-grna-count 1 \
   --threads 4 \
