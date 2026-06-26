@@ -5,7 +5,7 @@
 #BSUB -R "rusage[mem=32000MB]"
 #BSUB -oo grna_cell_tracks_%J.out
 #BSUB -eo grna_cell_tracks_%J.err
-#BSUB -W 24:00
+#BSUB -W 48:00
 
 # Post-pipeline: per-cell ATAC/RNA BAM + BigWig for cells containing a target gRNA.
 # Run from the Nextflow project root after a completed SHARE-seq run.
@@ -27,14 +27,43 @@ EXPERIMENTAL_GROUP="C1200"
 GRNA_SEQUENCE="GGATCCAGGTGTGATAGCCG"
 OUTPUT_NAME="guide_1"
 STAR_MODE="single"
+MIN_GRNA_COUNT=1
+THREADS=2
+JOBS=4
+MAX_CELLS=0                 # 0 = no cap; set (e.g., 500) to bound runtime
+REQUIRE_MODALITY_CALL=1     # 1 = keep only ATAC+RNA-called cells (faster, stricter)
+SKIP_BIGWIG=0               # 1 = BAM only (much faster)
+SKIP_MERGED=0               # 1 = skip merged outputs
+ENABLE_STREAM_FALLBACK=0    # 1 = full BAM scan fallback when tag filters fail (very slow)
 
-python3 scripts/grna_cell_tracks.py \
-  --project-dir "${PROJECT_DIR}" \
-  --sample-barcode-file "${SAMPLE_BARCODE_FILE}" \
-  --experimental-group "${EXPERIMENTAL_GROUP}" \
-  --grna-sequence "${GRNA_SEQUENCE}" \
-  --output-name "${OUTPUT_NAME}" \
-  --star-alignment-mode "${STAR_MODE}" \
-  --min-grna-count 1 \
-  --threads 4 \
-  --jobs 4
+CMD=(
+  python3 scripts/grna_cell_tracks.py
+  --project-dir "${PROJECT_DIR}"
+  --sample-barcode-file "${SAMPLE_BARCODE_FILE}"
+  --experimental-group "${EXPERIMENTAL_GROUP}"
+  --grna-sequence "${GRNA_SEQUENCE}"
+  --output-name "${OUTPUT_NAME}"
+  --star-alignment-mode "${STAR_MODE}"
+  --min-grna-count "${MIN_GRNA_COUNT}"
+  --threads "${THREADS}"
+  --jobs "${JOBS}"
+)
+
+if [[ "${MAX_CELLS}" -gt 0 ]]; then
+  CMD+=(--max-cells "${MAX_CELLS}")
+fi
+if [[ "${REQUIRE_MODALITY_CALL}" -eq 1 ]]; then
+  CMD+=(--require-modality-call)
+fi
+if [[ "${SKIP_BIGWIG}" -eq 1 ]]; then
+  CMD+=(--skip-bigwig)
+fi
+if [[ "${SKIP_MERGED}" -eq 1 ]]; then
+  CMD+=(--skip-merged)
+fi
+if [[ "${ENABLE_STREAM_FALLBACK}" -eq 1 ]]; then
+  CMD+=(--enable-stream-fallback)
+fi
+
+echo "Running: ${CMD[*]}"
+"${CMD[@]}"

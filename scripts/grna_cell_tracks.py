@@ -71,6 +71,7 @@ class RunConfig:
     threads: int
     reference_fasta: str
     effective_genome_size: int
+    enable_stream_fallback: bool = False
     chrom_sizes_path: str = field(default="")
 
 
@@ -170,6 +171,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=4,
         help="Parallel cell workers (each uses --threads for subprocesses).",
+    )
+    p.add_argument(
+        "--enable-stream-fallback",
+        action="store_true",
+        help="Enable full BAM streaming fallback when tag-based filtering finds no reads (slower).",
     )
     return p.parse_args()
 
@@ -627,6 +633,10 @@ def extract_cell_bam_by_tag(
                 continue
             if view.stdout:
                 return _write_sorted_bam_from_stream(view.stdout, out_bam, threads), label
+            # Tag-filter command succeeded but no reads matched this barcode.
+            # Treat as a valid empty result to avoid expensive full-file scanning.
+            open(out_bam, "wb").close()
+            return 0, label
     finally:
         try:
             os.remove(barcode_file)
@@ -673,11 +683,15 @@ def extract_cell_bam(
     barcode: str,
     out_bam: str,
     threads: int,
+    enable_stream_fallback: bool = False,
 ) -> Tuple[int, str]:
     """Return (read_count, method_label)."""
     reads, method = extract_cell_bam_by_tag(source_bam, barcode, out_bam, threads)
-    if reads > 0:
+    if method:
         return reads, method
+    if not enable_stream_fallback:
+        open(out_bam, "wb").close()
+        return 0, ""
     reads = extract_cell_bam_by_stream(source_bam, barcode, out_bam, threads)
     if reads > 0:
         return reads, "stream"
@@ -723,9 +737,12 @@ def extract_merged_bam_by_tag(
             ],
             capture_output=True,
         )
-        if view.returncode == 0 and view.stdout:
-            reads = _write_sorted_bam_from_stream(view.stdout, out_bam, threads)
-            return reads, "CB:-D"
+        if view.returncode == 0:
+            if view.stdout:
+                reads = _write_sorted_bam_from_stream(view.stdout, out_bam, threads)
+                return reads, "CB:-D"
+            open(out_bam, "wb").close()
+            return 0, "CB:-D"
     finally:
         try:
             os.remove(barcode_file)
@@ -776,7 +793,7 @@ def extract_merged_bam(
     """Return (read_count, method_label) for all cells combined."""
     barcode_set = set(barcodes)
     reads, method = extract_merged_bam_by_tag(source_bam, barcodes, out_bam, threads)
-    if reads > 0:
+    if method:
         return reads, method
     reads = extract_merged_bam_by_stream(source_bam, barcode_set, out_bam, threads)
     if reads > 0:
@@ -913,7 +930,13 @@ def process_one_cell(
     if cfg.modality in ("atac", "both"):
         atac_src = atac_bam_path(cfg.project_dir, cfg.samples.atac_sample, cfg.atac_bam_type)
         atac_out = os.path.join(cell_dir, f"ATAC.{cell.cell_barcode}.bam")
-        reads, method = extract_cell_bam(atac_src, cell.cell_barcode, atac_out, cfg.threads)
+        reads, method = extract_cell_bam(
+            atac_src,
+            cell.cell_barcode,
+            atac_out,
+            cfg.threads,
+            cfg.enable_stream_fallback,
+        )
         if method == "stream":
             result["warnings"].append("ATAC: used streaming CB/QNAME filter")
         result["atac_reads"] = reads
@@ -934,7 +957,13 @@ def process_one_cell(
     if cfg.modality in ("rna", "both"):
         rna_src = rna_bam_path(cfg.project_dir, cfg.samples.rna_sample, cfg.star_alignment_mode)
         rna_out = os.path.join(cell_dir, f"RNA.{cell.cell_barcode}.bam")
-        reads, method = extract_cell_bam(rna_src, cell.cell_barcode, rna_out, cfg.threads)
+        reads, method = extract_cell_bam(
+            rna_src,
+            cell.cell_barcode,
+            rna_out,
+            cfg.threads,
+            cfg.enable_stream_fallback,
+        )
         if method == "stream":
             result["warnings"].append("RNA: used streaming CB/QNAME filter")
         result["rna_reads"] = reads
@@ -991,6 +1020,30 @@ def validate_inputs(cfg: RunConfig) -> None:
         ensure_bam_index(rna_bam, cfg.threads)
 
 
+def resolve_parallelism(args: argparse.Namespace) -> Tuple[int, int, int]:
+    """
+    Keep jobs x threads within allocated CPU slots.
+
+    Returns (effective_threads, effective_jobs, allocated_cpus).
+    """
+    allocated = os.getenv("LSB_DJOB_NUMPROC", "").strip()
+    try:
+        allocated_cpus = int(allocated) if allocated else (os.cpu_count() or 1)
+    except ValueError:
+        allocated_cpus = os.cpu_count() or 1
+    allocated_cpus = max(1, allocated_cpus)
+
+    threads = max(1, int(args.threads))
+    jobs = max(1, int(args.jobs))
+
+    if threads > allocated_cpus:
+        threads = allocated_cpus
+    max_jobs_for_threads = max(1, allocated_cpus // threads)
+    if jobs > max_jobs_for_threads:
+        jobs = max_jobs_for_threads
+    return threads, jobs, allocated_cpus
+
+
 def main() -> int:
     args = parse_args()
     project_dir = os.path.abspath(args.project_dir)
@@ -1003,6 +1056,16 @@ def main() -> int:
         return 1
     os.makedirs(out_dir, exist_ok=True)
     print(f"Using output directory: {out_dir}", flush=True)
+
+    effective_threads, effective_jobs, allocated_cpus = resolve_parallelism(args)
+    if effective_threads != args.threads or effective_jobs != args.jobs:
+        print(
+            "Adjusted parallelism to avoid CPU oversubscription: "
+            f"--threads {args.threads} -> {effective_threads}, "
+            f"--jobs {args.jobs} -> {effective_jobs} "
+            f"(allocated CPUs: {allocated_cpus})",
+            file=sys.stderr,
+        )
 
     config_path = args.nextflow_config or os.path.join(project_dir, "nextflow.config")
     nf_config = parse_nextflow_config(config_path)
@@ -1073,9 +1136,10 @@ def main() -> int:
         skip_bigwig=args.skip_bigwig,
         atac_bam_type=args.atac_bam_type,
         bigwig_bin_size=args.bigwig_bin_size,
-        threads=args.threads,
+        threads=effective_threads,
         reference_fasta=reference_fasta,
         effective_genome_size=effective_genome_size,
+        enable_stream_fallback=args.enable_stream_fallback,
         chrom_sizes_path=chrom_sizes_path,
     )
 
@@ -1101,11 +1165,12 @@ def main() -> int:
         "threads": cfg.threads,
         "reference_fasta": cfg.reference_fasta,
         "effective_genome_size": cfg.effective_genome_size,
+        "enable_stream_fallback": cfg.enable_stream_fallback,
         "chrom_sizes_path": cfg.chrom_sizes_path,
     }
 
     manifest_rows: List[dict] = []
-    jobs = max(1, args.jobs)
+    jobs = effective_jobs
     if jobs == 1:
         for cell in cells:
             manifest_rows.append(process_one_cell(cell, cfg_dict))
@@ -1136,6 +1201,9 @@ def main() -> int:
         "rna_sample": samples.rna_sample,
         "modality": args.modality,
         "require_modality_call": args.require_modality_call,
+        "threads": effective_threads,
+        "jobs": effective_jobs,
+        "enable_stream_fallback": args.enable_stream_fallback,
         "cells_processed": len(manifest_rows),
         "reference_fasta": reference_fasta,
         "effective_genome_size": effective_genome_size,
