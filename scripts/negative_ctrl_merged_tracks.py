@@ -33,6 +33,7 @@ from grna_cell_tracks import (
     build_chrom_sizes,
     ensure_bam_index,
     extract_merged_bam,
+    extract_merged_bam_by_qname,
     grna_count_matrix_path,
     make_bigwig,
     parse_nextflow_config,
@@ -624,9 +625,9 @@ def build_merged_outputs(
         rna_src = rna_bam_path(project_dir, samples.rna_sample, star_alignment_mode)
         ensure_bam_index(rna_src, threads)
         rna_out = os.path.join(merged_dir, "RNA.negative_ctrl.merged.bam")
-        reads, method = extract_merged_bam(rna_src, barcodes, rna_out, threads)
-        if method == "stream":
-            merged["warnings"].append("RNA merged: used streaming CB/QNAME filter")
+        # STARsolo RNA BAMs store the cell barcode in the read name, not a CB:Z
+        # tag, so always match RNA reads by QNAME.
+        reads, _method = extract_merged_bam_by_qname(rna_src, barcodes, rna_out, threads)
         merged["rna_reads"] = reads
         if reads > 0:
             merged["rna_bam"] = rna_out

@@ -664,6 +664,41 @@ def extract_cell_bam_by_tag(
     return 0, ""
 
 
+def extract_cell_bam_by_qname(
+    source_bam: str,
+    barcode: str,
+    out_bam: str,
+    threads: int,
+) -> Tuple[int, str]:
+    """
+    Filter reads whose QNAME ends with _<barcode>.
+
+    STARsolo RNA BAMs in this pipeline carry the 24bp cell barcode in the read
+    name (e.g. ..._TACCGAGCTCGAAGTGGCCAATGT) rather than a CB:Z tag, so the CB
+    tag filters find nothing. This uses a C-level samtools filter expression
+    (single pass, no Python decoding).
+    """
+    os.makedirs(os.path.dirname(out_bam) or ".", exist_ok=True)
+    bc = normalize_barcode(barcode) or barcode.strip().upper()
+    cmd = [
+        "samtools",
+        "view",
+        "-@",
+        str(threads),
+        "-b",
+        "-e",
+        f'qname =~ "_{bc}$"',
+        source_bam,
+    ]
+    view = subprocess.run(cmd, capture_output=True)
+    if view.returncode != 0:
+        return 0, ""
+    if view.stdout:
+        return _write_sorted_bam_from_stream(view.stdout, out_bam, threads), "QNAME:-e"
+    open(out_bam, "wb").close()
+    return 0, "QNAME:-e"
+
+
 def extract_cell_bam_by_stream(
     source_bam: str,
     barcode: str,
@@ -703,14 +738,28 @@ def extract_cell_bam(
     out_bam: str,
     threads: int,
     enable_stream_fallback: bool = False,
+    use_qname: bool = False,
 ) -> Tuple[int, str]:
-    """Return (read_count, method_label)."""
-    reads, method = extract_cell_bam_by_tag(source_bam, barcode, out_bam, threads)
-    if method:
-        return reads, method
+    """
+    Return (read_count, method_label).
+
+    When use_qname is True (STARsolo RNA BAMs, which store the barcode in the
+    read name rather than a CB:Z tag), skip the CB-tag filters entirely.
+    """
+    method = ""
+    if not use_qname:
+        # 1) CB:Z tag filters (ATAC BAMs carry CB tags).
+        reads, method = extract_cell_bam_by_tag(source_bam, barcode, out_bam, threads)
+        if reads > 0:
+            return reads, method
+    # 2) QNAME filter (STARsolo RNA BAMs store the barcode in the read name).
+    reads, qmethod = extract_cell_bam_by_qname(source_bam, barcode, out_bam, threads)
+    if reads > 0:
+        return reads, qmethod
+    # 3) Optional full Python scan (slow); off by default.
     if not enable_stream_fallback:
         open(out_bam, "wb").close()
-        return 0, ""
+        return 0, method or qmethod
     reads = extract_cell_bam_by_stream(source_bam, barcode, out_bam, threads)
     if reads > 0:
         return reads, "stream"
@@ -801,6 +850,72 @@ def extract_merged_bam_by_stream(
         open(out_bam, "wb").close()
         return 0
     return _write_sorted_bam_from_stream(b"".join(header_lines + matched), out_bam, threads)
+
+
+def extract_merged_bam_by_qname(
+    source_bam: str,
+    barcodes: List[str],
+    out_bam: str,
+    threads: int,
+    chunk_size: int = 400,
+) -> Tuple[int, str]:
+    """
+    Merge reads whose QNAME ends with _<barcode> for any selected barcode.
+
+    For STARsolo RNA BAMs (no CB:Z tag) the 24bp barcode lives in the read name.
+    Uses C-level samtools filter expressions, chunked to keep the regex small,
+    then concatenates the per-chunk hits. A read's QNAME contains exactly one
+    barcode, so chunks are disjoint (no duplicate reads).
+    """
+    os.makedirs(os.path.dirname(out_bam) or ".", exist_ok=True)
+    bcs = sorted({normalize_barcode(b) or b.strip().upper() for b in barcodes if b})
+    if not bcs:
+        open(out_bam, "wb").close()
+        return 0, ""
+
+    parts: List[str] = []
+    cat_bam = f"{out_bam}.cat.bam"
+    try:
+        for i in range(0, len(bcs), chunk_size):
+            chunk = bcs[i : i + chunk_size]
+            expr = f'qname =~ "_({"|".join(chunk)})$"'
+            view = subprocess.run(
+                ["samtools", "view", "-@", str(threads), "-b", "-e", expr, source_bam],
+                capture_output=True,
+            )
+            if view.returncode != 0:
+                return 0, ""
+            if view.stdout:
+                part = f"{out_bam}.part{i // chunk_size}.bam"
+                with open(part, "wb") as fh:
+                    fh.write(view.stdout)
+                parts.append(part)
+
+        if not parts:
+            open(out_bam, "wb").close()
+            return 0, "QNAME:-e"
+
+        if len(parts) == 1:
+            source = parts[0]
+        else:
+            subprocess.run(["samtools", "cat", "-o", cat_bam, *parts], check=True)
+            source = cat_bam
+
+        subprocess.run(
+            ["samtools", "sort", "-@", str(threads), "-o", out_bam, source],
+            check=True,
+        )
+        reads = count_bam_reads(out_bam)
+        if reads > 0:
+            ensure_bam_index(out_bam, threads)
+        return reads, "QNAME:-e"
+    finally:
+        for p in (*parts, cat_bam):
+            if os.path.isfile(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
 
 def extract_merged_bam(
@@ -1073,6 +1188,7 @@ def process_one_cell(
             rna_out,
             cfg.threads,
             cfg.enable_stream_fallback,
+            use_qname=True,
         )
         if method == "stream":
             result["warnings"].append("RNA: used streaming CB/QNAME filter")
