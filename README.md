@@ -235,14 +235,15 @@ Standalone tools under `scripts/` are **not** run by Nextflow. Use them after a 
 
 #### `grna_cell_tracks.py` — per-cell BAM and BigWig for a target gRNA
 
-Finds cell barcodes with a given sgRNA (from `sgRNA/<sample>/final_<sample>.gRNA.count.csv`) and writes per-cell ATAC and RNA BAM + BigWig files by filtering published BAMs on the `CB:Z:<24bp>` tag (e.g. `CB:Z:TGAAGCCATGACAGACCGATGTTT`).
+Finds cell barcodes with a given sgRNA (from `sgRNA/<sample>/final_<sample>.gRNA.count.csv`) and writes per-cell ATAC and RNA BAM + BigWig files. ATAC reads are filtered on the `CB:Z:<24bp>` tag (e.g. `CB:Z:TGAAGCCATGACAGACCGATGTTT`); STARsolo RNA BAMs do **not** carry a `CB:Z` tag, so RNA reads are matched on the 24bp barcode embedded in the read name (`<readid>_<24bp>`).
 
 **Prerequisites**
 
 - Completed run with sgRNA, ATAC, and RNA branches for the target `Experimental_Group`.
 - Outputs present: `sgRNA/<sample>/final_*.gRNA.count.csv`, `ATAC/<sample>/*.q30.rmdup.sorted.bam`, `STARsolo/<sample>/Aligned.sortedByCoord.out.bam` (or `STARsolo_paired/` when paired).
 - Conda env includes `deeptools` (see `environment.yml`) for BigWig generation.
-- Reference FASTA available via `nextflow.config` or `--reference-fasta`.
+- Reference FASTA available via `nextflow.config` (or override with `--reference-fasta`).
+- `samtools` supporting filter expressions (`samtools view -e 'qname =~ ...'`, 1.12+) for RNA QNAME matching.
 
 **Example**
 
@@ -255,11 +256,11 @@ python scripts/grna_cell_tracks.py \
   --output-name guide_1 \
   --star-alignment-mode single \
   --min-grna-count 1 \
-  --threads 8 \
+  --threads 4 \
   --jobs 4
 ```
 
-**Outputs** (`--out-dir` or auto path from `--output-name`)
+**Outputs** (`--out-dir`, or auto path from `--output-name`)
 
 | File / dir | Description |
 | ---------- | ----------- |
@@ -268,11 +269,21 @@ python scripts/grna_cell_tracks.py \
 | `cells/<barcode>/` | `ATAC.<barcode>.bam`, `RNA.<barcode>.bam`, matching `.bw` files |
 | `merged/` | Combined `ATAC.merged.bam`, `RNA.merged.bam`, matching `.bw` files, and `merged_barcodes.txt` |
 
-When using `--output-name`, outputs go under `grna_tracks/<experimental_group>/<output_name>/`, which makes it easy to run multiple guides in one group without collisions. Merged tracks include **all cells in `selected_cells.tsv`** (same set used for per-cell outputs). With `--require-modality-call`, only modality-called cells are in that list. Use `--skip-merged` to omit combined files. Use `--max-cells` to cap runtime when many cells match. Use `--skip-bigwig` for BAM-only output. Cluster example: `scripts/grna_cell_tracks.lsf`.
+**Output location:** pass either `--out-dir <path>` or `--output-name <name>` (which writes to `grna_tracks/<experimental_group>/<output_name>/`, making it easy to run multiple guides in one group without collisions). The script reuses an existing output folder and does not clear it — remove a prior run's directory before re-running to avoid stale `cells/` entries.
+
+**Behavior notes**
+
+- Cells are deduplicated by normalized 24bp barcode (highest count kept); `selected_cells.tsv`, `cells_processed`, and `cells/` therefore agree.
+- Merged tracks are built by combining the per-cell BAMs (fast, no full-source rescan) and include **all cells in `selected_cells.tsv`**. With `--require-modality-call`, only ATAC/RNA-called cells are in that list.
+- BigWig generation is non-fatal: a `bamCoverage` failure is logged to `run_manifest.json` (`merged.warnings` / per-cell `warnings`) instead of aborting the run.
+- Parallelism (`--threads` × `--jobs`) is auto-capped to the allocated CPUs (`LSB_DJOB_NUMPROC` on LSF) to avoid oversubscription.
+- `--skip-merged` omits combined files; `--max-cells` caps runtime; `--skip-bigwig` emits BAMs only; `--enable-stream-fallback` enables a slow full-scan barcode match only if the fast tag/QNAME filters find nothing.
+
+Cluster example: `scripts/grna_cell_tracks.lsf`.
 
 #### `negative_ctrl_merged_tracks.py` — merged tracks for negative-control gRNAs
 
-Reads the gRNA library CSV (format: `guide_name,sequence,label` — label column 3, sequence column 2), selects rows labeled `negative_ctrl` (or `--control-label`), finds cells with those guides in `final_<sample>.gRNA.count.csv`, and writes merged ATAC/RNA BAM + BigWig files (no per-cell outputs).
+Reads the gRNA library CSV (format: `guide_name,sequence,label` — label column 3, sequence column 2), selects rows labeled `negative_ctrl` (or `--control-label`), finds cells with those guides in `final_<sample>.gRNA.count.csv`, and writes merged ATAC/RNA BAM + BigWig files (no per-cell outputs). ATAC merges by the `CB:Z` tag; RNA always matches on the 24bp barcode in the read name (STARsolo BAMs carry no `CB:Z` tag).
 
 **Example**
 
@@ -291,10 +302,11 @@ python scripts/negative_ctrl_merged_tracks.py \
 
 | File / dir | Description |
 | ---------- | ----------- |
+| `library_audit.tsv` | The gRNA library file read and the negative-control sequences parsed |
 | `negative_ctrl_guides.tsv` | Negative-control guide names and sequences used |
 | `selected_cells.tsv` | Cells with any negative-control gRNA hit |
 | `merged/` | `ATAC.negative_ctrl.merged.bam`, `RNA.negative_ctrl.merged.bam`, matching `.bw` files |
 | `run_manifest.json` | Run metadata and merge read counts |
 
-Required: `--sample-barcode-file` and `--experimental-group`. Sample IDs are auto-resolved from the group, and the gRNA library CSV is auto-resolved from column 5 of the sgRNA row in the sample barcode file. Reference FASTA and effective genome size are read from `<project-dir>/nextflow.config`. Use `--require-modality-call` to restrict to ATAC/RNA-called cells. Check `library_audit.tsv` in the output dir to verify which file and sequences were read. Cluster example: `scripts/negative_ctrl_merged_tracks.lsf`.
+Required: `--sample-barcode-file`, `--experimental-group`, and `--out-dir`. Sample IDs are auto-resolved from the group, and the gRNA library CSV is auto-resolved from column 5 of the sgRNA row in the sample barcode file. Reference FASTA and effective genome size are read from `<project-dir>/nextflow.config`. Use `--require-modality-call` to restrict to ATAC/RNA-called cells. Check `library_audit.tsv` in the output dir to verify which file and sequences were read. Cluster example: `scripts/negative_ctrl_merged_tracks.lsf`.
 
