@@ -415,7 +415,8 @@ def load_cells_for_grna(
     if not os.path.isfile(matrix_path):
         raise FileNotFoundError(f"sgRNA count matrix not found: {matrix_path}")
 
-    hits: List[CellHit] = []
+    by_barcode: Dict[str, CellHit] = {}
+    duplicate_rows = 0
     with open(matrix_path, newline="", errors="replace") as fh:
         reader = csv.reader(fh)
         header = next(reader, None)
@@ -445,15 +446,33 @@ def load_cells_for_grna(
             if require_modality_call and (not in_atac or not in_rna):
                 continue
 
-            hits.append(
-                CellHit(
-                    cell_barcode=bc,
-                    grna_count=count,
-                    in_atac_call=in_atac,
-                    in_rna_call=in_rna,
-                )
+            existing = by_barcode.get(bc)
+            if existing is not None:
+                # Two matrix rows normalize to the same 24bp barcode; they would
+                # collapse into a single cells/<barcode>/ directory. Keep the
+                # higher count so per-cell outputs stay consistent with the manifest.
+                duplicate_rows += 1
+                if count > existing.grna_count:
+                    existing.grna_count = count
+                    existing.in_atac_call = in_atac
+                    existing.in_rna_call = in_rna
+                continue
+
+            by_barcode[bc] = CellHit(
+                cell_barcode=bc,
+                grna_count=count,
+                in_atac_call=in_atac,
+                in_rna_call=in_rna,
             )
 
+    if duplicate_rows:
+        print(
+            f"WARNING: collapsed {duplicate_rows} duplicate barcode row(s) into "
+            f"{len(by_barcode)} unique cell(s) (kept max count per barcode).",
+            file=sys.stderr,
+        )
+
+    hits = list(by_barcode.values())
     hits.sort(key=lambda c: (-c.grna_count, c.cell_barcode))
     if max_cells and len(hits) > max_cells:
         print(
@@ -801,18 +820,54 @@ def extract_merged_bam(
     return 0, ""
 
 
-def build_merged_tracks(cfg: RunConfig, cells: List[CellHit]) -> dict:
+def _build_merged_bam(
+    cfg: RunConfig,
+    label: str,
+    cell_bams: List[str],
+    source_bam: str,
+    barcodes: List[str],
+    out_bam: str,
+) -> Tuple[int, List[str]]:
+    """
+    Build a merged BAM. Prefer merging the already-extracted per-cell BAMs
+    (fast, avoids rescanning the full source BAM); fall back to a direct
+    source extraction only when no per-cell BAMs are available.
+    """
+    warnings: List[str] = []
+    reads = merge_cell_bams(cell_bams, out_bam, cfg.threads)
+    if reads > 0:
+        print(f"{label} merged: combined {reads} reads from per-cell BAMs", flush=True)
+        return reads, warnings
+
+    reads, method = extract_merged_bam(source_bam, barcodes, out_bam, cfg.threads)
+    if method == "stream":
+        warnings.append(f"{label} merged: used streaming CB/QNAME filter")
+    if reads > 0:
+        print(f"{label} merged: extracted {reads} reads from source BAM", flush=True)
+    return reads, warnings
+
+
+def build_merged_tracks(
+    cfg: RunConfig,
+    cells: List[CellHit],
+    manifest_rows: List[dict],
+) -> dict:
     """
     Build merged ATAC/RNA BAM and BigWig across all selected cells.
 
     Uses the same cell list as per-cell extraction (already filtered by
-    --require-modality-call when that flag is set).
+    --require-modality-call when that flag is set). The merged BAM is built by
+    combining the per-cell BAMs produced earlier, which is much faster than
+    rescanning the full source BAM and lets BigWig failures stay non-fatal.
     """
     merged_dir = os.path.join(cfg.out_dir, "merged")
     os.makedirs(merged_dir, exist_ok=True)
     barcodes = [c.cell_barcode for c in cells]
     barcodes_path = os.path.join(merged_dir, "merged_barcodes.txt")
     write_barcode_list(barcodes_path, barcodes)
+
+    atac_cell_bams = [r.get("atac_bam", "") for r in manifest_rows]
+    rna_cell_bams = [r.get("rna_bam", "") for r in manifest_rows]
 
     merged: dict = {
         "n_cells": len(barcodes),
@@ -834,44 +889,58 @@ def build_merged_tracks(cfg: RunConfig, cells: List[CellHit]) -> dict:
     if cfg.modality in ("atac", "both"):
         atac_src = atac_bam_path(cfg.project_dir, cfg.samples.atac_sample, cfg.atac_bam_type)
         atac_out = os.path.join(merged_dir, "ATAC.merged.bam")
-        reads, method = extract_merged_bam(atac_src, barcodes, atac_out, cfg.threads)
-        if method == "stream":
-            merged["warnings"].append("ATAC merged: used streaming CB/QNAME filter")
+        reads, warns = _build_merged_bam(
+            cfg, "ATAC", atac_cell_bams, atac_src, barcodes, atac_out
+        )
+        merged["warnings"].extend(warns)
         merged["atac_reads"] = reads
         if reads > 0:
             merged["atac_bam"] = atac_out
             if not cfg.skip_bigwig:
                 bw_out = os.path.join(merged_dir, "ATAC.merged.bw")
-                if make_bigwig(
+                print("ATAC merged: generating BigWig", flush=True)
+                ok, err = safe_make_bigwig(
                     atac_out,
                     bw_out,
                     cfg.bigwig_bin_size,
                     cfg.effective_genome_size,
                     cfg.threads,
-                ):
+                )
+                if ok:
                     merged["atac_bw"] = bw_out
+                elif err:
+                    msg = f"ATAC merged BigWig skipped: {err}"
+                    merged["warnings"].append(msg)
+                    print(f"WARNING: {msg}", file=sys.stderr, flush=True)
         else:
             merged["warnings"].append("ATAC merged: zero reads")
 
     if cfg.modality in ("rna", "both"):
         rna_src = rna_bam_path(cfg.project_dir, cfg.samples.rna_sample, cfg.star_alignment_mode)
         rna_out = os.path.join(merged_dir, "RNA.merged.bam")
-        reads, method = extract_merged_bam(rna_src, barcodes, rna_out, cfg.threads)
-        if method == "stream":
-            merged["warnings"].append("RNA merged: used streaming CB/QNAME filter")
+        reads, warns = _build_merged_bam(
+            cfg, "RNA", rna_cell_bams, rna_src, barcodes, rna_out
+        )
+        merged["warnings"].extend(warns)
         merged["rna_reads"] = reads
         if reads > 0:
             merged["rna_bam"] = rna_out
             if not cfg.skip_bigwig:
                 bw_out = os.path.join(merged_dir, "RNA.merged.bw")
-                if make_bigwig(
+                print("RNA merged: generating BigWig", flush=True)
+                ok, err = safe_make_bigwig(
                     rna_out,
                     bw_out,
                     cfg.bigwig_bin_size,
                     cfg.effective_genome_size,
                     cfg.threads,
-                ):
+                )
+                if ok:
                     merged["rna_bw"] = bw_out
+                elif err:
+                    msg = f"RNA merged BigWig skipped: {err}"
+                    merged["warnings"].append(msg)
+                    print(f"WARNING: {msg}", file=sys.stderr, flush=True)
         else:
             merged["warnings"].append("RNA merged: zero reads")
 
@@ -906,6 +975,44 @@ def make_bigwig(
         check=True,
     )
     return True
+
+
+def safe_make_bigwig(
+    bam_path: str,
+    out_bw: str,
+    bin_size: int,
+    effective_genome_size: int,
+    threads: int,
+) -> Tuple[bool, str]:
+    """Generate a BigWig without raising. Returns (success, error_message)."""
+    try:
+        ensure_bam_index(bam_path, threads)
+        if make_bigwig(bam_path, out_bw, bin_size, effective_genome_size, threads):
+            return True, ""
+        return False, "zero reads"
+    except subprocess.CalledProcessError as exc:
+        return False, f"bamCoverage failed (exit {exc.returncode})"
+    except OSError as exc:
+        return False, f"bamCoverage error: {exc}"
+
+
+def merge_cell_bams(cell_bams: List[str], out_bam: str, threads: int) -> int:
+    """Merge already-extracted per-cell BAMs into one sorted, indexed BAM."""
+    existing = [
+        b for b in cell_bams if b and os.path.isfile(b) and os.path.getsize(b) > 0
+    ]
+    os.makedirs(os.path.dirname(out_bam) or ".", exist_ok=True)
+    if not existing:
+        open(out_bam, "wb").close()
+        return 0
+    subprocess.run(
+        ["samtools", "merge", "-f", "-@", str(threads), out_bam, *existing],
+        check=True,
+    )
+    reads = count_bam_reads(out_bam)
+    if reads > 0:
+        ensure_bam_index(out_bam, threads)
+    return reads
 
 
 def process_one_cell(
@@ -945,14 +1052,17 @@ def process_one_cell(
             result["warnings"].append("ATAC: zero reads")
         elif not cfg.skip_bigwig:
             bw_out = os.path.join(cell_dir, f"ATAC.{cell.cell_barcode}.bw")
-            if make_bigwig(
+            ok, err = safe_make_bigwig(
                 atac_out,
                 bw_out,
                 cfg.bigwig_bin_size,
                 cfg.effective_genome_size,
                 cfg.threads,
-            ):
+            )
+            if ok:
                 result["atac_bw"] = bw_out
+            elif err:
+                result["warnings"].append(f"ATAC BigWig skipped: {err}")
 
     if cfg.modality in ("rna", "both"):
         rna_src = rna_bam_path(cfg.project_dir, cfg.samples.rna_sample, cfg.star_alignment_mode)
@@ -972,14 +1082,17 @@ def process_one_cell(
             result["warnings"].append("RNA: zero reads")
         elif not cfg.skip_bigwig:
             bw_out = os.path.join(cell_dir, f"RNA.{cell.cell_barcode}.bw")
-            if make_bigwig(
+            ok, err = safe_make_bigwig(
                 rna_out,
                 bw_out,
                 cfg.bigwig_bin_size,
                 cfg.effective_genome_size,
                 cfg.threads,
-            ):
+            )
+            if ok:
                 result["rna_bw"] = bw_out
+            elif err:
+                result["warnings"].append(f"RNA BigWig skipped: {err}")
 
     return result
 
@@ -1191,7 +1304,7 @@ def main() -> int:
             + (" (require-modality-call)" if args.require_modality_call else ""),
             flush=True,
         )
-        merged_tracks = build_merged_tracks(cfg, cells)
+        merged_tracks = build_merged_tracks(cfg, cells, manifest_rows)
 
     manifest = {
         "grna_sequence": args.grna_sequence,
