@@ -495,11 +495,20 @@ def rna_bam_path(project_dir: str, sample: str, star_alignment_mode: str) -> str
 
 def ensure_bam_index(bam_path: str, threads: int) -> None:
     bai = bam_path + ".bai"
-    if not os.path.isfile(bai):
-        subprocess.run(
-            ["samtools", "index", "-@", str(threads), bam_path],
-            check=True,
-        )
+    # Regenerate when missing OR stale: on re-runs the BAM is rewritten in place,
+    # so a leftover index from a prior run points at invalid byte offsets and
+    # makes downstream tools (e.g. bamCoverage) hit "Invalid BGZF header".
+    if os.path.isfile(bai) and os.path.getmtime(bai) >= os.path.getmtime(bam_path):
+        return
+    if os.path.isfile(bai):
+        try:
+            os.remove(bai)
+        except OSError:
+            pass
+    subprocess.run(
+        ["samtools", "index", "-@", str(threads), bam_path],
+        check=True,
+    )
 
 
 _QNAME_BC_RE = re.compile(r"[ACGTNacgtn]{24}")
